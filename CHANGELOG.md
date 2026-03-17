@@ -526,3 +526,53 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - **Version bump** from v25 to v26 in title, header label, and docstring.
 - `PlayerSearchWidget` docstring updated to reflect multi-select behavior.
+
+---
+
+## [v6]
+### Changed
+- **Weapons loaded from DB**: `WEAPONS` hardcoded list removed. On connect, `SELECT DISTINCT weapon_name FROM kills` populates the weapons grid dynamically — no missing weapons regardless of game version or custom content.
+- **`_build_weapons_grid(weapons)`** added: rebuilds the checkbutton grid after DB load; preserves saved selections from config; displays a count label (`N armes chargées`).
+
+### Fixed
+- **Weapons grid not appearing**: `pack(before=hidden_widget)` silently failed. Grid now packs normally after the status label.
+
+---
+
+## [v5]
+### Fixed
+- **`column m.date does not exist`**: `date` is a reserved word in PostgreSQL and cannot be used unquoted as a column name. The column name is now discovered at connect time via `information_schema.columns` (first `date`/`timestamp` column in `matches`) and injected quoted (e.g. `"date"`) into every query. If no date column is found, date filters are silently skipped instead of crashing.
+
+---
+
+## [v4]
+### Added
+- **Connexion BDD au démarrage**: connects to PostgreSQL automatically on launch; loads all players into `PlayerSearchWidget` without user action.
+- **`PlayerSearchWidget`**: replaces the dropdown — text field + filtered listbox. Typing any substring of name or Steam ID narrows the list in real time. Restores last selected player from config on startup.
+- **Config auto-save** (`csdm_config.json`, same directory as script): all fields written to disk every 5 seconds via `_auto_save_loop`. Restored on next launch — no re-entry needed.
+- **`DEFAULT_CONFIG` / `load_config` / `save_config`** helpers: merge saved config over defaults so new keys added in future versions are always present.
+
+### Changed
+- **3-tab layout**: `Configuration` / `Base de données` / `Exécuter`. DB credentials moved to their own tab; `Base de données` tab shows connection status and explains the query logic.
+- **Player selection**: SteamID field removed — player chosen from BDD-loaded list; Steam ID shown read-only below the list.
+
+---
+
+## [v3]
+### Fixed
+- **`TclError: bad screen distance "0 16"`**: `pady=(0, 16)` passed to `tk.Frame()` constructor — tkinter Frames only accept scalar padding in the constructor; tuple padding must be passed to `.pack()`. Moved to `log_wrap.pack(pady=(0, 16))`.
+- **`TclError: unknown option "-placeholder_text"`**: `placeholder_text` is not a valid tkinter `Entry` option. Removed; hint text moved to a `Label` below the field.
+
+---
+
+## [v2]
+### Added
+- **tkinter GUI**: full graphical interface replacing the bare Python script — path fields with `...` browse buttons, event checkboxes, before/after sliders, date fields, weapon tag-buttons, encoder radio buttons, live log pane with color tags, STOP button.
+- **Batch loop with thread**: `_worker` runs in a `daemon` thread; UI stays responsive. Progress label updated per demo (`i/total`).
+- **Validation on launch**: checks for missing CSDM path, missing demos folder, empty Steam ID, no event selected before starting.
+
+---
+
+## [v1]
+### Added
+- **Initial CLI batch script**: loops over all `.dem` files in a folder and calls `csdm video <demo> --mode player …` for each. Hardcoded config block at top of file (paths, Steam ID, event type, timing, encoder). Summary printed at end (`✓ Réussi / ✗ Échec`).
