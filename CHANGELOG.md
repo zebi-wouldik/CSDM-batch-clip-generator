@@ -8,8 +8,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ## [v78]
 ### Fixed
 - **CS mode: "Game error" on every demo** — root cause was a bad demo file, not the minimize watcher. The `cs2_minimize` watcher works in both HLAE and CS modes and is left unchanged.
-- **CS mode / HLAE mode UI bleed** — `_on_recsys_change` only changed the section title color, leaving all HLAE widgets (FOV, slow-motion, physics, window mode, minimize) permanently visible and editable even in CS mode. It now calls `pack_forget()` on the entire `_hlae_sec` when CS is selected, and restores it with `pack()` when HLAE is selected.
-- **Window mode and Minimize on launch in wrong section** — both widgets were in RESOLUTION & FRAMERATE, always visible regardless of recsys. Moved into the HLAE section (hidden in CS mode). Tooltips updated to clarify HLAE-only behavior.
+- **CS mode / HLAE mode UI bleed** — `_on_recsys_change` only changed the section title color, leaving all HLAE widgets (FOV, slow-motion, physics, window mode) permanently visible and editable even in CS mode. It now calls `pack_forget()` on the entire `_hlae_sec` when CS is selected, and restores it with `pack()` when HLAE is selected. Window mode and Minimize remain in RESOLUTION & FRAMERATE (always visible, unchanged).
 
 ### Added
 - **Per-demo extended logging** in batch run: each demo now logs sequence tick ranges and duration (`seq 1/2  tick 1234→5678  (6.0s)`), active RecSys/Output/TrueView/Concat settings, and HLAE options actually injected (FOV, timescale, AFX, extraArgs).
@@ -19,7 +18,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - `_slider()` now returns its frame so `add_tip()` can be attached to it.
 
 ### Changed
-- **HLAE section fully hidden in CS mode** (not just greyed-out title). Switching back to HLAE restores it.
+- **HLAE section fully hidden in CS mode** (not just greyed-out title). Switching back to HLAE restores it. Window mode and Minimize on launch remain in RESOLUTION & FRAMERATE and are always accessible regardless of recording system.
 - Remaining French in `_build_json` camera comments translated: `Notre joueur meurt`, `Notre joueur tue`, `Phase victim`, `Cible initiale`, `title="Couleur"`.
 
 ---

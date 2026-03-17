@@ -2653,6 +2653,34 @@ class App(tk.Tk):
         mlabel(fps_frm, "FPS").pack(anchor="w")
         scombo(fps_frm, self.v["framerate"], FRAMERATES, 6).pack(anchor="w", pady=(4, 0))
 
+        tk.Frame(bot_row, bg=BORDER, width=1).pack(side="left", fill="y", padx=(0, 20))
+
+        # CS2 window mode
+        wm_frm = tk.Frame(bot_row, bg=BG2)
+        wm_frm.pack(side="left", padx=(0, 20))
+        _wm_lbl = mlabel(wm_frm, "CS2 window mode")
+        _wm_lbl.pack(anchor="w")
+        add_tip(_wm_lbl,
+                "Launch flag injected into CS2 arguments (HLAE only).\n"
+                "None = does not change current mode.\n"
+                "Borderless windowed = -windowed -noborder (recommended for recording behind other windows).")
+        for lbl, val in [
+            ("None",               "none"),
+            ("Fullscreen",         "fullscreen"),
+            ("Windowed",           "windowed"),
+            ("Borderless windowed","noborder"),
+        ]:
+            hradio(wm_frm, lbl, self.v["cs2_window_mode"], val).pack(anchor="w", pady=(2, 0))
+
+        _min_row2 = tk.Frame(wm_frm, bg=BG2)
+        _min_row2.pack(anchor="w", pady=(6, 0))
+        _min_cb2 = hchk(_min_row2, "Minimize on launch", self.v["cs2_minimize"])
+        _min_cb2.pack(side="left")
+        add_tip(_min_cb2,
+                "Automatically minimizes CS2 window as soon as it appears.\n"
+                "Requires pywin32 (pip install pywin32).\n"
+                "Without pywin32: silently ignored.")
+
         sec = Sec(p, "VIDEO CODEC")
         sec.pack(fill="x", pady=(0, 10))
         vc = tk.Frame(sec, bg=BG2)
@@ -2874,32 +2902,6 @@ class App(tk.Tk):
             _cb = hchk(f, txt, self.v[key])
             _cb.pack(anchor="w")
             add_tip(_cb, tip)
-
-        # CS2 window mode (HLAE only — injected into extraArgs)
-        tk.Frame(self._hlae_sec, height=1, bg=BORDER).pack(fill="x", pady=(10, 6))
-        wm_frm = tk.Frame(self._hlae_sec, bg=BG2)
-        wm_frm.pack(fill="x", pady=(0, 6))
-        _wm_lbl = mlabel(wm_frm, "CS2 window mode")
-        _wm_lbl.pack(anchor="w")
-        add_tip(_wm_lbl,
-                "Launch flag injected into CS2 via HLAE extraArgs.\n"
-                "None = does not change current mode.\n"
-                "Borderless windowed = -windowed -noborder\n"
-                "  (recommended for recording behind other windows).\n"
-                "⚠ Only applies with RecSys = HLAE.")
-        wm_radios = tk.Frame(wm_frm, bg=BG2)
-        wm_radios.pack(anchor="w", pady=(4, 0))
-        for lbl, val in [("None", "none"), ("Fullscreen", "fullscreen"),
-                         ("Windowed", "windowed"), ("Borderless", "noborder")]:
-            hradio(wm_radios, lbl, self.v["cs2_window_mode"], val).pack(side="left", padx=(0, 8))
-
-        _min_row = tk.Frame(self._hlae_sec, bg=BG2)
-        _min_row.pack(fill="x", pady=(4, 0))
-        _min_cb = hchk(_min_row, "Minimize CS2 on launch", self.v["cs2_minimize"])
-        _min_cb.pack(side="left")
-        add_tip(_min_cb,
-                "Automatically minimizes CS2 window as soon as it appears.\n"
-                "Requires pywin32 (pip install pywin32). Ignored otherwise.")
 
         # Args CLI additionnels
         wdl_row = tk.Frame(self._hlae_sec, bg=BG2)
