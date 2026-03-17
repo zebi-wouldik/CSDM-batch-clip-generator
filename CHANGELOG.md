@@ -5,6 +5,12 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v79]
+### Added
+- **Fix scope FOV** checkbox in HLAE OPTIONS (enabled by default). Injects `+mirv_fov handleZoom enabled 1` into HLAE extraArgs. Without this, setting a custom FOV via HLAE overrides the zoom FOV when a player uses a scoped weapon (AWP, SSG 08, SCAR-20, G3SG1) — the scope appears at the custom FOV instead of the correct zoomed-in FOV. This is the only CS2-specific HLAE fix recommended by the official HLAE documentation and the community; `mirv_fix animations` was removed from HLAE as CS2 now handles animation smoothing natively. Saved in config, included in Video presets, logged in batch header as `ScopeFOV:fix`.
+
+---
+
 ## [v78]
 ### Fixed
 - **CS mode: "Game error" on every demo** — root cause was a bad demo file, not the minimize watcher. The `cs2_minimize` watcher works in both HLAE and CS modes and is left unchanged.

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v78"""
+"""CSDM Batch Clips Generator v79"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v78"
+APP_VERSION = "v79"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -303,6 +303,7 @@ DEFAULT_CONFIG = {
     "hlae_slow_motion": 100,   # % of speed : 100 = normal, 50 = half-speed
     "hlae_afx_stream": False,  # record separate HLAE AFX streams
     "hlae_no_spectator_ui": True,
+    "hlae_fix_scope_fov": True,   # mirv_fov handleZoom enabled 1 — fixes scope FOV zoom override
     "hlae_extra_args": "",
     "hlae_workshop_download": False,
     # CS2 physics (injected as console commands via extraArgs)
@@ -341,7 +342,7 @@ PRESET_KEYS = {
               "death_notices_duration", "show_only_death_notices", "concatenate_sequences",
               "subfolder_per_demo", "true_view",
               "hlae_fov", "hlae_slow_motion", "hlae_afx_stream",
-              "hlae_no_spectator_ui", "hlae_workshop_download",
+              "hlae_no_spectator_ui", "hlae_fix_scope_fov", "hlae_workshop_download",
               "hlae_extra_args",
               "phys_ragdoll_gravity", "phys_ragdoll_scale", "phys_ragdoll_enable",
               "phys_sv_gravity", "phys_blood", "phys_dynamic_lighting"],
@@ -1170,7 +1171,7 @@ class App(tk.Tk):
         bool_keys = ["use_config_file_mode", "close_game_after", "show_only_death_notices",
                       "concatenate_sequences", "subfolder_per_demo", "true_view", "tag_enabled",
                       "hlae_afx_stream", "hlae_no_spectator_ui",
-                      "hlae_workshop_download",
+                      "hlae_fix_scope_fov", "hlae_workshop_download",
                       "headshots_only", "include_suicides", "show_xray",
                       "kill_mod_through_smoke", "kill_mod_no_scope", "kill_mod_wall_bang",
                       "kill_mod_airborne", "kill_mod_assisted_flash", "kill_mod_collateral",
@@ -2841,6 +2842,12 @@ class App(tk.Tk):
              "Records separate passes (color, depth, stencil) for compositing."),
             ("No spectator UI", "hlae_no_spectator_ui",
              "Hides spectator mode HUD elements for a cleaner render."),
+            ("Fix scope FOV",   "hlae_fix_scope_fov",
+             "Injects: mirv_fov handleZoom enabled 1\n"
+             "Prevents mirv_fov from overriding the zoom FOV when a player\n"
+             "uses a scoped weapon (AWP, SSG 08, SCAR-20, G3SG1).\n"
+             "Without this, scoped shots appear at the custom FOV instead of\n"
+             "the correct zoomed FOV. Recommended: ON."),
         ]:
             _cb = hchk(bool_opts, txt, self.v[key])
             _cb.pack(side="left", padx=(0, 4))
@@ -5179,6 +5186,10 @@ class App(tk.Tk):
                 _spec_cmd = "+cl_draw_only_deathnotices 1"
                 if _spec_cmd not in extra:
                     extra = (_spec_cmd + " " + extra).strip()
+            if cfg.get("hlae_fix_scope_fov", True):
+                _scope_cmd = "+mirv_fov handleZoom enabled 1"
+                if _scope_cmd not in extra:
+                    extra = (_scope_cmd + " " + extra).strip()
             if cfg.get("hlae_workshop_download", False):
                 dl_arg = "+cl_downloadfilter all"
                 if dl_arg not in extra:
@@ -5784,6 +5795,8 @@ class App(tk.Tk):
             hlae_info = f" | FOV:{fov}"
             if int(sm) != 100:
                 hlae_info += f" Slow:{sm}%"
+            if cfg.get("hlae_fix_scope_fov", True):
+                hlae_info += " | ScopeFOV:fix"
             # Non-default physics
             phys_parts = []
             rg = cfg.get("phys_ragdoll_gravity", 600)
