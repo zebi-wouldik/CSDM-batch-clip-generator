@@ -7,7 +7,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [v78]
 ### Fixed
-- **CS mode: "Game error" on every demo** — root cause identified: `cs2_minimize` watcher was firing in CS mode. In CS mode, CS2 plays the demo interactively with the full demo viewer UI; minimizing the window during replay causes CSDM to lose the CS2 process and report "Game error". The watcher is now guarded with `recsys == "HLAE"` — it never activates in CS mode.
+- **CS mode: "Game error" on every demo** — root cause was a bad demo file, not the minimize watcher. The `cs2_minimize` watcher works in both HLAE and CS modes and is left unchanged.
 - **CS mode / HLAE mode UI bleed** — `_on_recsys_change` only changed the section title color, leaving all HLAE widgets (FOV, slow-motion, physics, window mode, minimize) permanently visible and editable even in CS mode. It now calls `pack_forget()` on the entire `_hlae_sec` when CS is selected, and restores it with `pack()` when HLAE is selected.
 - **Window mode and Minimize on launch in wrong section** — both widgets were in RESOLUTION & FRAMERATE, always visible regardless of recsys. Moved into the HLAE section (hidden in CS mode). Tooltips updated to clarify HLAE-only behavior.
 

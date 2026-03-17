@@ -2899,9 +2899,7 @@ class App(tk.Tk):
         _min_cb.pack(side="left")
         add_tip(_min_cb,
                 "Automatically minimizes CS2 window as soon as it appears.\n"
-                "Requires pywin32 (pip install pywin32). Ignored otherwise.\n"
-                "⚠ Only applies with RecSys = HLAE.\n"
-                "  In CS mode, minimizing CS2 during replay causes 'Game error'.")
+                "Requires pywin32 (pip install pywin32). Ignored otherwise.")
 
         # Args CLI additionnels
         wdl_row = tk.Frame(self._hlae_sec, bg=BG2)
@@ -5327,8 +5325,7 @@ class App(tk.Tk):
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           text=True, encoding="utf-8", errors="replace", bufsize=1)
             # Start CS2 minimize watcher if the option is enabled
-            if (getattr(self, "v", {}) and self.v.get("cs2_minimize") and self.v["cs2_minimize"].get()
-                    and self.v.get("recsys") and self.v["recsys"].get() == "HLAE"):
+            if getattr(self, "v", {}) and self.v.get("cs2_minimize") and self.v["cs2_minimize"].get():
                 self._start_cs2_minimize_watcher()
             for line in iter(self._proc.stdout.readline, ""):
                 line = line.rstrip("\n\r")
