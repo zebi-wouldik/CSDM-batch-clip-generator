@@ -7,9 +7,11 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [v74]
 ### Added
-- **TROIS TAP auto-toggle**: checking both TROIS SHOT + ONE TAP simultaneously auto-enables TROIS TAP and clears the two individual modifiers. Unchecking TROIS TAP restores both. Fully symmetric and bidirectional.
-- **DP2 threads** slider in Tools → Performance (1–8, default 2): parallel demo pre-parsing via `ThreadPoolExecutor` before the main batch/preview loop. Logs `⚡ Pre-parsing N demo(s) with X thread(s)…` / `✓ Pre-parse done`.
-- Per-demo parse cache (`_dp2_cache`): each `.dem` parsed at most once per run, even when TROIS TAP chains both filters. Reset at the start of every batch and preview run.
+- **TROIS TAP auto-toggle**: checking both TROIS SHOT + ONE TAP simultaneously auto-enables TROIS TAP and clears the two individual modifiers. Unchecking TROIS TAP does not restore them — it simply disengages. Logic split into `_engage_trois_tap()` / `_disengage_trois_tap()` helpers.
+- **DP2 threads** slider in Tools → Performance (1–8, default 2): parallel demo pre-parsing via `ThreadPoolExecutor`. Logs `⚡ Pre-parsing N demo(s) with X thread(s)…` / `✓ Pre-parse done`.
+- Per-demo parse cache (`_dp2_cache`): each `.dem` parsed at most once per run, even when TROIS TAP chains both filters. Protected by `threading.Lock` (`_dp2_cache_lock`) against race conditions during parallel pre-parse.
+- `_preparse_dp2(cfg, demo_paths)`: centralized pre-parse helper called by both `_worker` and `_dry_run` — replaces duplicated inline blocks.
+- **Tag selection persisted**: active (checked) tags are now saved in config as `active_tags` (list of names) and restored on startup. Uses deferred restoration via `_pending_restore_tags` if the DB is not yet connected when config loads.
 
 ### Changed
 - **UI fully translated to English** — all remaining French strings:
@@ -24,34 +26,36 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Error logs: Erreur → Error, CLI introuvable → CLI not found, Schema inconnu → Unknown schema, introuvable → not found, Table de jonction introuvable → Junction table not found, Modificateurs introuvables → Modifiers not found, Col demo introuvable → Demo path column not found
   - TAGS/config logs: Erreur BDD → DB error, Erreur config → Config error
   - Tag log: Tag cree → Tag created
-- **Log labels corrected**: TROIS SHOT / TROIS TAP filters no longer log "lucky" / "lucky tap" — now correctly show "TROIS SHOT" / "TROIS TAP"
-- `cs2_window_mode` default value: `"aucun"` → `"none"` (internal value, not visible in UI)
+- **Log labels corrected**: TROIS SHOT / TROIS TAP filters no longer log "lucky" / "lucky tap"
+- `cs2_window_mode` default value: `"aucun"` → `"none"`
 - `_WEAPON_CATEGORIES` key aligned: `"Grenades & Utilities"` → `"Grenades & Utility"` to match WEAPON_ICONS
+- `bisect`, `concurrent.futures`, `collections.defaultdict` moved to top-level imports — no longer re-imported on every filter call
+- In-script changelog removed — all history now in this file only
 
 ### Removed
-- **Skip Intro CS2** option removed: `+novid` / `skipIntro` has no effect in CS2. Removed from DEFAULT_CONFIG, bool_keys, PRESET_KEYS, UI checkbox, and JSON build (`hlae_options["skipIntro"]`).
+- **Skip Intro CS2** option: `+novid` / `skipIntro` has no effect in CS2. Removed from DEFAULT_CONFIG, bool_keys, PRESET_KEYS, UI checkbox, and JSON build.
 
 ### Fixed
-- **NameError `evt` not defined** (v73 bugfix carried over): loop variable `events` shadowing the parameter in `_trois_shot_filter`, `_no_trois_shot_filter`, `_one_tap_filter` — all corrected to `for evt in events`.
+- **NameError `evt` not defined**: loop variable `events` shadowed the parameter in `_trois_shot_filter`, `_no_trois_shot_filter`, `_one_tap_filter` — corrected to `for evt in events`
+- **TROIS TAP deactivation**: unchecking TROIS TAP no longer incorrectly restores TROIS SHOT + ONE TAP
 
 ### Performance
 - `_trois_shot_filter`: linear `_is_lucky` scan replaced by bisect index `{(sid, wpn_suffix) → [(tick, acc, scoped, vel)]}` — O(log n) per kill instead of O(n)
-- `itertuples()` replaced by `to_numpy()` in both `_trois_shot_filter` and `_one_tap_filter` — 5–10× faster DataFrame iteration on large demos
+- `itertuples()` replaced by `to_numpy()` in both filters — 5–10× faster DataFrame iteration on large demos
+- `_dp2_cache_lock`: thread-safe cache prevents duplicate parsing when multiple threads hit the same demo simultaneously
 
 ---
 
 ## [v73]
-### Added
-- **DP2 threads** slider in Tools → Performance (1–8, default 2): parallel demo pre-parsing via `ThreadPoolExecutor` before the main batch loop
-- Per-demo parse cache (`_dp2_cache`): each `.dem` is parsed at most once per run, even when TROIS TAP chains both TROIS SHOT and ONE TAP filters
+> All v73 changes are included in v74. v73 was never shipped as a standalone release.
 
 ### Fixed
-- **NameError `evt` not defined** in `_trois_shot_filter`, `_no_trois_shot_filter`, `_one_tap_filter`: loop variable was renamed `events` during translation, shadowing the parameter while the body still referenced `evt`
+- **NameError `evt` not defined** in `_trois_shot_filter`, `_no_trois_shot_filter`, `_one_tap_filter`: loop variable `events` shadowed the parameter while the body still referenced `evt` — introduced during a translation pass by a previous session
 
 ### Performance
-- `_trois_shot_filter`: linear `_is_lucky` scan replaced by bisect index `{(sid, wpn_suffix) → [(tick, acc, scoped, vel)]}` — O(log n) per kill instead of O(n)
-- `itertuples()` replaced by `to_numpy()` in both `_trois_shot_filter` and `_one_tap_filter` — 5–10× faster DataFrame iteration on large demos
-- Pre-parse step logs progress (`⚡ Pre-parsing N demo(s) with X thread(s)…` / `✓ Pre-parse done`) for both batch and preview runs
+- `_trois_shot_filter`: linear scan replaced by bisect index `{(sid, wpn_suffix) → [(tick,…)]}` — O(log n) per kill instead of O(n)
+- `itertuples()` replaced by `to_numpy()` in both filters — 5–10× faster
+- Per-demo parse cache and parallel pre-parsing first introduced here, finalized in v74
 
 ---
 
@@ -106,7 +110,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v67] — 2025-05 *(applied as external patch)*
+## [v67] *(applied as external patch)*
 ### Removed
 - `stop_guard_event` — no longer needed after Phase 2 removal.
 
