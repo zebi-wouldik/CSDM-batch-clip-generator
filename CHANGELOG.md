@@ -5,6 +5,26 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v81]
+### Fixed
+- **Inaccurate CS mode tooltip** — the claims added in v78/v80 were still partially wrong:
+  - "slow-motion not supported in CS mode" — **false**: `host_timescale` is a native CS2 command that works without HLAE.
+  - "physics overrides not supported in CS mode" — **false**: `cl_ragdoll_gravity`, `ragdoll_gravity_scale`, `sv_gravity`, `cl_ragdoll_physics_enable`, `violence_hblood`, `r_dynamic` are all native CS2 console commands.
+  - "window mode not supported in CS mode" — **false**: `-windowed`, `-noborder`, `-fullscreen` are standard CS2 launch options.
+  - Corrected to: these are **native CS2 features that work in CS mode but are not injected by this tool** (the CSDM JSON has no `csOptions` equivalent of `hlaeOptions` to pass them through).
+  - What IS genuinely HLAE-exclusive: `mirv_fov` (custom FOV), AFX streams, `hideSpectatorUi`, scope FOV fix (`mirv_fov handleZoom`), and all `mirv_*` commands.
+
+---
+
+## [v80]
+### Fixed
+- **Incorrect CS mode descriptions** — two claims added in v78 were factually wrong and have been corrected:
+  1. *"CS2 plays the demo interactively from start to finish — the demo viewer UI is visible"* — removed. According to the official CSDM documentation, CS mode uses CS2's `startmovie` command to generate raw files (.tga + .wav), exactly like HLAE does internally. There is no difference in how CS2 launches or plays the demo between the two modes.
+  2. *"do NOT minimize CS2 during recording"* in the batch log warning — removed. The `cs2_minimize` watcher works in both modes and minimizing is safe in both.
+- Tooltip now correctly states: `CS = native CSDM recording via CS2's startmovie command`.
+
+---
+
 ## [v79]
 ### Added
 - **Fix scope FOV** checkbox in HLAE OPTIONS (enabled by default). Injects `+mirv_fov handleZoom enabled 1` into HLAE extraArgs. Without this, setting a custom FOV via HLAE overrides the zoom FOV when a player uses a scoped weapon (AWP, SSG 08, SCAR-20, G3SG1) — the scope appears at the custom FOV instead of the correct zoomed-in FOV. This is the only CS2-specific HLAE fix recommended by the official HLAE documentation and the community; `mirv_fix animations` was removed from HLAE as CS2 now handles animation smoothing natively. Saved in config, included in Video presets, logged in batch header as `ScopeFOV:fix`.

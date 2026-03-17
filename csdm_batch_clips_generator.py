@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v79"""
+"""CSDM Batch Clips Generator v81"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v79"
+APP_VERSION = "v81"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -2576,11 +2576,13 @@ class App(tk.Tk):
             ("Encoder", ENCODER_OPTIONS, "encoder", "FFmpeg = standard. VirtualDub = legacy."),
             ("System",  RECSYS_OPTIONS,  "recsys",
              "HLAE = injects via HLAE into CS2 (recommended — full options).\n"
-             "CS = native CSDM recording without HLAE.\n\n"
-             "⚠ CS mode does NOT support: FOV, slow-motion, physics, window mode,\n"
-             "  or any HLAE options. All HLAE section settings are ignored.\n"
-             "⚠ In CS mode, CS2 plays the demo interactively from start to finish —\n"
-             "  the demo viewer UI is visible and the game cannot be minimized safely."),
+             "CS = native CSDM recording via CS2's startmovie command.\n\n"
+             "⚠ HLAE-exclusive features not available in CS mode:\n"
+             "  custom FOV (mirv_fov), AFX streams, HLAE spectator UI,\n"
+             "  scope FOV fix, and other mirv_* commands.\n"
+             "ℹ Slow-motion, physics, and window mode are native CS2 features\n"
+             "  that work in CS mode but are NOT injected by this tool\n"
+             "  (no equivalent of hlaeOptions in CS mode JSON)."),
             ("Output", REC_OUTPUT_OPTIONS, "recording_output", "video / images / both.")
         ]):
             f = tk.Frame(rg, bg=BG2)
@@ -2810,7 +2812,7 @@ class App(tk.Tk):
         self._hlae_sec.pack(fill="x", pady=(0, 12))
         desc_label(self._hlae_sec,
                    "These options are passed to HLAE via CSDM.\n"
-                   "They have no effect if RecSys = CS.\n"
+                   "They are not injected in CS mode (HLAE-exclusive features).\n"
                    "ℹ Audio is captured directly by HLAE via startmovie (bypasses Windows mixer) —\n"
                    "  muting CS2 in Windows does not affect clip audio.\n"
                    "⚠ CS2 console may briefly appear during recording: this is normal.").pack(fill="x")
@@ -5813,8 +5815,8 @@ class App(tk.Tk):
         self._alog(f"Encoder: {cfg['encoder']} | RecSys: {recsys}{hlae_info} | TrueView: {'ON' if tv else 'OFF'} | Perspective: {PERSP_LABELS.get(perspective, perspective)}{tag_str}", "info")
         if recsys == "CS":
             self._alog(
-                "  ℹ RecSys CS: HLAE options ignored. CS2 plays the demo "
-                "interactively — do NOT minimize CS2 during recording.", "warn")
+                "  ℹ RecSys CS: HLAE options ignored. "
+                "CS2 uses startmovie to generate raw files.", "warn")
         if cfg.get("headshots_only"):
             self._alog("🎯 Headshots only", "info")
         if not cfg.get("include_suicides", True):
