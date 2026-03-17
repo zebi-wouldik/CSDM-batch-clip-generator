@@ -94,8 +94,8 @@ The **Switch delay** slider (visible in Both mode only) controls how many second
 ## Installation
 
 ```bash
-git clone https://github.com/youruser/csdm-batch.git
-cd csdm-batch
+git clone https://github.com/zebi-wouldik/CSDM-batch-clip-generator.git
+cd CSDM-batch-clip-generator
 pip install psycopg2-binary demoparser2 pywin32
 python csdm_batch_clips_generator.py
 ```
