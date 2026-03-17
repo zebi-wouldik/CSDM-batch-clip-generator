@@ -121,3 +121,4 @@ All settings are saved automatically to `config.json` in the script directory. U
 - [CS Demo Manager](https://cs-demo-manager.com/) by akiver — the CLI and HLAE integration this tool wraps
 - [demoparser2](https://github.com/LaihoE/demoparser) by LaihoE — fast Rust-powered CS2 demo parsing
 - [HLAE](https://www.advancedfx.org/) — the recording engine
+- ~~Myself~~ Built using Claude Sonnet 4.6, my code knowledge is equal to the void space separating our planet from the sun. The description is also made by Claude since it knows the script better than me. Do as you wish with it.
