@@ -5,6 +5,25 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v78]
+### Fixed
+- **CS mode: "Game error" on every demo** — root cause identified: `cs2_minimize` watcher was firing in CS mode. In CS mode, CS2 plays the demo interactively with the full demo viewer UI; minimizing the window during replay causes CSDM to lose the CS2 process and report "Game error". The watcher is now guarded with `recsys == "HLAE"` — it never activates in CS mode.
+- **CS mode / HLAE mode UI bleed** — `_on_recsys_change` only changed the section title color, leaving all HLAE widgets (FOV, slow-motion, physics, window mode, minimize) permanently visible and editable even in CS mode. It now calls `pack_forget()` on the entire `_hlae_sec` when CS is selected, and restores it with `pack()` when HLAE is selected.
+- **Window mode and Minimize on launch in wrong section** — both widgets were in RESOLUTION & FRAMERATE, always visible regardless of recsys. Moved into the HLAE section (hidden in CS mode). Tooltips updated to clarify HLAE-only behavior.
+
+### Added
+- **Per-demo extended logging** in batch run: each demo now logs sequence tick ranges and duration (`seq 1/2  tick 1234→5678  (6.0s)`), active RecSys/Output/TrueView/Concat settings, and HLAE options actually injected (FOV, timescale, AFX, extraArgs).
+- **CS mode runtime warning** in batch log: `ℹ RecSys CS: HLAE options ignored. CS2 plays the demo interactively — do NOT minimize CS2 during recording.`
+- **RECORDING SYSTEM tooltip for CS** now documents exactly what CS mode does and doesn't support (no FOV, no slow-motion, no physics, no window mode; demo plays from start to finish interactively).
+- **Tooltips in TIMING & ROBUSTNESS**: Seconds BEFORE, Seconds AFTER, Close CS2 after demo, Retries, Delay, Demo pause, Order — all now have hover tooltips with recommended values and behavior notes.
+- `_slider()` now returns its frame so `add_tip()` can be attached to it.
+
+### Changed
+- **HLAE section fully hidden in CS mode** (not just greyed-out title). Switching back to HLAE restores it.
+- Remaining French in `_build_json` camera comments translated: `Notre joueur meurt`, `Notre joueur tue`, `Phase victim`, `Cible initiale`, `title="Couleur"`.
+
+---
+
 ## [v77]
 ### Changed
 - **demoparser2 architecture fully refactored** — single point of entry, partial persistent cache:

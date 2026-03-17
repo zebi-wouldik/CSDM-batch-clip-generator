@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v77"""
+"""CSDM Batch Clips Generator v78"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v77"
+APP_VERSION = "v78"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -657,7 +657,7 @@ class ColorPickerDialog(tk.Toplevel):
             pass
 
     def _sys(self):
-        r = colorchooser.askcolor(color=self._color, parent=self, title="Couleur")
+        r = colorchooser.askcolor(color=self._color, parent=self, title="Color")
         if r and r[1]:
             self._color = r[1]; self._hex_var.set(r[1]); self._upd()
 
@@ -2418,24 +2418,44 @@ class App(tk.Tk):
         tg.pack(fill="x")
         tg.columnconfigure(0, weight=1)
         tg.columnconfigure(1, weight=1)
-        self._slider(tg, "Seconds BEFORE", self.v["before"], 1, 15, 0, 0)
-        self._slider(tg, "Seconds AFTER", self.v["after"],  1, 15, 0, 1)
+        _sb = self._slider(tg, "Seconds BEFORE", self.v["before"], 1, 15, 0, 0)
+        add_tip(_sb, "Seconds of footage recorded before the event tick.\n"
+                     "In 'Both' mode, victim_pre_s is added on top of this value.")
+        _sa = self._slider(tg, "Seconds AFTER", self.v["after"],  1, 15, 0, 1)
+        add_tip(_sa, "Seconds of footage recorded after the event tick.")
 
         tr = tk.Frame(sec, bg=BG2)
         tr.pack(fill="x", pady=(4, 0))
         _cs2_cb = hchk(tr, "Close CS2 after demo", self.v["close_game_after"])
         _cs2_cb.pack(side="left")
-        add_tip(_cs2_cb, "closeGameAfterRecording — closes CS2 after each recorded demo.")
+        add_tip(_cs2_cb, "closeGameAfterRecording — closes CS2 after each recorded demo.\n"
+                         "Recommended: ON. Leaving CS2 open between demos can cause\n"
+                         "instability on long batches.")
 
         rg = tk.Frame(sec, bg=BG2)
         rg.pack(fill="x", pady=(6, 0))
-        mlabel(rg, "Retries:").pack(side="left")
+        _ret_lbl = mlabel(rg, "Retries:")
+        _ret_lbl.pack(side="left")
+        add_tip(_ret_lbl, "Number of times to retry a demo if CSDM reports 'Game error'\n"
+                          "or a crash. Each retry re-launches CS2 from scratch.\n"
+                          "Recommended: 2.")
         sentry(rg, self.v["retry_count"], width=3).pack(side="left", padx=(4, 0), ipady=4)
-        mlabel(rg, "  Delay (s):").pack(side="left", padx=(8, 0))
+        _del_lbl = mlabel(rg, "  Delay (s):")
+        _del_lbl.pack(side="left", padx=(8, 0))
+        add_tip(_del_lbl, "Seconds to wait between retries.\n"
+                          "Give CS2 time to fully close before re-launching.\n"
+                          "Recommended: 15.")
         sentry(rg, self.v["retry_delay"], width=3).pack(side="left", padx=(4, 0), ipady=4)
-        mlabel(rg, "  Demo pause (s):").pack(side="left", padx=(8, 0))
+        _pause_lbl = mlabel(rg, "  Demo pause (s):")
+        _pause_lbl.pack(side="left", padx=(8, 0))
+        add_tip(_pause_lbl, "Seconds to wait between demos (successful or failed).\n"
+                            "Helps CS2 fully release resources before the next launch.\n"
+                            "Recommended: 3–5.")
         sentry(rg, self.v["delay_between_demos"], width=3).pack(side="left", padx=(4, 0), ipady=4)
-        mlabel(rg, "  Order:").pack(side="left", padx=(16, 0))
+        _ord_lbl = mlabel(rg, "  Order:")
+        _ord_lbl.pack(side="left", padx=(16, 0))
+        add_tip(_ord_lbl, "Chronological: demos processed oldest-to-newest.\n"
+                          "Random: demos shuffled before the batch starts.")
         for lbl, val in [("Chrono","chrono"),("Random 🎲","random")]:
             hradio(rg, lbl, self.v["clip_order"], val).pack(side="left", padx=(4, 0))
 
@@ -2553,7 +2573,13 @@ class App(tk.Tk):
         rg.columnconfigure(2, weight=1)
         for col, (title, opts, key, tip) in enumerate([
             ("Encoder", ENCODER_OPTIONS, "encoder", "FFmpeg = standard. VirtualDub = legacy."),
-            ("System", RECSYS_OPTIONS, "recsys", "HLAE = injects into CS2. CS = native."),
+            ("System",  RECSYS_OPTIONS,  "recsys",
+             "HLAE = injects via HLAE into CS2 (recommended — full options).\n"
+             "CS = native CSDM recording without HLAE.\n\n"
+             "⚠ CS mode does NOT support: FOV, slow-motion, physics, window mode,\n"
+             "  or any HLAE options. All HLAE section settings are ignored.\n"
+             "⚠ In CS mode, CS2 plays the demo interactively from start to finish —\n"
+             "  the demo viewer UI is visible and the game cannot be minimized safely."),
             ("Output", REC_OUTPUT_OPTIONS, "recording_output", "video / images / both.")
         ]):
             f = tk.Frame(rg, bg=BG2)
@@ -2618,7 +2644,7 @@ class App(tk.Tk):
                                          fg=ORANGE, bg=BG2)
         self._res_preview_lbl.pack(anchor="w")
 
-        # ── Row 2: FPS + Window mode ─────────────────────────────────────────
+        # ── Row 2: FPS ───────────────────────────────────────────────────────
         bot_row = tk.Frame(sec, bg=BG2)
         bot_row.pack(fill="x", pady=(12, 0))
 
@@ -2626,34 +2652,6 @@ class App(tk.Tk):
         fps_frm.pack(side="left", padx=(0, 20))
         mlabel(fps_frm, "FPS").pack(anchor="w")
         scombo(fps_frm, self.v["framerate"], FRAMERATES, 6).pack(anchor="w", pady=(4, 0))
-
-        tk.Frame(bot_row, bg=BORDER, width=1).pack(side="left", fill="y", padx=(0, 20))
-
-        # CS2 window mode (moved here from original grid)
-        wm_frm = tk.Frame(bot_row, bg=BG2)
-        wm_frm.pack(side="left", padx=(0, 20))
-        _wm_lbl = mlabel(wm_frm, "CS2 window mode")
-        _wm_lbl.pack(anchor="w")
-        add_tip(_wm_lbl,
-                "Launch flag injected into CS2 arguments.\n"
-                "None = does not change current mode.\n"
-                "Borderless windowed = -windowed -noborder (recommended for recording behind other windows).")
-        for lbl, val in [
-            ("None",                    "none"),
-            ("Fullscreen",              "fullscreen"),
-            ("Windowed",                  "windowed"),
-            ("Borderless windowed",    "noborder"),
-        ]:
-            hradio(wm_frm, lbl, self.v["cs2_window_mode"], val).pack(anchor="w", pady=(2, 0))
-
-        _min_row2 = tk.Frame(wm_frm, bg=BG2)
-        _min_row2.pack(anchor="w", pady=(6, 0))
-        _min_cb2 = hchk(_min_row2, "Minimize on launch", self.v["cs2_minimize"])
-        _min_cb2.pack(side="left")
-        add_tip(_min_cb2,
-                "Automatically minimizes CS2 window as soon as it appears.\n"
-                "Requires pywin32 (pip install pywin32).\n"
-                "Without pywin32: silently ignored.")
 
         sec = Sec(p, "VIDEO CODEC")
         sec.pack(fill="x", pady=(0, 10))
@@ -2877,6 +2875,34 @@ class App(tk.Tk):
             _cb.pack(anchor="w")
             add_tip(_cb, tip)
 
+        # CS2 window mode (HLAE only — injected into extraArgs)
+        tk.Frame(self._hlae_sec, height=1, bg=BORDER).pack(fill="x", pady=(10, 6))
+        wm_frm = tk.Frame(self._hlae_sec, bg=BG2)
+        wm_frm.pack(fill="x", pady=(0, 6))
+        _wm_lbl = mlabel(wm_frm, "CS2 window mode")
+        _wm_lbl.pack(anchor="w")
+        add_tip(_wm_lbl,
+                "Launch flag injected into CS2 via HLAE extraArgs.\n"
+                "None = does not change current mode.\n"
+                "Borderless windowed = -windowed -noborder\n"
+                "  (recommended for recording behind other windows).\n"
+                "⚠ Only applies with RecSys = HLAE.")
+        wm_radios = tk.Frame(wm_frm, bg=BG2)
+        wm_radios.pack(anchor="w", pady=(4, 0))
+        for lbl, val in [("None", "none"), ("Fullscreen", "fullscreen"),
+                         ("Windowed", "windowed"), ("Borderless", "noborder")]:
+            hradio(wm_radios, lbl, self.v["cs2_window_mode"], val).pack(side="left", padx=(0, 8))
+
+        _min_row = tk.Frame(self._hlae_sec, bg=BG2)
+        _min_row.pack(fill="x", pady=(4, 0))
+        _min_cb = hchk(_min_row, "Minimize CS2 on launch", self.v["cs2_minimize"])
+        _min_cb.pack(side="left")
+        add_tip(_min_cb,
+                "Automatically minimizes CS2 window as soon as it appears.\n"
+                "Requires pywin32 (pip install pywin32). Ignored otherwise.\n"
+                "⚠ Only applies with RecSys = HLAE.\n"
+                "  In CS mode, minimizing CS2 during replay causes 'Game error'.")
+
         # Args CLI additionnels
         wdl_row = tk.Frame(self._hlae_sec, bg=BG2)
         wdl_row.pack(fill="x", pady=(8, 0))
@@ -2941,7 +2967,10 @@ class App(tk.Tk):
     def _on_recsys_change(self, *_):
         try:
             is_hlae = self.v["recsys"].get() == "HLAE"
-            self._hlae_sec.configure(fg=ORANGE if is_hlae else MUTED)
+            if is_hlae:
+                self._hlae_sec.pack(fill="x", pady=(0, 12))
+            else:
+                self._hlae_sec.pack_forget()
         except Exception:
             pass
 
@@ -4389,6 +4418,7 @@ class App(tk.Tk):
                  troughcolor=BG3, activebackground=ORANGE, highlightthickness=0, bd=0,
                  showvalue=False, cursor="hand2",
                  command=lambda v: lbl.config(text=f"{int(float(v))}s")).pack(fill="x", pady=(2, 0))
+        return f
 
     def _calc_summary(self, all_events, cfg):
         """Return (nb_demos, nb_clips, total_sec, avg_sec) from events and config."""
@@ -4987,10 +5017,10 @@ class App(tk.Tk):
             if sorted_evts:
                 first_ev = sorted_evts[0]
                 if first_ev.get("type") == "death" and first_ev.get("victim_sid") in sids_active:
-                    # Notre joueur meurt : on le suit lui
+                    # Our player dies: follow them
                     target_sid = first_ev["victim_sid"]
                 elif first_ev.get("victim_sid"):
-                    # Notre joueur tue : on suit sa victim
+                    # Our player kills: follow the victim
                     target_sid = first_ev["victim_sid"]
 
             # A single camera point at start_tick is enough — CSDM holds the target
@@ -5017,7 +5047,7 @@ class App(tk.Tk):
             for ev in sorted_evts:
                 ev_tick = ev["tick"]
                 if ev.get("type") == "death" and ev.get("victim_sid") in sids_active:
-                    # Notre joueur meurt : on le suit lui tout du long
+                    # Our player dies: follow them throughout
                     our_sid = ev["victim_sid"]
                     timeline.append((seq["start_tick"], our_sid))
                 else:
@@ -5025,7 +5055,7 @@ class App(tk.Tk):
                     vsid = ev.get("victim_sid") or primary_sid
                     # Killer phase: from the start of the sequence
                     timeline.append((seq["start_tick"], ksid))
-                    # Phase victim : victim_pre_ticks avant le kill
+                    # Victim phase: switch victim_pre_ticks before the kill
                     switch_tick = max(seq["start_tick"], ev_tick - victim_pre_ticks)
                     timeline.append((switch_tick, vsid))
 
@@ -5036,7 +5066,7 @@ class App(tk.Tk):
                 deduped[t_entry] = tsid
             sorted_timeline = sorted(deduped.items())
 
-            # Cible initiale = notre killer (ou notre joueur)
+            # Initial target = our killer (or our player)
             first_ev = sorted_evts[0]
             if first_ev.get("type") == "death" and first_ev.get("victim_sid") in sids_active:
                 initial_sid = first_ev["victim_sid"]
@@ -5297,7 +5327,8 @@ class App(tk.Tk):
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           text=True, encoding="utf-8", errors="replace", bufsize=1)
             # Start CS2 minimize watcher if the option is enabled
-            if getattr(self, "v", {}) and self.v.get("cs2_minimize") and self.v["cs2_minimize"].get():
+            if (getattr(self, "v", {}) and self.v.get("cs2_minimize") and self.v["cs2_minimize"].get()
+                    and self.v.get("recsys") and self.v["recsys"].get() == "HLAE"):
                 self._start_cs2_minimize_watcher()
             for line in iter(self._proc.stdout.readline, ""):
                 line = line.rstrip("\n\r")
@@ -5768,6 +5799,10 @@ class App(tk.Tk):
             if phys_parts:
                 hlae_info += f" | Phys: {' '.join(phys_parts)}"
         self._alog(f"Encoder: {cfg['encoder']} | RecSys: {recsys}{hlae_info} | TrueView: {'ON' if tv else 'OFF'} | Perspective: {PERSP_LABELS.get(perspective, perspective)}{tag_str}", "info")
+        if recsys == "CS":
+            self._alog(
+                "  ℹ RecSys CS: HLAE options ignored. CS2 plays the demo "
+                "interactively — do NOT minimize CS2 during recording.", "warn")
         if cfg.get("headshots_only"):
             self._alog("🎯 Headshots only", "info")
         if not cfg.get("include_suicides", True):
@@ -5960,6 +5995,33 @@ class App(tk.Tk):
                 continue
 
             cj = self._build_json(dp, seqs, cfg)
+
+            # ── Extended logging ───────────────────────────────────────────────
+            tickrate = cfg.get("tickrate", 64)
+            for si, seq in enumerate(seqs, 1):
+                dur_ticks = seq["end_tick"] - seq["start_tick"]
+                dur_s = dur_ticks / tickrate if tickrate else 0
+                self._alog(
+                    f"  seq {si}/{len(seqs)}  tick {seq['start_tick']}→{seq['end_tick']}"
+                    f"  ({dur_s:.1f}s)", "dim")
+            self._alog(
+                f"  RecSys: {cfg.get('recsys','HLAE')} | "
+                f"Output: {cfg.get('recording_output','video')} | "
+                f"TrueView: {'ON' if cfg.get('true_view') else 'OFF'} | "
+                f"Concat: {'ON' if cfg.get('concatenate_sequences') else 'OFF'}",
+                "dim")
+            if cj.get("hlaeOptions"):
+                ho = cj["hlaeOptions"]
+                parts = []
+                if "mirv_fov" in ho:         parts.append(f"FOV={ho['mirv_fov']}")
+                if "host_timescale" in ho:   parts.append(f"Slow={ho['host_timescale']}")
+                if ho.get("afxStream"):      parts.append("AFX")
+                if ho.get("hideSpectatorUi"):parts.append("NoUI")
+                if ho.get("extraArgs"):      parts.append(f"args={ho['extraArgs'][:60]}")
+                if parts:
+                    self._alog(f"  HLAE: {' | '.join(parts)}", "dim")
+            # ──────────────────────────────────────────────────────────────────
+
             try:
                 tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="csdm_",
                                                    delete=False, encoding="utf-8")
