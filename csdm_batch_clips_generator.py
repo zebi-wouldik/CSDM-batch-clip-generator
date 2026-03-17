@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v76"""
+"""CSDM Batch Clips Generator v77"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v76"
+APP_VERSION = "v77"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -1217,7 +1217,7 @@ class App(tk.Tk):
         self._running = False
         self._stop_after_current = False
         self._proc = None
-        self._dp2_cache      = {}                  # {(filter, demo_path): data} — reset each run
+        self._dp2_cache      = {}                  # {demo_path: {"fire_detail": …, "fire_ticks": …}}
         self._dp2_cache_lock = threading.Lock()    # protects _dp2_cache during parallel pre-parse
         self._db_schema = {}
         self._db_col_types = {}
@@ -3157,94 +3157,19 @@ class App(tk.Tk):
     def _trois_shot_filter(self, demo_path, events, cfg):
         """Keep only lucky kills (TROIS SHOT filter).
 
-        Uses demoparser2 to read weapon_fire at the kill tick and evaluate
-        accuracy_penalty / is_scoped / velocity.
-        Returns the filtered list (may be empty).
-
-        v73 optimizations:
-          – Parse cache (_dp2_cache): each demo parsed at most once per run.
-          – Bisect index {(sid, wpn_suffix) → [(tick, acc, scoped, vel)]}: O(log n).
-          – to_numpy() instead of itertuples() for DataFrame iteration.
+        Reads weapon_fire data from _dp2_cache (populated by _dp2_parse_demo).
+        If the demo is not yet cached, triggers a synchronous parse as fallback.
         """
-        try:
-            from demoparser2 import DemoParser
-        except ImportError:
-            self._alog("  ⚠ TROIS SHOT: demoparser2 not installed (pip install demoparser2)", "warn")
-            return events
-
         if not os.path.isfile(demo_path):
             return events
 
-        # ── Parse / cache ────────────────────────────────────────────────────
-        cache_key = ("trois_shot", demo_path)
-        with self._dp2_cache_lock:
-            already = cache_key in self._dp2_cache
-        if not already:
-            try:
-                parser = DemoParser(demo_path)
-                fire_df = parser.parse_event(
-                    "weapon_fire",
-                    player=["is_scoped", "velocity_X", "velocity_Y",
-                            "accuracy_penalty", "player_steamid"],
-                    other=[],
-                )
-            except Exception as e:
-                self._alog(f"  ⚠ TROIS SHOT parse error ({Path(demo_path).name}): {e}", "warn")
-                return events
-
-            if fire_df is None or len(fire_df) == 0:
-                with self._dp2_cache_lock:
-                    self._dp2_cache[cache_key] = {}
-            else:
-                cols = list(fire_df.columns)
-                def _col(name):
-                    if name in cols: return name
-                    if f"user_{name}" in cols: return f"user_{name}"
-                    return None
-
-                col_sid   = _col("player_steamid") or _col("steamid")
-                col_acc   = _col("accuracy_penalty")
-                col_scope = _col("is_scoped")
-                col_vx    = _col("velocity_X")
-                col_vy    = _col("velocity_Y")
-
-                if not col_sid or not col_acc:
-                    self._alog("  ⚠ TROIS SHOT: columns not found in weapon_fire", "warn")
-                    with self._dp2_cache_lock:
-                        self._dp2_cache[cache_key] = {}
-                else:
-                    np_cols  = ["tick", "weapon", col_sid, col_acc]
-                    opt_cols = ([col_scope] if col_scope else []) + \
-                               ([col_vx]    if col_vx    else []) + \
-                               ([col_vy]    if col_vy    else [])
-                    arr = fire_df[np_cols + opt_cols].to_numpy()
-
-                    i_scope = 4                                if col_scope else None
-                    i_vx    = 4 + (1 if col_scope else 0)     if col_vx    else None
-                    i_vy    = 4 + (1 if col_scope else 0) \
-                                + (1 if col_vx    else 0)     if col_vy    else None
-
-                    fire_index = defaultdict(list)
-                    for row in arr:
-                        tick   = int(row[0]   or 0)
-                        wpn    = str(row[1]   or "").lower()
-                        sid    = str(row[2]   or "")
-                        acc    = float(row[3] or 0)
-                        scoped = bool(row[i_scope]) if i_scope is not None else False
-                        vx     = float(row[i_vx])   if i_vx   is not None else 0.0
-                        vy     = float(row[i_vy])   if i_vy   is not None else 0.0
-                        vel    = (vx**2 + vy**2) ** 0.5
-                        wpn_s  = wpn[7:] if wpn.startswith("weapon_") else wpn
-                        fire_index[(sid, wpn_s)].append((tick, acc, scoped, vel))
-
-                    for k in fire_index:
-                        fire_index[k].sort(key=lambda r: r[0])
-
-                    with self._dp2_cache_lock:
-                        self._dp2_cache[cache_key] = dict(fire_index)
+        # Ensure parsed — no-op if already cached
+        if demo_path not in self._dp2_cache:
+            self._dp2_parse_demo(demo_path)
 
         with self._dp2_cache_lock:
-            fire_index = self._dp2_cache[cache_key]
+            data = self._dp2_cache.get(demo_path, {})
+        fire_index = data.get("fire_detail", {})
 
         def _is_lucky(kill_tick, killer_sid, weapon_raw):
             w_key = CSDM_TO_DP2_WEAPON.get(weapon_raw.lower().strip())
@@ -3306,6 +3231,130 @@ class App(tk.Tk):
 
         return filtered
 
+    def _dp2_parse_demo(self, demo_path):
+        """Parse a single demo with demoparser2 and store the result in _dp2_cache.
+
+        This is the ONLY method that calls demoparser2 in the entire codebase.
+        weapon_fire is parsed ONCE with all needed player fields; both indexes
+        (fire_detail and fire_ticks) are derived from that single parse.
+
+        Cache entry stored under demo_path:
+          {
+            "fire_detail": {(sid, wpn_suffix): [(tick, acc, scoped, vel), ...]},
+              — used by _trois_shot_filter / _no_trois_shot_filter
+            "fire_ticks":  {(sid, wpn_suffix): [tick, ...]},
+              — used by _one_tap_filter / _trois_tap_filter
+              — derived from fire_detail, no second parse needed
+          }
+
+        To add a future filter that needs a new event type (e.g. "player_hurt"):
+          1. Add a parser.parse_event("player_hurt", ...) call here
+          2. Build and store the new index under a new key in the cache entry
+          3. Read it in the new filter via _dp2_cache.get(path, {}).get("new_key", {})
+          No other method needs to change.
+
+        Thread-safe: double-check inside lock before parsing.
+        Safe to call concurrently on the same demo (only one thread will parse).
+        Returns True on success, False on import/parse failure.
+        """
+        # Fast path — already in cache
+        with self._dp2_cache_lock:
+            if demo_path in self._dp2_cache:
+                return True
+
+        if not os.path.isfile(demo_path):
+            with self._dp2_cache_lock:
+                self._dp2_cache[demo_path] = {}
+            return False
+
+        try:
+            from demoparser2 import DemoParser
+        except ImportError:
+            self._alog(
+                "  ⚠ demoparser2 not installed — install with: pip install demoparser2",
+                "warn")
+            return False
+
+        try:
+            parser  = DemoParser(demo_path)
+            fire_df = parser.parse_event(
+                "weapon_fire",
+                player=["is_scoped", "velocity_X", "velocity_Y",
+                        "accuracy_penalty", "player_steamid"],
+                other=[],
+            )
+        except Exception as e:
+            self._alog(f"  ⚠ dp2 parse error ({Path(demo_path).name}): {e}", "warn")
+            with self._dp2_cache_lock:
+                self._dp2_cache[demo_path] = {}
+            return False
+
+        if fire_df is None or len(fire_df) == 0:
+            with self._dp2_cache_lock:
+                self._dp2_cache[demo_path] = {"fire_detail": {}, "fire_ticks": {}}
+            return True
+
+        cols = list(fire_df.columns)
+        def _col(name):
+            if name in cols: return name
+            if f"user_{name}" in cols: return f"user_{name}"
+            return None
+
+        col_sid   = _col("player_steamid") or _col("steamid")
+        col_acc   = _col("accuracy_penalty")
+        col_scope = _col("is_scoped")
+        col_vx    = _col("velocity_X")
+        col_vy    = _col("velocity_Y")
+
+        if not col_sid or not col_acc:
+            self._alog(
+                f"  ⚠ dp2: steamid/accuracy columns missing in weapon_fire "
+                f"({Path(demo_path).name})", "warn")
+            with self._dp2_cache_lock:
+                self._dp2_cache[demo_path] = {"fire_detail": {}, "fire_ticks": {}}
+            return True
+
+        np_cols  = ["tick", "weapon", col_sid, col_acc]
+        opt_cols = ([col_scope] if col_scope else []) + \
+                   ([col_vx]    if col_vx    else []) + \
+                   ([col_vy]    if col_vy    else [])
+        arr = fire_df[np_cols + opt_cols].to_numpy()
+
+        i_scope = 4                                if col_scope else None
+        i_vx    = 4 + (1 if col_scope else 0)     if col_vx    else None
+        i_vy    = 4 + (1 if col_scope else 0) \
+                    + (1 if col_vx    else 0)     if col_vy    else None
+
+        fire_detail: dict = defaultdict(list)
+        for row in arr:
+            tick   = int(row[0]   or 0)
+            wpn    = str(row[1]   or "").lower()
+            sid    = str(row[2]   or "")
+            acc    = float(row[3] or 0)
+            scoped = bool(row[i_scope]) if i_scope is not None else False
+            vx     = float(row[i_vx])   if i_vx   is not None else 0.0
+            vy     = float(row[i_vy])   if i_vy   is not None else 0.0
+            vel    = (vx**2 + vy**2) ** 0.5
+            wpn_s  = wpn[7:] if wpn.startswith("weapon_") else wpn
+            fire_detail[(sid, wpn_s)].append((tick, acc, scoped, vel))
+
+        for k in fire_detail:
+            fire_detail[k].sort(key=lambda r: r[0])
+
+        fire_detail = dict(fire_detail)
+
+        # fire_ticks derived from fire_detail — no second parse needed
+        fire_ticks = {k: [r[0] for r in v] for k, v in fire_detail.items()}
+
+        with self._dp2_cache_lock:
+            self._dp2_cache[demo_path] = {
+                "fire_detail": fire_detail,
+                "fire_ticks":  fire_ticks,
+                # Future event types go here, e.g.:
+                # "damage": {...},
+            }
+        return True
+
     def _no_trois_shot_filter(self, demo_path, events, cfg):
         """Keep only precise kills — inverse of TROIS SHOT.
         Eligible weapons that are NOT lucky are kept, plus all non-eligible weapon kills.
@@ -3327,69 +3376,25 @@ class App(tk.Tk):
 
     def _one_tap_filter(self, demo_path, events, cfg):
         """Keep only isolated single-shot kills.
-        A kill is kept if the killer fired no other shot within ±ONE_TAP_WINDOW ticks.
-        (Headshot is already guaranteed by the DB query when kill_mod_one_tap is enabled.)
-        """
-        try:
-            from demoparser2 import DemoParser
-        except ImportError:
-            self._alog("  ⚠ ONE TAP: demoparser2 not installed (pip install demoparser2)", "warn")
-            return events
 
+        A kill is kept if the killer fired exactly one shot with that weapon
+        in [kill_tick − WINDOW, kill_tick + WINDOW].
+        Reads fire_ticks from _dp2_cache (populated by _dp2_parse_demo).
+        If the demo is not yet cached, triggers a synchronous parse as fallback.
+        (Headshot is pre-guaranteed by the DB query when kill_mod_one_tap is enabled.)
+        """
         if not os.path.isfile(demo_path):
             return events
 
+        # Ensure parsed — no-op if already cached
+        if demo_path not in self._dp2_cache:
+            self._dp2_parse_demo(demo_path)
+
+        with self._dp2_cache_lock:
+            data = self._dp2_cache.get(demo_path, {})
+        shots_index = data.get("fire_ticks", {})
+
         WINDOW = DP2_TICK_WINDOW  # 128 ticks ≈ 2s at 64 tick/s
-
-        # ── Parse / cache ─────────────────────────────────────────────────────
-        # Index: {(sid, weapon_suffix) → sorted [tick, …]}
-        # Isolation is checked per-weapon: a Deagle kill is only isolated if no
-        # other Deagle shot was fired by that player within ±WINDOW ticks.
-        # Using all-weapon shots would always reject kills (players fire many
-        # different weapons during a match).
-        cache_key = ("one_tap", demo_path)
-        with self._dp2_cache_lock:
-            already = cache_key in self._dp2_cache
-        if not already:
-            try:
-                parser = DemoParser(demo_path)
-                fire_df = parser.parse_event(
-                    "weapon_fire",
-                    player=["player_steamid"],
-                    other=[],
-                )
-            except Exception as e:
-                self._alog(f"  ⚠ ONE TAP parse error ({Path(demo_path).name}): {e}", "warn")
-                return events
-
-            if fire_df is None or len(fire_df) == 0:
-                with self._dp2_cache_lock:
-                    self._dp2_cache[cache_key] = {}
-            else:
-                cols = list(fire_df.columns)
-                col_sid = next(
-                    (c for c in ("player_steamid", "user_player_steamid", "user_steamid")
-                     if c in cols), None)
-                if not col_sid:
-                    self._alog("  ⚠ ONE TAP: player_steamid column not found in weapon_fire", "warn")
-                    with self._dp2_cache_lock:
-                        self._dp2_cache[cache_key] = {}
-                else:
-                    # Group by (sid, weapon_suffix) — same logic as _trois_shot_filter
-                    shots_index: dict = defaultdict(list)
-                    for row in fire_df[["tick", "weapon", col_sid]].to_numpy():
-                        tick = int(row[0] or 0)
-                        wpn  = str(row[1] or "").lower()
-                        sid  = str(row[2] or "")
-                        wpn_s = wpn[7:] if wpn.startswith("weapon_") else wpn
-                        shots_index[(sid, wpn_s)].append(tick)
-                    for k in shots_index:
-                        shots_index[k].sort()
-                    with self._dp2_cache_lock:
-                        self._dp2_cache[cache_key] = dict(shots_index)
-
-        with self._dp2_cache_lock:
-            shots_index = self._dp2_cache.get(cache_key, {})
 
         def _is_isolated(kill_tick, killer_sid, weapon_raw):
             """True iff exactly 1 shot with this weapon was fired in [kill_tick-WINDOW, kill_tick+WINDOW]."""
@@ -5360,37 +5365,53 @@ class App(tk.Tk):
     def _preparse_dp2(self, cfg, demo_paths):
         """Pre-parse demo files with demoparser2 in parallel threads.
 
-        Populates _dp2_cache for all demos that need it (TROIS SHOT / ONE TAP /
-        TROIS TAP filters), using up to dp2_threads parallel workers.
-        Thread-safe via _dp2_cache_lock.
-        Called at the start of each batch and preview run.
+        Calls _dp2_parse_demo for each demo NOT yet in cache.
+        Already-cached demos are skipped — the cache is never flushed.
+        This means a Preview followed immediately by a Batch run with the same
+        demo set will skip the pre-parse entirely on the second call.
+
+        Partial cache hits are handled naturally: if 100 demos were cached
+        from a previous run and 5 new demos appear, only the 5 are parsed.
+
+        Thread-safe via _dp2_cache_lock (inside _dp2_parse_demo).
         """
-        needs_trois = cfg.get("kill_mod_trois_shot") or \
-                      cfg.get("kill_mod_no_trois_shot") or \
-                      cfg.get("kill_mod_trois_tap")
-        needs_one   = cfg.get("kill_mod_one_tap") or cfg.get("kill_mod_trois_tap")
-        if not (needs_trois or needs_one):
+        needs_dp2 = (cfg.get("kill_mod_trois_shot") or
+                     cfg.get("kill_mod_no_trois_shot") or
+                     cfg.get("kill_mod_one_tap") or
+                     cfg.get("kill_mod_trois_tap"))
+        if not needs_dp2:
             return
 
         paths = [dp for dp in demo_paths if os.path.isfile(dp)]
         if not paths:
             return
 
-        n_threads = max(1, min(8, int(cfg.get("dp2_threads", 2))))
-        self._alog(
-            f"  ⚡ Pre-parsing {len(paths)} demo(s) with {n_threads} thread(s)…",
-            "info")
+        # Determine which demos are not yet cached
+        with self._dp2_cache_lock:
+            missing = [dp for dp in paths if dp not in self._dp2_cache]
 
-        def _worker(dp):
-            dummy = []
-            if needs_trois:
-                self._trois_shot_filter(dp, dummy, cfg)
-            if needs_one:
-                self._one_tap_filter(dp, dummy, cfg)
+        n_cached = len(paths) - len(missing)
+
+        if not missing:
+            self._alog(
+                f"  ⚡ Pre-parse: all {len(paths)} demo(s) already cached — skipping",
+                "dim")
+            return
+
+        n_threads = max(1, min(8, int(cfg.get("dp2_threads", 2))))
+        if n_cached:
+            self._alog(
+                f"  ⚡ Pre-parsing {len(missing)} demo(s) "
+                f"({n_cached} already cached) with {n_threads} thread(s)…",
+                "info")
+        else:
+            self._alog(
+                f"  ⚡ Pre-parsing {len(missing)} demo(s) with {n_threads} thread(s)…",
+                "info")
 
         done = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=n_threads) as ex:
-            futs = {ex.submit(_worker, dp): dp for dp in paths}
+            futs = {ex.submit(self._dp2_parse_demo, dp): dp for dp in missing}
             for fut in concurrent.futures.as_completed(futs):
                 done += 1
                 try:
@@ -5399,10 +5420,13 @@ class App(tk.Tk):
                     self._alog(
                         f"  ⚠ Pre-parse error ({Path(futs[fut]).name}): {e}",
                         "warn")
-                self.after(0, lambda d=done, t=len(paths):
+                self.after(0, lambda d=done, t=len(missing):
                            self.progress_lbl.config(text=f"Pre-parse {d}/{t}"))
 
-        self._alog(f"  ✓ Pre-parse done ({done} demos)", "ok")
+        cached_total = n_cached + done
+        self._alog(
+            f"  ✓ Pre-parse done ({done} parsed, {cached_total}/{len(paths)} total in cache)",
+            "ok")
 
 
     def _dry_run(self):
@@ -5421,8 +5445,7 @@ class App(tk.Tk):
             except Exception as e:
                 self._alog(f"Error: {e}", "err")
                 return
-            # ── Cache reset + parallel DP2 pre-parse ─────────────────────────
-            self._dp2_cache = {}
+            # ── Signature-based DP2 pre-parse (cache preserved if same demo set) ──
             self._preparse_dp2(cfg, list(evts.keys()))
             # ─────────────────────────────────────────────────────────────────
             # Apply demoparser2 modifiers before preview.
@@ -5793,8 +5816,7 @@ class App(tk.Tk):
         summary = []
         produced_dirs = []   # output dirs of successful demos (for assembly)
 
-        # ── Cache reset + parallel DP2 pre-parse ─────────────────────────────
-        self._dp2_cache = {}
+        # ── Signature-based DP2 pre-parse (cache preserved if same demo set) ──
         self._preparse_dp2(cfg, [dp for dp, _ in demo_list])
         # ─────────────────────────────────────────────────────────────────────
 
@@ -5871,6 +5893,8 @@ class App(tk.Tk):
                         _fe = filtered_events
                         def _bg():
                             nonlocal _fe
+                            # Pre-parse (no-op if already cached from the previous preview)
+                            self._preparse_dp2(cfg, list(_fe.keys()))
                             if cfg.get("kill_mod_trois_tap"):
                                 self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
                                 _fe = self._apply_trois_tap_to_events(_fe, cfg)

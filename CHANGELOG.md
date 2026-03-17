@@ -5,6 +5,31 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v77]
+### Changed
+- **demoparser2 architecture fully refactored** — single point of entry, partial persistent cache:
+
+  **`_dp2_parse_demo(demo_path)`** — new core method, the only place in the codebase that calls `DemoParser`. Parses `weapon_fire` once per demo with all needed player fields (`accuracy_penalty`, `is_scoped`, `velocity_X/Y`, `player_steamid`). Builds and stores two derived indexes under `_dp2_cache[demo_path]`:
+    - `"fire_detail"`: `{(sid, wpn_suffix) → [(tick, acc, scoped, vel), …]}` — for TROIS SHOT / NO TROIS SHOT
+    - `"fire_ticks"`: `{(sid, wpn_suffix) → [tick, …]}` — for ONE TAP / TROIS TAP (derived from `fire_detail`, no second parse)
+
+    **To add a future filter on a new event type**: add a `parser.parse_event(...)` call here, store the result under a new key, read it in the new filter via `_dp2_cache.get(path, {}).get("new_key", {})`. No other method changes.
+
+  **`_preparse_dp2`** — rewritten around partial cache hits. No more signature check, no more full cache flush. Uses `missing = [dp for dp in paths if dp not in _dp2_cache]` — only unprocessed demos are dispatched to the thread pool. On Preview → Batch with the same demo set, the pre-parse is skipped entirely (`all N demo(s) already cached — skipping`). On a date range change that adds new demos, only the new ones are parsed.
+
+  **`_trois_shot_filter`** — parse/cache block replaced by `_dp2_parse_demo(demo_path)` call + `data.get("fire_detail", {})` read. `from demoparser2 import DemoParser` removed.
+
+  **`_one_tap_filter`** — same: parse/cache block replaced, reads `data.get("fire_ticks", {})`.
+
+- **`_dp2_cache` key scheme changed**: from `("trois_shot"|"one_tap", demo_path)` → `demo_path` directly (unified entry per demo).
+- **`_dp2_cache_sig`** removed from `__init__` and `_preparse_dp2` — no longer needed.
+
+### Fixed
+- **Pre-parse repeated on Preview → Batch**: with the old signature check, any difference in the cfg between the two calls (even irrelevant fields) would invalidate the sig and flush the full cache. The new partial cache never flushes — demo data persists for the entire session once parsed.
+- **`weapon_fire` parsed twice per demo**: `_trois_shot_filter` and `_one_tap_filter` previously each issued a separate `DemoParser.parse_event("weapon_fire", ...)` call. Now one parse populates both `fire_detail` and `fire_ticks`.
+
+---
+
 ## [v76]
 ### Fixed
 - **ONE TAP always returned 0 results** (`✗ not isolated` on every kill across all demos): `_one_tap_filter` was indexing weapon_fire shots by `sid` alone — any shot fired by the player with *any* weapon within ±128 ticks invalidated the kill. Since players constantly fire different weapons, every kill was rejected. The index is now keyed by `(sid, weapon_suffix)` matching exactly `_trois_shot_filter`'s approach, so isolation is checked per-weapon: a Desert Eagle kill is only rejected if the player fired another Desert Eagle within the window.
