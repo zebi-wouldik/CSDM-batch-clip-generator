@@ -526,14 +526,3 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Changed
 - **Version bump** from v25 to v26 in title, header label, and docstring.
 - `PlayerSearchWidget` docstring updated to reflect multi-select behavior.
-
----
-
-## [v41] *(UI compact refactor)*
-
-### Changed
-- Capture tab condensed: options on horizontal rows, Timing + Order merged, Date filter on a single row, reduced padding.
-- Tags tab condensed: buttons on a single bar, listbox height = 7.
-
-### Added
-- `_tag_search_last_tagged`: finds tagged demos, proposes `date_from + 1d`.
