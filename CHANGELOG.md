@@ -373,3 +373,167 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### Added
 - `_tag_search_last_tagged`: finds tagged demos, proposes `date_from + 1d`.
+
+---
+
+## [v40]
+### Fixed
+- **Workshop map download blocking**: added "Accept Workshop downloads automatically" checkbox in HLAE section (Video tab). When enabled, injects `+cl_downloadfilter all` into `hlaeOptions.extraArgs` so CS2 silently downloads outdated Workshop map versions without interrupting the batch.
+
+---
+
+## [v39]
+### Added
+- **Kill modifiers section** in Capture tab (OR logic — at least one must match per kill):
+  - Smoke: `is_through_smoke`
+  - No-scope: `is_no_scope`
+  - Wallbang: `is_wall_bang` / `penetrated_objects > 0`
+  - Airborne: `is_airborne`
+  - Flash-assisted (blind): `is_assisted_flash`
+  - Collateral: `is_collateral`
+  - If no modifier is checked, no filter is applied (all kills pass).
+  - Graceful fallback: warns in log when a column is not found in DB, skips that modifier only.
+- **`hchk` helper**: highlighted checkbox — ORANGE2 background + white text when checked, neutral when unchecked. Applied to all checkboxes: weapons, modifiers, in-game options, HLAE options, assembly, etc.
+
+### Changed
+- Workshop download note in HLAE section updated to direct user to Steam Launch Options (prior to v40).
+
+---
+
+## [v38]
+### Added
+- **Preset encodage (CPU)**: combo `ultrafast → veryslow` in Codec Vidéo section. Auto-injected as `-preset <value>` into `ffmpegSettings.outputParameters` for CPU codecs (`libx264`, `libx265`, `libsvtav1`, etc.). No effect on GPU codecs (NVENC/AMF). Not injected if `-preset` already present in manual params.
+- **Teamkills — 3rd state "Teamkills only"**: replaces include/exclude checkbox. Radio group with Inclure / Exclure / Teamkills seuls. Injects `AND killer_team = victim_team` in SQL. Correctly sets both `include_teamkills` + `teamkills_only` booleans.
+- **Reorder saved players**: ▲▼ buttons on each saved player row. Swaps immediately and persists to `csdm_players.json`. Buttons at extremes are disabled.
+- **Tag color swatch on inactive tags**: colored square (border = tag color, fill = neutral background) always visible left of tag name. Fills completely when tag is active.
+- **Assembly encoding clarification**: description now explicitly states video is copied without re-encoding (`-c:v copy`) and only audio is re-encoded (AAC) for drift correction.
+
+### Fixed
+- **Preset section in Outils tab**: was re-packing the BDD section instead of creating a new `Sec`. Now uses correct `sec_pre` / `sec_load` references.
+- **Preset radio buttons**: were all on a single horizontal line causing overflow. Now each radio is on its own line (`anchor="w"`), name field expands to full width.
+
+---
+
+## [v37]
+### Fixed
+- **Presets section misplaced in Outils tab**: `sec.pack(fill="x", ...)` at line 2910 was re-packing the PostgreSQL section. Fixed by using a properly named `sec_pre` variable.
+- **Preset type radio buttons overflowing**: were packed `side="left"` on a single row. Now stacked vertically (`anchor="w"`).
+
+---
+
+## [v36]
+### Fixed
+- **`showKill` logic corrected for victim/spec perspectives**: previously only `sid` had `showKill: True`, so death notices for filmed victims did not appear. Now:
+  - Killer mode: `showKill` on `sid` only.
+  - Victim mode: `showKill` on all killers in the sequence so their death notices render.
+  - Spec mode: `showKill` on all involved players.
+  - `highlightKill` always only on `sid`.
+
+---
+
+## [v35]
+### Fixed
+- **POV Victim camera not applied**: three distinct bugs:
+  1. `_cam_sid_for_event` in victim mode returned `victim_sid` for both kill and death events. Now: `death` event → film `sid` (the active player is the victim); `kill` event → film `victim_sid`.
+  2. `playerName` was always `""` in `playerCameras`. Now resolved from `_player_names` for every target SID.
+  3. All `victim_sid` from sequence events are now explicitly added to `playersOptions` in victim mode so CSDM recognizes the player even if no camera tick points to them directly.
+
+---
+
+## [v34]
+### Added
+- **Weapon categories reorganized**:
+  - `Couteaux` (Knives): split from Equipement, includes all skin variants.
+  - `Grenades (Effet)`: HE, incendiary, molotov, inferno, zeus, decoy (explodes at end).
+  - `Grenades (Collision)`: flashbang, smoke, HE, incendiary, molotov, decoy — all grenades that can kill by direct projectile impact before detonation.
+  - `C4 / World`: C4, world damage, suicide, world_entity.
+  - Old `Equipement` category removed.
+- **`DELAYED_EFFECT_WEAPONS` constant**: set of weapon names for which `death_tick` should be used instead of `killer_tick` (HE, molotov, inferno, incendiary).
+- **`victim_death_tick` column detection**: `_query_events` now searches for `victim_death_tick` / `death_tick` / `killed_tick` in kills table. When found and weapon is in `DELAYED_EFFECT_WEAPONS`, uses death tick as event tick instead of throw tick — fixes clips where victim had not yet died at the recorded tick.
+- **Deaths by equipment clarified**: note added in UI explaining that `Deaths` + weapon filter = deaths of active players caused by that equipment specifically.
+
+### Fixed
+- **`decoy` missing from Grenades (Effet)**: decoy explosion can kill; `weapon_name` in DB is `"decoy"` — now included.
+
+---
+
+## [v33]
+### Fixed
+- **`mkv` container rejected by FFmpeg**: `-f mkv` is not a valid FFmpeg format name. Added `_FMT_MAP = {"mkv": "matroska", ...}` to translate container names to FFmpeg format strings.
+- **`#` in output filename crashing FFmpeg**: `#` is interpreted as a sequence marker on the command line. When filename contains `#`, `%`, `?`, or `*`, assembly now writes to a temp file (`_csdm_tmp_<hex>.mp4`) and renames after success.
+- **`-movflags +faststart` on mkv/avi**: this flag is MP4/MOV-specific. Now only applied when container is `mp4` or `mov`.
+
+---
+
+## [v32]
+### Fixed
+- **DB status header showing raw debug info**: `jt=checksum_tags(checksum,tag_id) col_date:analyze_date(timestamp with time zone)` was displayed in the header status label. Now shows only `OK — N joueurs, N tags`. If date column is undetected, a warning goes to the log only.
+
+---
+
+## [v31]
+### Changed
+- **Tab reorganization** (5 tabs → 4 tabs):
+  - `Config` + `BDD` + `Presets` → `Capturer` + `Outils`
+  - `Capturer`: player, events, timing, order, date filter, weapons, auto-tag.
+  - `Outils`: CHEMINS + PostgreSQL connection + Presets.
+  - `Vidéo` and `Tags` unchanged.
+- **`CHEMINS` section moved** from `Capturer` to `Outils` (logical grouping with other infrastructure settings).
+
+### Fixed
+- **Active player state not restored on startup**: `PlayerSearchWidget.__init__` activated all saved accounts by default, ignoring the `steam_ids` list saved in config. Now reads `steam_ids` from config after UI build and applies exactly that set.
+- **`_apply_config` additive SIDs**: loading a preset was adding SIDs instead of replacing. Now clears `_active_sids` before applying preset `steam_ids`.
+
+### Removed
+- **"Vérifier un tag en BDD" section**: removed from Tags tab (redundant). Method `_verify_tag_in_db` deleted.
+
+---
+
+## [v30]
+### Fixed
+- **Assembly audio/video drift**: clips produced with HLAE have a `start: -0.025057` audio timestamp. `-c copy` accumulated this offset across 100+ clips (~3s drift). Assembly now uses:
+  - `-fflags +genpts`: recomputes negative/missing PTS at input.
+  - `-c:v copy`: video copied without re-encoding.
+  - `-c:a aac -af aresample=async=1000`: audio re-encoded lightly to resync against video timeline.
+  - `-movflags +faststart`: fast seek in final mp4.
+
+---
+
+## [v29]
+### Fixed
+- **No audio in clips**: sequences were missing `"recordAudio": true` and `"playerVoicesEnabled": true` fields — CSDM simply did not record audio when these were absent. Identified by comparing against CSDM's own JSON export. Also added `"showXRay": true` and `"showAssists": false` which were missing.
+- **Already-tagged demos dialog**: before batch start, if auto-tag is enabled, queries DB for demos already having the target tag. If any found, shows dialog listing them: Yes = skip, No = include anyway. One dialog for entire batch.
+
+---
+
+## [v28]
+### Added
+- **X-Ray option**: checkbox in Capture tab → `showXRay` in each sequence JSON.
+
+### Fixed
+- **Assembly output filename without extension**: extension was added before resolving absolute path, so `"H:\...\MyFilm"` (already absolute, no extension) was not corrected. Extension is now added after path resolution.
+- **Saved assembly names**: replaced hardcoded "quick titles" list with a personal saved-names system. Names persist in `csdm_asm_names.json`. "Save current name" button adds the current field value; click to restore; ✕ to delete.
+
+---
+
+## [v27]
+### Fixed
+- **`snd_mute_losefocus` hypothesis retracted**: the real audio bug was missing `recordAudio: true` / `playerVoicesEnabled: true` in sequences (fixed in v29). The `-mirv_exec` injection added in this version was removed.
+
+---
+
+## [v26]
+### Changed
+- **Version bump** from v25 to v26 in title, header label, and docstring.
+- `PlayerSearchWidget` docstring updated to reflect multi-select behavior.
+
+---
+
+## [v41] *(UI compact refactor)*
+
+### Changed
+- Capture tab condensed: options on horizontal rows, Timing + Order merged, Date filter on a single row, reduced padding.
+- Tags tab condensed: buttons on a single bar, listbox height = 7.
+
+### Added
+- `_tag_search_last_tagged`: finds tagged demos, proposes `date_from + 1d`.
