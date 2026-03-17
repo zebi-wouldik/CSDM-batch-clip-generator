@@ -5,7 +5,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v74] — 2025-06
+## [v74]
 ### Added
 - **TROIS TAP auto-toggle**: checking both TROIS SHOT + ONE TAP simultaneously auto-enables TROIS TAP and clears the two individual modifiers. Unchecking TROIS TAP restores both. Fully symmetric and bidirectional.
 - **DP2 threads** slider in Tools → Performance (1–8, default 2): parallel demo pre-parsing via `ThreadPoolExecutor` before the main batch/preview loop. Logs `⚡ Pre-parsing N demo(s) with X thread(s)…` / `✓ Pre-parse done`.
@@ -40,7 +40,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v73] — 2025-06
+## [v73]
 ### Added
 - **DP2 threads** slider in Tools → Performance (1–8, default 2): parallel demo pre-parsing via `ThreadPoolExecutor` before the main batch loop
 - Per-demo parse cache (`_dp2_cache`): each `.dem` is parsed at most once per run, even when TROIS TAP chains both TROIS SHOT and ONE TAP filters
@@ -55,7 +55,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v72] — 2025-06
+## [v72]
 ### Fixed
 - "Both" perspective: `victim_pre_s` was not counted in clip duration.  
   `_effective_before(cfg)` now returns `before + victim_pre_s` in Both mode, used at all `_build_sequences` call sites (preview, batch, summary). Sequence starts `before + victim_pre_s` seconds before the kill so the killer phase is complete from the first frame.
@@ -63,7 +63,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v71] — 2025-06
+## [v71]
 ### Changed
 - "Exclude lucky" checkbox renamed to "Exclude" (under LUCKY SHOT section)
 - Cumulative modifiers: `no_lucky_shot` + `one_tap` now apply sequentially (AND logic). `elif` chains replaced with independent `if` blocks in `_run_batch`, `_dry_run`, and `_redo`. Only `lucky_tap` stays exclusive.
@@ -72,7 +72,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v70] — 2025-05
+## [v70]
 ### Changed
 - **POV Victim** simplified: camera fixed on the victim of the first kill throughout the clip (no switch, no transition).
 - **"Both"** takes over the killer→victim logic from ex-POV Victim v69: camera follows killer from start, switches to victim at `kill_tick − victim_pre_s`. "Switch delay" slider now only visible in Both mode.
@@ -80,7 +80,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v69] — 2025-05
+## [v69]
 ### Added
 - `APP_VERSION` constant centralizes version string — window title and header label update automatically.
 
@@ -93,7 +93,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v68] — 2025-05
+## [v68]
 ### Added
 - New modifier **NO LUCKY SHOT** (`kill_mod_no_lucky_shot`): excludes lucky kills — exact inverse of the TROIS SHOT filter. Shown under "Enable" in the TROIS SHOT section.
 - New modifier **LUCKY TAP** (`kill_mod_lucky_tap`): intersection TROIS SHOT ∩ ONE TAP — lucky AND isolated headshot kill. Forces HS only. Eligible weapons = TROIS SHOT set. Integrated in preview, `_redo`, `_run_batch`, summary.
@@ -112,7 +112,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v66] — 2025-04
+## [v66]
 ### Added
 - New modifier **ONE TAP** (demoparser2):
   - Mandatory headshot (forced in DB + locks "HS only")
@@ -126,7 +126,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v65] — 2025-04
+## [v65]
 ### Fixed
 - **LUCKY SHOT thresholds recalibrated**: `accuracy_penalty` in demoparser2 = Source2 radians, real range 0.004–0.050. Old thresholds (0.15–0.30) were unreachable → 0 lucky shots systematically. New: Deagle/R8 > 0.015, snipers > 0.010 (+ scope/vel).
 - Removed dead duplicate `filtered` loop (refactoring artifact).
@@ -136,7 +136,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v64] — 2025-04
+## [v64]
 ### Fixed
 - **LUCKY SHOT — 3 bugs** diagnosed via debug logs:
   1. demoparser2 prefixes all requested player fields with `user_` (e.g. `user_accuracy_penalty`). Fixed with dynamic `_col()` resolver.
@@ -146,7 +146,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v63] — 2025-04
+## [v63]
 ### Fixed
 - Checking LUCKY SHOT now also unchecks the weapon category checkbox (not just individual weapons).
 - Preview (F6 / Preview button) now applies TROIS SHOT filter via demoparser2 in a background thread before showing results — clip count reflects actual lucky kills. Same for preview re-triggered after cancel (already-tagged demos).
@@ -156,7 +156,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v62] — 2025-04
+## [v62]
 ### Added
 - New modifier **LUCKY SHOT**: lucky kills on precision weapons.
   - Eligible: Deagle, R8, AWP, SCAR-20, G3SG1, SSG 08
@@ -167,7 +167,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v61] — 2025-03
+## [v61]
 ### Fixed
 - "Minimize on launch": CS2 briefly appeared on screen.
   - Polling reduced 500ms → 100ms to catch CS2 on its first frames
@@ -176,7 +176,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v60] — 2025-03
+## [v60]
 ### Changed
 - **Resolution & Framerate** section reworked:
   - Definition via radio buttons (720p / 1080p / 1440p / 4K)
@@ -186,13 +186,13 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v59] — 2025-03
+## [v59]
 ### Fixed
 - Modifiers not found in DB: if ALL absent → returns `{}` with error instead of returning all clips unfiltered. If partially absent → warning + apply remaining modifiers only.
 
 ---
 
-## [v58] — 2025-02
+## [v58]
 ### Added
 - Tags tab — new **TAG RANGE** section: Calculate range, Apply start, Apply end, Full range, After range.
 
@@ -201,13 +201,13 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v57] — 2025-02
+## [v57]
 ### Fixed
 - 📅 now uses the same config ∩ tags intersection as "By config" — no more divergence between the two counts.
 
 ---
 
-## [v56] — 2025-02
+## [v56]
 ### Added
 - "By config": config ∩ DB tags intersection (demos already tagged in the current period).
 
@@ -219,7 +219,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v55] — 2025-02
+## [v55]
 ### Fixed
 - Extra args (`spec_cmd` + `window_mode`) were overwritten before injection.
 
@@ -228,7 +228,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v54] — 2025-01
+## [v54]
 ### Added
 - Separate output folders: raw clips, concatenated, assembled.
 - Warning tooltip on Concatenate when Assemble is active.
@@ -239,7 +239,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v53] — 2025-01
+## [v53]
 ### Fixed
 - `noSpectatorUi`: now injects `hideSpectatorUi` + extraArgs `+cl_draw_only_deathnotices 1` for all CSDM version compatibility.
 
@@ -251,7 +251,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v47] — 2024-12
+## [v47]
 ### Added
 - "🔍 By config" restored: full preview (player + events + weapons + dates) in Tags listbox, directly taggable.
 - "📅" separated: finds the most recent demo among selected tags, proposes setting `date_from` to the next day.
@@ -259,13 +259,13 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v46] — 2024-12
+## [v46]
 ### Changed
 - Moved "Concatenate sequences" to FINAL ASSEMBLY section.
 
 ---
 
-## [v45] — 2024-12
+## [v45]
 ### Changed
 - Tags operations output to console (removed inline status labels).
 - Window size: 1600×900.
@@ -273,7 +273,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v44] — 2024-11
+## [v44]
 ### Added
 - Unicode weapon icons per category (`WEAPON_ICONS`).
 - Hover tooltips (`Tooltip` class + `add_tip`) replace inline `desc_label`s.
@@ -285,7 +285,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v43] — 2024-11
+## [v43]
 ### Added
 - CS2 window mode (None / Fullscreen / Windowed / Borderless) in RESOLUTION & FRAMERATE, injected in extraArgs.
 - Option "Minimize CS2 on launch" (requires optional pywin32).
@@ -293,7 +293,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v42] — 2024-11
+## [v42]
 ### Added
 - "Since last tag" → button "📅 By config" + separate "📅" button.
 - `_show_preview()` extracted as reusable method.
@@ -306,7 +306,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v41] — 2024-10 *(UI compact refactor)*
+## [v41] *(UI compact refactor)*
 ### Changed
 - Capture tab condensed: options on horizontal rows, Timing + Order merged, Date filter on a single row, reduced padding.
 - Tags tab condensed: buttons on a single bar, listbox height = 7.
