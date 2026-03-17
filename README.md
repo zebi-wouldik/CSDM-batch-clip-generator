@@ -27,12 +27,12 @@ Powered by [`demoparser2`](https://github.com/LaihoE/demoparser) — reads `accu
 
 | Modifier | Description |
 |---|---|
-| **LUCKY SHOT** | Keeps only lucky kills: high bloom, unscoped, or moving at shot time. Eligible weapons: Deagle, R8, AWP, SCAR-20, G3SG1, SSG 08 |
-| **Exclude** | Inverse of LUCKY SHOT — keeps only precise kills on eligible weapons |
+| **TROIS SHOT** | Keeps only lucky kills: high bloom, unscoped, or moving at shot time. Eligible weapons: Deagle, R8, AWP, SCAR-20, G3SG1, SSG 08 |
+| **Exclude** | Inverse of TROIS SHOT — keeps only precise kills on eligible weapons |
 | **ONE TAP** | Isolated single-shot headshots: no shot from same player+weapon in ±2s window |
-| **LUCKY TAP** | Intersection of LUCKY SHOT ∩ ONE TAP — lucky AND isolated headshot |
+| **TROIS TAP** | Intersection of TROIS SHOT ∩ ONE TAP — lucky AND isolated headshot |
 
-Modifiers **stack**: you can combine **Exclude + ONE TAP** to get precise, isolated headshots. LUCKY TAP is mutually exclusive with everything (it already is an intersection).
+Modifiers **stack**: you can combine **Exclude + ONE TAP** to get precise, isolated headshots. TROIS TAP is mutually exclusive with everything (it already is an intersection).
 
 ### Perspectives
 | Mode | Behavior |
@@ -70,7 +70,7 @@ The **Switch delay** slider (0–10s, visible in Both mode) controls how many se
 | [CSDM](https://cs-demo-manager.com/) | ✅ | CLI must be accessible |
 | [FFmpeg](https://ffmpeg.org/) | ✅ | Must be in PATH or configured |
 | PostgreSQL + psycopg2 | ✅ | `pip install psycopg2-binary` |
-| [demoparser2](https://github.com/LaihoE/demoparser) | Optional | Required for LUCKY SHOT / ONE TAP / LUCKY TAP modifiers — `pip install demoparser2` |
+| [demoparser2](https://github.com/LaihoE/demoparser) | Optional | Required for TROIS SHOT / ONE TAP / TROIS TAP modifiers — `pip install demoparser2` |
 | pywin32 | Optional | Required for CS2 auto-minimize — `pip install pywin32` |
 
 ---
