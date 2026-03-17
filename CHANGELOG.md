@@ -5,6 +5,29 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v75]
+### Added
+- **`_one_tap_filter`** implemented: uses demoparser2 `weapon_fire` events to verify that exactly one shot was fired within ±128 ticks (~2s at 64 tick/s) around the kill tick. Headshot is pre-guaranteed by the DB query. Result cached under key `("one_tap", demo_path)`.
+- **`_no_trois_shot_filter`** implemented: inverse of `_trois_shot_filter` — keeps only kills on eligible weapons that are *not* lucky (precise shots). Non-eligible weapon kills are always passed through.
+- **`_trois_tap_filter`** implemented: chains `_trois_shot_filter` → `_one_tap_filter` (TROIS SHOT ∩ ONE TAP). Previously referenced but never defined, causing `AttributeError` on every run with ONE TAP or TROIS TAP enabled.
+
+### Fixed
+- **`AttributeError: '_tkinter.tkapp' object has no attribute '_one_tap_filter'`**: all three filter methods (`_one_tap_filter`, `_no_trois_shot_filter`, `_trois_tap_filter`) were referenced in `_apply_filter_to_events`, `_apply_dp2_modifiers`, and `_preparse_dp2` but never defined — crashing every preview and batch run that used ONE TAP or TROIS TAP.
+- **ONE TAP / TROIS SHOT do not uncheck TROIS TAP**: enabling ONE TAP or TROIS SHOT while TROIS TAP was already active left TROIS TAP checked alongside the individual modifier. `_on_one_tap_toggle` and `_on_trois_shot_toggle` now call `_disengage_trois_tap()` and clear the TROIS TAP variable when activated.
+
+### Changed
+- **Full English translation** of all remaining French strings in comments, tooltips, and log messages (excluding proper nouns containing "Trois"):
+  - Comments: `tir precise immobile` → `precise stationary shot`, `tir en mouvement` → `shot while moving`, `spam (2e+ tir rapide)` → `spam (2nd+ rapid shot)`, `lucky si` → `lucky if`, `pas premier tir immobile` → `not first stationary shot`, `Noms internes` → `Internal names`, `inclure les suicides` → `include suicides`, `kill sans scope` → `no-scope kill`, `kill en wallbang` → `wallbang kill`, `killer en l'air` → `killer airborne`, `Preset encodage … uniquement — sans effet sur GPU` → `Encoding preset … only — no effect on GPU`, `% de vitesse : 100 = normal, 50 = demi-vitesse` → `% of speed : 100 = normal, 50 = half-speed`, `Utilitaires` → `Utilities`, `Lookup plat construit … au lieu de` → `Flat lookup built … instead of`, `Depuis le 1er du mois en cours` → `From the 1st of the current month`, `Depuis le 1er janvier` → `From January 1st`, `la date d'import et non la date de partie` → `the import date and not the actual match date`, `Les codecs GPU … ignorent` → `GPU codecs … ignore`, `Écrire la liste FFmpeg concat` → `Write the FFmpeg concat list`, `Pas d'apostrophes … on utilise les guillemets doubles` → `No apostrophes or quotes … use double quotes`
+  - UI / tooltips: `Choisir une couleur` → `Choose a color`, `Kill sans scope (sniper seulement)` → `No-scope kill (sniper only)`, `l'apparence des cadavres et la physique du jeu` → `the appearance of ragdolls and game physics`, `+cl_downloadfilter all dans les Launch Options Steam, pas ici` → `+cl_downloadfilter all in Steam Launch Options, not here`
+  - Log messages: `ECHEC:` → `FAILED:`, `=== Tag '…' sur N demo(s) ===` → `=== Tag '…' on N demo(s) ===`
+  - Inline comments: `Auto-activer si c'est le premier` → `Auto-activate if it's the first`, `Debug: montrer ce qui est dans la table` → `Debug: show what is in the table`, `tag_on_export = premier tag actif (compat batch) ; les autres sont dans _tags_active` → `tag_on_export = first active tag (batch compat) ; others are in _tags_active`, `Construire la clause joueur pour N SIDs` → `Build the player clause for N SIDs`, `Colonne headshot (optionnelle)` → `Headshot column (optional)`, `ONE TAP et TROIS TAP impliquent headshot obligatoire en BDD` → `ONE TAP and TROIS TAP require mandatory headshot in DB`, `Construire une timeline … explicite` → `Build an explicit … timeline`, `LIKE sur le nom de fichier` → `LIKE on the filename`, `Tk elide sur les tags : on cache ce qui porte un tag "hidden"` → `Tk elide on tags: hide items carrying the "hidden" tag`, `Lignes portant le tag cible` → `Lines carrying the target tag`, `Slider "Avant switch" — visible seulement en mode victim/both` → `"Before switch" slider — visible only in victim/both mode`, `Tout : vider les deux champs` → `All: clear both fields`, `Bloc Ratio d'aspect` → `Aspect Ratio block`, `Arrondir la largeur au multiple de 2 le plus proche (requis par la plupart des codecs)` → `Round width to nearest multiple of 2 (required by most codecs)`, `Trace recsys pour afficher/masquer` → `Trace recsys to show/hide`, `Fallback BDD (souvent = date d'import)` → `Fallback DB (often = import date)`, `Multi-tags : on utilise _tags_active si disponible, sinon tag_name seul` → `Multi-tags: use _tags_active if available, else tag_name alone`
+  - Section headers: `TAB CAPTURER` → `TAB CAPTURE`, `TAB OUTILS` → `TAB TOOLS`, `PLAGE DES TAGS` → `TAG DATE RANGE`, `OPÉRATIONS` → `OPERATIONS`
+  - Calendar day abbreviations: `Lu Ma Me Je Ve Sa Di` → `Mo Tu We Th Fr Sa Su`
+  - Log format: `seuil=` → `threshold=`, `et propose d'appliquer ces dates comme filtre dans Capturer` → `and suggests applying these dates as a filter in Capture`
+  - French guillemets `«…»` replaced with standard double quotes `"…"` in all f-strings and log messages
+
+---
+
 ## [v74]
 ### Added
 - **TROIS TAP auto-toggle**: checking both TROIS SHOT + ONE TAP simultaneously auto-enables TROIS TAP and clears the two individual modifiers. Unchecking TROIS TAP does not restore them — it simply disengages. Logic split into `_engage_trois_tap()` / `_disengage_trois_tap()` helpers.

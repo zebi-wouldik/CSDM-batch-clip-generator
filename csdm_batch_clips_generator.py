@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v74"""
+"""CSDM Batch Clips Generator v75"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v74"
+APP_VERSION = "v75"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -35,7 +35,7 @@ FONT_MONO = ("Consolas", 10)
 FONT_SM = ("Consolas", 9)
 FONT_DESC = ("Consolas", 8)
 
-# Kwargs partagés pour widgets flat (DRY)
+# Shared kwargs for flat checkbox/radio widgets
 _CHK_KW = dict(font=FONT_SM, bg=BG2, fg=MUTED, activebackground=BG2,
                activeforeground=ORANGE, selectcolor=BG3,
                relief="flat", bd=0, cursor="hand2", highlightthickness=0)
@@ -89,15 +89,15 @@ FRAMERATES = [30, 60, 120, 240, 300]
 
 # ── TROIS SHOT ────────────────────────────────────────────────────────────
 # Thresholds calibrated from real demoparser2 data (accuracy_penalty in Source2 radians):
-#   tir precise immobile  ≈ 0.004
-#   tir en mouvement     ≈ 0.010–0.025
-#   spam (2e+ tir rapide)≈ 0.030–0.050
-#   max observé          ≈ 0.050
+#   precise stationary shot  ≈ 0.004
+#   shot while moving        ≈ 0.010–0.025
+#   spam (2nd+ rapid shot)   ≈ 0.030–0.050
+#   max observed        ≈ 0.050
 #
 # Per-weapon logic:
-#   Deagle / R8   : lucky si acc > 0.015  (pas premier tir immobile)
-#   AWP / SSG 08  : lucky si NON scopé  (is_scoped False au tick du tir)
-#   SCAR-20/G3SG1 : lucky si vel > 100 u/s OU acc > 0.012 OU non scopé
+#   Deagle / R8   : lucky if acc > 0.015  (not first stationary shot)
+#   AWP / SSG 08  : lucky if NOT scoped  (is_scoped False at shot tick)
+#   SCAR-20/G3SG1 : lucky if vel > 100 u/s OR acc > 0.012 OR not scoped
 TROIS_SHOT_THRESHOLDS = {
     "weapon_deagle":   {"acc": 0.015, "scope": False, "vel": False},
     "weapon_revolver": {"acc": 0.015, "scope": False, "vel": False},
@@ -122,6 +122,9 @@ CSDM_TO_DP2_WEAPON = {
 }
 # CSDM display names eligible (all variants, lowercase) for UI filter
 TROIS_SHOT_ELIGIBLE_LOWER = set(CSDM_TO_DP2_WEAPON.keys())
+
+# Tick window for demoparser2 shot matching (~1 second at CS2 64 tick/s)
+DP2_TICK_WINDOW = 128
 
 # Base definitions (height) available in structured selector
 DEFINITIONS = [
@@ -187,16 +190,16 @@ WEAPON_CATEGORIES = {
         "Knife",
     ],
     "Grenades & Utility": [
-        # Noms internes CSDM/Source
+        # Internal names CSDM/Source
         "hegrenade", "incgrenade", "molotov", "inferno",
         "flashbang", "smokegrenade", "decoy",
-        # Variantes avec espaces
+        # Variants with spaces
         "he grenade", "incendiary grenade", "decoy grenade",
         "smoke grenade", "flash",
-        # Noms affichés (capitalisés)
+        # Display names (capitalised)
         "HE Grenade", "Incendiary Grenade", "Molotov", "Decoy Grenade",
         "Flashbang", "Smoke Grenade",
-        # Variantes CS2 supplémentaires
+        # Additional CS2 variants
         "weapon_hegrenade", "weapon_incgrenade", "weapon_molotov", "weapon_inferno",
         "weapon_flashbang", "weapon_smokegrenade", "weapon_decoy",
         "SmokeGrenade", "HeGrenade", "IncGrenade",
@@ -209,7 +212,7 @@ WEAPON_CATEGORIES = {
         "C4",
     ],
     "Misc": [
-        # Zeus, armes spéciales non-létales par nature mais pouvant tuer
+        # Zeus and special weapons — non-lethal by nature but can kill
         "taser",
         "Zeus x27",
     ],
@@ -220,18 +223,18 @@ WEAPON_ICONS = {'Pistols': '🔫', 'SMGs': '🔫', 'Rifles': '🎯', 'Snipers': 
 def _weapon_category(weapon_name):
     return _WEAPON_LOOKUP.get(weapon_name.lower().strip(), "Other")
 
-# Lookup plat construit une seule fois au chargement — O(1) au lieu de O(n²)
+# Flat lookup built once at load time — O(1) instead of O(n²)
 _WEAPON_LOOKUP: dict = {
     w.lower(): cat
     for cat, weapons in WEAPON_CATEGORIES.items()
     for w in weapons
 }
 
-# Armes à effet retardé : le tick BDD = lancer/impact, mais la mort survient plus tard.
-# Pour ces armes on ajoute un délai supplémentaire AVANT le tick pour ne pas rater la mort.
-# inferno/molotov : la victim peut brûler pendant ~7s après le lancer.
-# hegrenade : explosion ~1s après le lancer.
-# c4 : explosion à timer variable mais généralement ~40s de round.
+# Delayed-effect weapons: DB tick = throw/impact, death may occur much later.
+# We add extra BEFORE time for these weapons so the death is not clipped..
+# inferno/molotov: victim can burn for ~7s after the throw.
+# hegrenade: explosion ~1s after the throw.
+# c4: variable timer, typically ~40s into the round.
 DELAYED_EFFECT_WEAPONS = {
     "hegrenade", "incgrenade", "molotov", "inferno",
     "he grenade", "incendiary grenade",
@@ -242,9 +245,9 @@ DEFAULT_CONFIG = {
     "pg_user": "postgres", "pg_pass": "", "pg_db": "csdm",
     "csdm_exe": r"C:\Users\Trois\AppData\Local\Programs\cs-demo-manager\csdm.CMD",
     "output_dir": r"H:\CS\CSVideos\Raws",
-    "output_dir_clips":    r"H:\CS\CSVideos\Raws",   # clips bruts par démo
-    "output_dir_concat":   "",   # clips concaténés (vide = même que clips)
-    "output_dir_assembled": "",  # fichier assemblé final (vide = même que clips)
+    "output_dir_clips":    r"H:\CS\CSVideos\Raws",   # raw clips per demo
+    "output_dir_concat":   "",   # concatenated clips (empty = same as raw)
+    "output_dir_assembled": "",  # final assembled file (empty = same as raw)
     "steam_id": "", "player_name": "",
     "events": ["Kills"], "weapons": [],
     "date_from": "", "date_to": "",
@@ -262,8 +265,8 @@ DEFAULT_CONFIG = {
     "tag_on_export": "", "tag_enabled": False,
     "retry_count": 2, "retry_delay": 15, "delay_between_demos": 3,
     # Final assembly of all clips after batch
-    "assemble_after": False,      # concaténer tous les clips à la fin
-    "delete_after_assemble": False,  # supprimer les clips sources après assemblage
+    "assemble_after": False,      # concatenate all clips after batch
+    "delete_after_assemble": False,  # delete source clips after assembly
     "assemble_output": "assembled.mp4",
     # Perspective / POV
     "perspective": "killer",   # "killer" | "victim" | "both"
@@ -274,15 +277,15 @@ DEFAULT_CONFIG = {
     # Headshot filter
     "headshots_only": False,
     "teamkills_mode": "include",
-    "include_suicides": True,   # inclure les suicides (weapon world/suicide/world_entity)
-    # Modificateurs de kills (logique OR : si plusieurs cochés, suffit qu'un match)
-    # Si aucun n'est coché, aucun filtre modificateur n'est appliqué
-    "kill_mod_through_smoke": False,   # kill à travers une smoke
-    "kill_mod_no_scope": False,        # kill sans scope (sniper)
-    "kill_mod_wall_bang": False,       # kill en wallbang
-    "kill_mod_airborne": False,        # killer en l'air
-    "kill_mod_assisted_flash": False,  # victim aveuglée (kill "aveugle")
-    "kill_mod_collateral": False,      # kill collatéral (balle traverse une victim)
+    "include_suicides": True,   # include suicides (weapon world/suicide/world_entity)
+    # Kill modifiers (OR logic: checked = must match; none checked = no filter)
+    
+    "kill_mod_through_smoke": False,   # kill through smoke
+    "kill_mod_no_scope": False,        # no-scope kill (sniper)
+    "kill_mod_wall_bang": False,       # wallbang kill
+    "kill_mod_airborne": False,        # killer airborne
+    "kill_mod_assisted_flash": False,  # victim blinded (flash-assisted kill)
+    "kill_mod_collateral": False,      # collateral kill (bullet through a victim)
     # TROIS SHOT modifier (v62) — lucky kills on precision weapons via demoparser2
     "kill_mod_trois_shot": False,
     # Inverse modifier: exclude lucky kills (v68)
@@ -291,22 +294,22 @@ DEFAULT_CONFIG = {
     "kill_mod_trois_tap": False,
     # ONE TAP modifier (v66) — isolated single shot headshot, no shot within ±2s
     "kill_mod_one_tap": False,
-    # Options séquence
+    # Sequence options
     "show_xray": True,
-    # Preset encodage (libx264/libx265/libsvtav1 uniquement — sans effet sur GPU)
+    # Encoding preset (libx264/libx265/libsvtav1 only — no effect on GPU)
     "video_preset": "medium",
-    # HLAE options (utilisées quand recsys == "HLAE")
+    # HLAE options (used when recsys == "HLAE")
     "hlae_fov": 90,
-    "hlae_slow_motion": 100,   # % de vitesse : 100 = normal, 50 = demi-vitesse
-    "hlae_afx_stream": False,  # recording HLAE AFX streams séparés
+    "hlae_slow_motion": 100,   # % of speed : 100 = normal, 50 = half-speed
+    "hlae_afx_stream": False,  # record separate HLAE AFX streams
     "hlae_no_spectator_ui": True,
     "hlae_extra_args": "",
     "hlae_workshop_download": False,
     # CS2 physics (injected as console commands via extraArgs)
-    "phys_ragdoll_gravity": 600,       # cl_ragdoll_gravity (défaut 600, négatif = flottent)
-    "phys_ragdoll_scale": 1.0,         # ragdoll_gravity_scale (défaut 1.0)
+    "phys_ragdoll_gravity": 600,       # cl_ragdoll_gravity (default 600, negative = float)
+    "phys_ragdoll_scale": 1.0,         # ragdoll_gravity_scale (default 1.0)
     "phys_ragdoll_enable": True,       # cl_ragdoll_physics_enable
-    "phys_sv_gravity": 800,            # sv_gravity (défaut 800)
+    "phys_sv_gravity": 800,            # sv_gravity (default 800)
     "phys_blood": True,                # violence_hblood
     "phys_dynamic_lighting": True,     # r_dynamic
     # CS2 window mode injected as Launch Option
@@ -443,7 +446,7 @@ def display_to_iso(disp_str):
             return ""
 
 # ═══════════════════════════════════════════════════════
-#  Utilitaires
+#  Utilities
 # ═══════════════════════════════════════════════════════
 def ensure_csdm_dirs():
     home = Path.home(); created = []
@@ -507,6 +510,11 @@ def _contrast_fg(hex_color):
 # ═══════════════════════════════════════════════════════
 #  Calendar Popup
 # ═══════════════════════════════════════════════════════
+
+def _count_kills(events):
+    """Count kill-type events in a list."""
+    return sum(1 for e in events if e.get("type") == "kill")
+
 class CalendarPopup(tk.Toplevel):
     def __init__(self, parent, callback, initial_date=None):
         super().__init__(parent)
@@ -530,7 +538,7 @@ class CalendarPopup(tk.Toplevel):
                   bd=0, cursor="hand2", width=3, command=self._next).pack(side="right")
         hdr = tk.Frame(inner, bg=BG2)
         hdr.pack(fill="x")
-        for d in ("Lu", "Ma", "Me", "Je", "Ve", "Sa", "Di"):
+        for d in ("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"):
             tk.Label(hdr, text=d, font=FONT_DESC, fg=MUTED, bg=BG2, width=4).pack(side="left")
         self._grid = tk.Frame(inner, bg=BG2)
         self._grid.pack(fill="x")
@@ -594,7 +602,7 @@ class CalendarPopup(tk.Toplevel):
 class ColorPickerDialog(tk.Toplevel):
     def __init__(self, parent, initial_color="#f97316"):
         super().__init__(parent)
-        self.title("Choisir une couleur")
+        self.title("Choose a color")
         self.configure(bg=BG2)
         self.resizable(False, False)
         self.transient(parent)
@@ -690,9 +698,9 @@ class DateField(tk.Frame):
 class PlayerSearchWidget(tk.Frame):
     """
     Player system v26 — multi-selection:
-    • Les COMPTES ENREGISTRÉS sont la source de vérité.
-    • Cliquer un compte le coche/décoche (toggle). Plusieurs peuvent être
-      actifs simultanément — tous leurs kills/deaths sont inclus dans la requête.
+    • Saved accounts are the source of truth.
+    • Click an account to toggle it. Multiple accounts can be active
+      simultaneously — all their kills/deaths are included in the query.
     • The DB list below is only for finding and registering players.
     """
 
@@ -704,11 +712,11 @@ class PlayerSearchWidget(tk.Frame):
         self._lb_name       = ""
         self._lb_label      = ""
         self._saved_players = load_saved_players()
-        self._active_sids   = set()       # ← source de vérité (peut en contenir plusieurs)
+        self._active_sids   = set()       # source of truth (may contain multiple)
         self._active_names  = {}          # {sid: name}
         self._on_change     = on_change
 
-        # Activer tous les comptes enregistrés par défaut
+        # Enable all saved accounts by default
         for p in self._saved_players:
             self._active_sids.add(p["steam_id"])
             self._active_names[p["steam_id"]] = p["name"]
@@ -796,7 +804,7 @@ class PlayerSearchWidget(tk.Frame):
                            highlightthickness=1,
                            highlightbackground=ORANGE if active else BORDER)
             row.pack(fill="x", pady=2, ipadx=2, ipady=1)
-            # Boutons ▲▼ pour réordonner
+            # ▲▼ buttons to reorder
             arr = tk.Frame(row, bg=row_bg)
             arr.pack(side="left", padx=(2, 0))
             tk.Button(arr, text="▲", font=FONT_DESC, bg=row_bg, fg=MUTED,
@@ -871,7 +879,7 @@ class PlayerSearchWidget(tk.Frame):
             "label":    self._lb_label,
         })
         save_saved_players(self._saved_players)
-        # Auto-activer si c'est le premier
+        # Auto-activate if it's the first
         if len(self._saved_players) == 1:
             self._active_sids.add(self._lb_sid)
             self._active_names[self._lb_sid] = self._lb_name
@@ -965,7 +973,7 @@ class PlayerSearchWidget(tk.Frame):
     def get_steam_id(self):
         if not self._active_sids:
             return ""
-        # Priorité à l'ordre d'enregistrement
+        # Priority: registration order
         for p in self._saved_players:
             if p["steam_id"] in self._active_sids:
                 return p["steam_id"]
@@ -1058,7 +1066,7 @@ def hchk(parent, text, var, **kw):
 
 
 def hradio(parent, text, var, value, **kw):
-    """Radiobutton avec surbrillance quand sélectionné."""
+    """Radiobutton with highlight when selected."""
     rb_kw = dict(font=FONT_SM, relief="flat", bd=0, cursor="hand2",
                  highlightthickness=0, padx=8, pady=3)
     rb_kw.update(kw)
@@ -1082,10 +1090,10 @@ def desc_label(parent, text):
                     justify="left", wraplength=700)
 
 # ═══════════════════════════════════════════════════════
-#  Tooltip léger — remplace les desc_label inline
+#  Lightweight tooltip — replaces inline desc_labels
 # ═══════════════════════════════════════════════════════
 class Tooltip:
-    """Bulle d'aide au survol. Utiliser add_tooltip(widget, text)."""
+    """Hover tooltip widget. Use add_tip(widget, text)."""
     def __init__(self, widget, text):
         self._widget = widget
         self._text   = text
@@ -1116,7 +1124,7 @@ class Tooltip:
             self._tip = None
 
 def add_tip(widget, text):
-    """Attache un tooltip à widget si text non vide."""
+    """Attach a tooltip to widget if text is non-empty."""
     if text:
         Tooltip(widget, text)
 
@@ -1140,10 +1148,10 @@ class App(tk.Tk):
         self.presets = load_presets()
         self._player_names = {}
         self._tags_list = []
-        self._tags_active = set()   # IDs de tags sélectionnés dans l'onglet Tags
+        self._tags_active = set()   # IDs of currently selected tags
         self._tags_schema = {}
-        self._demo_checksums = {}  # {demo_path: checksum} — peuplé par _query_events
-        self._demo_dates     = {}  # {demo_path: date_val} — peuplé par _query_events
+        self._demo_checksums = {}  # {demo_path: checksum} — populated by _query_events
+        self._demo_dates     = {}  # {demo_path: date_val} — populated by _query_events
         self._tag_search_results = {}
 
         self.v = {}
@@ -1182,12 +1190,12 @@ class App(tk.Tk):
             self.v[k] = tk.BooleanVar(value=self.cfg.get(k, DEFAULT_CONFIG.get(k, False)))
         self.v["resolution"] = tk.StringVar(value=f"{self.v['width'].get()}x{self.v['height'].get()}")
 
-        # Sélecteurs structurés résolution (nouveaux v60)
-        # Déduire la définition à partir de la hauteur courante
+        # Structured resolution selectors (v60)
+        # Infer definition from current height
         _h0 = self.v["height"].get()
         _def0 = next((lbl for lbl, h in DEFINITIONS if h == _h0), "1080p")
         self.v["res_definition"] = tk.StringVar(value=_def0)
-        # Déduire le ratio à partir de width/height courants
+        # Infer ratio from current width/height
         _w0 = self.v["width"].get()
         _ratio0 = "16:9"
         for _lbl, _rw, _rh in ASPECT_RATIOS:
@@ -1195,7 +1203,7 @@ class App(tk.Tk):
                 _ratio0 = _lbl
                 break
         self.v["res_aspect"] = tk.StringVar(value=_ratio0)
-        # Mode personnalisé : actif si width/height ne correspondent pas à un preset connu
+        # Custom mode: active if width/height do not match a known preset
         _known = any(
             abs(_w0 / _h0 - rw / rh) < 0.01
             for _, rw, rh in ASPECT_RATIOS
@@ -1214,15 +1222,15 @@ class App(tk.Tk):
         self._db_schema = {}
         self._db_col_types = {}
         self._date_col = None
-        self._date_col_type = ""      # type SQL réel de la colonne date
-        self._pending_restore_sid  = None   # steam_id à restaurer une fois la BDD chargée
-        self._pending_restore_tags = []     # noms de tags à restaurer une fois la BDD chargée
-        self._sm_cb = None                 # référence à la combo slow-motion (maj preset)
+        self._date_col_type = ""      # actual SQL type of the date column
+        self._pending_restore_sid  = None   # steam_id to restore once DB is ready
+        self._pending_restore_tags = []     # tag names to restore once DB is ready
+        self._sm_cb = None                 # slow-motion combo reference (updated on preset load)
 
         self._build_ui()
 
-        # PlayerSearchWidget active tous les comptes par défaut ; on écrase
-        # avec la liste exacte sauvegardée si elle existe.
+        # PlayerSearchWidget enables all accounts by default; override
+        # with the exact saved list if it exists.
         saved_ids = self.cfg.get("steam_ids", [])
         if saved_ids:
             self.player_search._active_sids.clear()
@@ -1234,7 +1242,7 @@ class App(tk.Tk):
                         break
             self.player_search._refresh_saved_display()
 
-        # Trace width/height → met à jour la combo résolution automatiquement
+        # Track width/height → auto-update the resolution combo
         def _sync_res(*_):
             try:
                 self.v["resolution"].set(f"{self.v['width'].get()}x{self.v['height'].get()}")
@@ -1243,7 +1251,7 @@ class App(tk.Tk):
         self.v["width"].trace_add("write", _sync_res)
         self.v["height"].trace_add("write", _sync_res)
 
-        # Init état des sélecteurs structurés résolution (v60)
+        # Init structured resolution selectors state (v60)
         self.after(50, self._on_res_custom_toggle)
         self.after(60, self._update_res_preview)
 
@@ -1290,13 +1298,13 @@ class App(tk.Tk):
             cfg[k] = val
         cfg["events"] = [e for e, v in self.sel_events.items() if v.get()]
         cfg["weapons"] = [w for w, v in self.sel_weapons.items() if v.get()]
-        # Compat : output_dir pointe vers output_dir_clips
+        # Compat: output_dir mirrors output_dir_clips
         if cfg.get("output_dir_clips"):
             cfg["output_dir"] = cfg["output_dir_clips"]
         cfg["steam_ids"]   = self.player_search.get_steam_ids()
         cfg["steam_id"]    = self.player_search.get_steam_id()    # compat
         cfg["player_name"] = self.player_search.get_name()
-        cfg["active_tags"] = self._get_active_tag_names()         # noms des tags cochés
+        cfg["active_tags"] = self._get_active_tag_names()         # names of checked tags
         return cfg
 
     def _auto_save(self):
@@ -1335,7 +1343,7 @@ class App(tk.Tk):
                 else:
                     self._pending_restore_sid = val
             elif k == "active_tags" and isinstance(val, list) and val:
-                # Restaurer les tags cochés — différé si la BDD n'est pas encore prête
+                # Restore checked tags — deferred if DB not yet ready
                 self._restore_active_tags(val)
 
     def _restore_active_tags(self, tag_names):
@@ -1397,8 +1405,8 @@ class App(tk.Tk):
                     _INT_TYPES = {"bigint", "integer", "int", "int4", "int8",
                                   "smallint", "int2", "numeric"}
 
-                    # Colonnes candidates = type date/timestamp OU bigint avec
-                    # un nom évocateur, OU texte avec "date"/"time" dans le nom
+                    # Candidate columns: date/timestamp type, OR bigint with date-like name,
+                    # OR text with 'date'/'time' in name
                     _candidates = []
                     for c in _m_cols:
                         t = _m_types.get(c, "").lower()
@@ -1516,7 +1524,7 @@ class App(tk.Tk):
     def _on_load_ok(self, players, dc, dc_type, weapons, schema, col_types, names,
                     tags_data, tags_schema):
         self._date_col      = dc
-        self._date_col_type = dc_type   # type SQL réel : bigint, timestamp, date, text…
+        self._date_col_type = dc_type   # actual SQL type: bigint, timestamp, date, text…
         self._db_schema     = schema
         self._db_col_types  = col_types
         self._player_names  = names
@@ -1525,7 +1533,7 @@ class App(tk.Tk):
         self._demo_checksums = {}
         self._demo_dates     = {}
 
-        # Avertissement discret si la colonne date n'a pas été détectée (log uniquement)
+        # Warn (log only) if the date column was not detected
         if not dc:
             self._alog("⚠ Date column not detected in matches — date filter disabled", "warn")
 
@@ -1534,7 +1542,7 @@ class App(tk.Tk):
             + ("" if dc else "  ⚠ date ?"))
         self.db_status_lbl.config(fg=GREEN)
 
-        # Restauration différée (preset chargé avant que la BDD soit prête)
+        # Deferred restoration (preset loaded before DB was ready)
         restore_sid = self._pending_restore_sid or ""
         self._pending_restore_sid = None
         self.player_search.set_players(players, restore_steam_id=restore_sid)
@@ -1543,7 +1551,7 @@ class App(tk.Tk):
         self._refresh_tag_combo()
         self._refresh_tags_list_display()
 
-        # Restauration différée des tags cochés (config chargée avant la BDD)
+        # Deferred tag restoration (config loaded before DB was ready)
         if self._pending_restore_tags:
             self._restore_active_tags(self._pending_restore_tags)
             self._pending_restore_tags = []
@@ -1558,7 +1566,7 @@ class App(tk.Tk):
     def _build_weapons(self, weapons):
         saved = self.cfg.get("weapons", [])
 
-        # Grenades toujours présentes, qu'elles aient des kills en BDD ou non
+        # Grenades always present regardless of whether they have kills in DB
         _FORCED_GRENADES = [
             "HE Grenade", "Flashbang", "Smoke Grenade",
             "Incendiary Grenade", "Molotov", "Decoy Grenade",
@@ -1639,12 +1647,12 @@ class App(tk.Tk):
     #  Tags DB
     # ═══════════════════════════════════════════════════
     def _refresh_tag_combo(self):
-        # Combo retiré — tag auto géré via sélection dans l'onglet Tags.
-        # Méthode conservée pour compatibilité avec _connect_and_load.
+        # Combo removed — auto-tag managed via tag selection in Tags tab.
+        # Method kept for _connect_and_load compatibility.
         pass
 
     def _on_tag_selected(self, e=None):
-        pass  # Obsolète — conservé pour compat
+        pass  # Obsolete — kept for compat
 
     def _create_new_tag_dialog(self, from_combo=True):
         ts = self._tags_schema
@@ -1703,16 +1711,16 @@ class App(tk.Tk):
             return False, str(e)
 
     def _get_demo_checksum(self, demo_path):
-        """Retourne le checksum matches pour un chemin de demo.
-        
-        v19: En priorité le cache peuplé par _query_events (pas de re-requête).
-        Fallback: requête directe avec candidats étendus + logs de debug.
+        """Return the matches checksum for a demo path.
+
+        v19: Priority: cache populated by _query_events (no re-query).
+        Fallback: direct query with extended candidates.
         """
-        # 1. Cache peuplé par _query_events — chemin principal
+        # 1. Cache populated by _query_events — primary path
         if demo_path in self._demo_checksums:
             return self._demo_checksums[demo_path]
 
-        # 2. Fallback requête directe
+        # 2. Fallback: direct query
         dc = self._find_col("matches", [
             "demo_path", "demo_file_path", "demo_filepath",
             "share_code", "file_path", "path",
@@ -1744,7 +1752,7 @@ class App(tk.Tk):
                         conn.close()
                         return r[0]
 
-                # LIKE sur le nom de fichier
+                # LIKE on the filename
                 cur.execute(
                     f'SELECT "{mkm}" FROM matches WHERE "{dc}" LIKE %s LIMIT 1',
                     (f"%{basename}",))
@@ -1754,7 +1762,7 @@ class App(tk.Tk):
                     conn.close()
                     return r[0]
 
-                # Debug: montrer ce qui est dans la table
+                # Debug: show what is in the table
                 cur.execute(f'SELECT "{dc}","{mkm}" FROM matches LIMIT 5')
                 samples = cur.fetchall()
                 self._tag_log_line(
@@ -1819,7 +1827,7 @@ class App(tk.Tk):
 
         checksum = self._get_demo_checksum(demo_path)
         if not checksum:
-            # Dernier recours : requête directe sans passer par le cache
+            # Last resort: direct query bypassing cache
             dc = self._find_col("matches", ["demo_path", "demo_file_path", "demo_filepath",
                                              "share_code", "file_path", "path"])
             mkm = self._find_col("matches", ["checksum", "id", "match_id"])
@@ -1857,7 +1865,7 @@ class App(tk.Tk):
 
     def _do_tag_demos(self, demos, tag_name):
 
-        self._tag_log_line(f"=== Tag '{tag_name}' sur {len(demos)} demo(s) ===")
+        self._tag_log_line(f"=== Tag '{tag_name}' on {len(demos)} demo(s) ===")
 
         def task():
             ok = 0
@@ -1870,7 +1878,7 @@ class App(tk.Tk):
                 if success:
                     ok += 1
                 else:
-                    self._tag_log_line(f"   ECHEC: {err}")
+                    self._tag_log_line(f"   FAILED: {err}")
                     if not err_first:
                         err_first = err
 
@@ -1931,7 +1939,7 @@ class App(tk.Tk):
         s.configure("Vertical.TPanedwindow", background=BORDER)
 
         # Gauche : notebook config (poids 5)
-        # Droite : barre exécution + PanedWindow vertical (notebook | log)
+        # Right: run bar + vertical PanedWindow (notebook | log)
         outer = ttk.PanedWindow(self, orient="horizontal")
         outer.pack(fill="both", expand=True)
 
@@ -1951,7 +1959,7 @@ class App(tk.Tk):
         right_frame.rowconfigure(1, weight=1)
         right_frame.columnconfigure(0, weight=1)
 
-        # Barre d'exécution (haut du panneau droit)
+        # Run bar (top of right panel)
         run_bar = tk.Frame(right_frame, bg=BG2, pady=6)
         run_bar.grid(row=0, column=0, sticky="ew")
 
@@ -1997,8 +2005,8 @@ class App(tk.Tk):
         self.bind("<F6>",     lambda e: self._dry_run())
         self.bind("<Escape>", lambda e: self._stop_graceful() if self._running else None)
 
-        # Positionner le sash une fois la fenêtre réellement affichée
-        # On attend <Map> (fenêtre visible) puis on force la géométrie
+        # Position the sash once the window is actually visible
+        # Wait for <Map> event then force geometry
         def _set_sash(event=None):
             self.update_idletasks()
             w = self.winfo_width()
@@ -2151,20 +2159,20 @@ class App(tk.Tk):
         if lvl == "All":
             self.log.configure(state="disabled")
             return
-        # On filtre par élision : cache les lignes sans le tag cible
+        # Filter by elision: hide lines that do not carry the target tag
         target = tag_map.get(lvl, "")
-        # Stratégie : élider les lignes qui ne portent PAS le tag voulu
-        # (Tk elide sur les tags : on cache ce qui porte un tag "hidden")
+        # Strategy: elide lines that do NOT have the target tag
+        # (Tk elide on tags: hide items carrying the "hidden" tag)
         self.log.tag_remove("hidden", "1.0", "end")
         if target:
             all_ranges = set()
-            # Lignes portant le tag cible
+            # Lines carrying the target tag
             idx = "1.0"
             while True:
                 r = self.log.tag_nextrange(target, idx, "end")
                 if not r:
                     break
-                # Convertir en numéros de lignes
+                # Convert to line numbers
                 l1 = int(self.log.index(r[0]).split(".")[0])
                 l2 = int(self.log.index(r[1]).split(".")[0])
                 for ln in range(l1, l2 + 1):
@@ -2232,7 +2240,7 @@ class App(tk.Tk):
     def _log_search_prev(self):
         self._log_search_goto(self._search_idx - 1)
 
-    # ── TAB CAPTURER ──
+    # ── TAB CAPTURE ──
     def _make_tab_scroll(self, parent):
         sf = ScrollableFrame(parent, bg=BG)
         sf.pack(fill="both", expand=True)
@@ -2286,7 +2294,7 @@ class App(tk.Tk):
         add_tip(_m_lbl, "If none checked → all kills included.\nIf multiple checked → one must match (OR).")
         _MODS = [
             ("kill_mod_through_smoke",  "Smoke",     "Kill through a smoke grenade"),
-            ("kill_mod_no_scope",       "No-scope",  "Kill sans scope (sniper seulement)"),
+            ("kill_mod_no_scope",       "No-scope",  "No-scope kill (sniper only)"),
             ("kill_mod_wall_bang",      "Wallbang",  "Kill by penetrating a wall / object"),
             ("kill_mod_airborne",       "Airborne",  "Killer in the air at time of shot"),
             ("kill_mod_assisted_flash", "Flashed",   "Victim blinded by a flashbang"),
@@ -2380,7 +2388,7 @@ class App(tk.Tk):
             _rb.pack(side="left", padx=(4, 0))
             add_tip(_rb, tip)
 
-        # Slider "Avant switch" — visible seulement en mode victim/both (v69)
+        # "Before switch" slider — visible only in victim/both mode (v69)
         self._victim_pre_row = tk.Frame(sec, bg=BG2)
         self._victim_pre_row.pack(fill="x", pady=(4, 0))
         _vp_lbl = mlabel(self._victim_pre_row, "Switch delay (s):")
@@ -2492,7 +2500,7 @@ class App(tk.Tk):
                   cursor="hand2", bd=0, highlightthickness=0, activeforeground=RED,
                   command=self._weapons_deselect_all).pack(side="left")
 
-        # Tag auto géré depuis l'onglet Tags (sélection active)
+        # Auto-tag managed from the Tags tab (active selection)
 
     def _open_cal(self, var, anchor=None):
         init = None
@@ -2510,7 +2518,7 @@ class App(tk.Tk):
         today = date.today()
         today_str = today.strftime("%d-%m-%Y")
         if key == 0:
-            # Tout : vider les deux champs
+            # All: clear both fields
             self.v["date_from"].set("")
             self.v["date_to"].set("")
         elif key == "yesterday":
@@ -2518,12 +2526,12 @@ class App(tk.Tk):
             self.v["date_from"].set(yesterday.strftime("%d-%m-%Y"))
             self.v["date_to"].set(yesterday.strftime("%d-%m-%Y"))
         elif key == "month":
-            # Depuis le 1er du mois en cours
+            # From the 1st of the current month
             start = today.replace(day=1)
             self.v["date_from"].set(start.strftime("%d-%m-%Y"))
             self.v["date_to"].set(today_str)
         elif key == "year":
-            # Depuis le 1er janvier
+            # From January 1st
             start = today.replace(month=1, day=1)
             self.v["date_from"].set(start.strftime("%d-%m-%Y"))
             self.v["date_to"].set(today_str)
@@ -2558,11 +2566,11 @@ class App(tk.Tk):
         sec = Sec(p, "RESOLUTION & FRAMERATE")
         sec.pack(fill="x", pady=(0, 10))
 
-        # ── Ligne 1 : Définition + Ratio + Personnalisé ──────────────────────
+        # ── Row 1: Definition + Ratio + Custom ───────────────────────────────
         top_row = tk.Frame(sec, bg=BG2)
         top_row.pack(fill="x", pady=(4, 0))
 
-        # -- Bloc Définition --
+        # -- Definition block --
         def_frm = tk.Frame(top_row, bg=BG2)
         def_frm.pack(side="left", padx=(0, 20))
         mlabel(def_frm, "Definition").pack(anchor="w")
@@ -2573,10 +2581,10 @@ class App(tk.Tk):
             rb.pack(anchor="w", pady=(2, 0))
             self._def_radios.append(rb)
 
-        # -- Séparateur vertical --
+        # -- Vertical separator --
         tk.Frame(top_row, bg=BORDER, width=1).pack(side="left", fill="y", padx=(0, 20))
 
-        # -- Bloc Ratio d'aspect --
+        # -- Aspect Ratio block --
         ratio_frm = tk.Frame(top_row, bg=BG2)
         ratio_frm.pack(side="left", padx=(0, 20))
         mlabel(ratio_frm, "Aspect ratio").pack(anchor="w")
@@ -2587,17 +2595,17 @@ class App(tk.Tk):
             rb.pack(anchor="w", pady=(2, 0))
             self._ratio_radios.append(rb)
 
-        # -- Séparateur vertical --
+        # -- Vertical separator --
         tk.Frame(top_row, bg=BORDER, width=1).pack(side="left", fill="y", padx=(0, 20))
 
-        # -- Bloc Personnalisé --
+        # -- Custom block --
         custom_frm = tk.Frame(top_row, bg=BG2)
         custom_frm.pack(side="left", padx=(0, 20))
         mlabel(custom_frm, "Custom").pack(anchor="w")
         self._res_custom_chk = hchk(custom_frm, "Free dimensions", self.v["res_custom"],
                                     command=self._on_res_custom_toggle)
         self._res_custom_chk.pack(anchor="w", pady=(4, 0))
-        # Champs width × height (actifs seulement en mode personnalisé)
+        # Width × height fields (active only in custom mode)
         wh_frm = tk.Frame(custom_frm, bg=BG2)
         wh_frm.pack(anchor="w", pady=(6, 0))
         self._res_w_entry = sentry(wh_frm, self.v["width"], width=6)
@@ -2610,7 +2618,7 @@ class App(tk.Tk):
                                          fg=ORANGE, bg=BG2)
         self._res_preview_lbl.pack(anchor="w")
 
-        # ── Ligne 2 : FPS + Mode fenêtre ─────────────────────────────────────
+        # ── Row 2: FPS + Window mode ─────────────────────────────────────────
         bot_row = tk.Frame(sec, bg=BG2)
         bot_row.pack(fill="x", pady=(12, 0))
 
@@ -2621,7 +2629,7 @@ class App(tk.Tk):
 
         tk.Frame(bot_row, bg=BORDER, width=1).pack(side="left", fill="y", padx=(0, 20))
 
-        # Mode fenêtre CS2 (déplacé ici depuis la grille originale)
+        # CS2 window mode (moved here from original grid)
         wm_frm = tk.Frame(bot_row, bg=BG2)
         wm_frm.pack(side="left", padx=(0, 20))
         _wm_lbl = mlabel(wm_frm, "CS2 window mode")
@@ -2792,7 +2800,7 @@ class App(tk.Tk):
         sm_row.pack(fill="x", pady=(6, 0))
         mlabel(sm_row, "Slow-motion (%):").pack(side="left")
         sm_cb = scombo(sm_row, tk.StringVar(), ["100", "75", "50", "33", "25", "10"], 6)
-        self._sm_cb = sm_cb   # gardé pour mise à jour lors du chargement de preset
+        self._sm_cb = sm_cb   # kept for update on preset load
         sm_cb.set(str(self.v["hlae_slow_motion"].get()))
         sm_cb.pack(side="left", padx=(6, 0))
         sm_cb.bind("<<ComboboxSelected>>",
@@ -2813,13 +2821,12 @@ class App(tk.Tk):
             add_tip(_cb, tip)
 
 
-
         # Physique CS2
         tk.Frame(self._hlae_sec, height=1, bg=BORDER).pack(fill="x", pady=(10, 6))
         mlabel(self._hlae_sec, "CS2 physics:").pack(anchor="w")
         desc_label(self._hlae_sec,
                    "Console commands injected at startup. Allow modifying "
-                   "l'apparence des cadavres et la physique du jeu.").pack(anchor="w")
+                   "the appearance of ragdolls and game physics.").pack(anchor="w")
 
         phys_grid = tk.Frame(self._hlae_sec, bg=BG2)
         phys_grid.pack(fill="x", pady=(6, 0))
@@ -2877,17 +2884,17 @@ class App(tk.Tk):
              self.v["hlae_workshop_download"])
         _wdl_cb.pack(side="left")
         add_tip(_wdl_cb, "Injects +cl_downloadfilter all — allows downloading "
-                         "les anciennes versions de maps depuis le Workshop.")
+                         "old Workshop map versions to be downloaded.")
 
         _ea_lbl = tk.Label(self._hlae_sec, text="Additional CLI args (HLAE):",
                  font=FONT_SM, fg=MUTED, bg=BG2)
         _ea_lbl.pack(anchor="w", pady=(8, 0))
         add_tip(_ea_lbl, "Arguments passed directly to the HLAE session.\n"
                          "⚠ If CS2 gets stuck on an old Workshop map: add "
-                         "+cl_downloadfilter all dans les Launch Options Steam, pas ici.")
+                         "+cl_downloadfilter all in Steam Launch Options, not here.")
         sentry(self._hlae_sec, self.v["hlae_extra_args"]).pack(fill="x", ipady=4, pady=(2, 0))
 
-        # Trace recsys pour afficher/masquer
+        # Trace recsys to show/hide
         self.v["recsys"].trace_add("write", self._on_recsys_change)
         self._on_recsys_change()
 
@@ -2945,9 +2952,9 @@ class App(tk.Tk):
                 self.v["height"].set(h)
                 break
 
-    # ── v60 : sélecteurs structurés résolution ──────────────────────────────
+    # ── v60: structured resolution selectors ─────────────────────────────────
     def _on_perspective_change(self, *_):
-        """Affiche/masque le slider 'Avant switch' selon le mode perspective."""
+        """Show/hide the 'Switch delay' slider based on the perspective mode."""
         try:
             persp = self.v["perspective"].get()
             if persp == "both":
@@ -2958,25 +2965,25 @@ class App(tk.Tk):
             pass
 
     def _on_res_structured(self, *_):
-        """Calcule width × height depuis (définition × ratio) et met à jour les vars."""
+        """Compute width × height from (definition × ratio) and update vars."""
         if self.v["res_custom"].get():
             return
         def_lbl = self.v["res_definition"].get()
         ratio_lbl = self.v["res_aspect"].get()
         height = next((h for lbl, h in DEFINITIONS if lbl == def_lbl), 1080)
         rw, rh = next(((rw, rh) for lbl, rw, rh in ASPECT_RATIOS if lbl == ratio_lbl), (16, 9))
-        # Arrondir la largeur au multiple de 2 le plus proche (requis par la plupart des codecs)
+        # Round width to nearest multiple of 2 (required by most codecs)
         width = round(height * rw / rh / 2) * 2
         self.v["width"].set(width)
         self.v["height"].set(height)
         self._update_res_preview()
 
     def _on_res_custom_toggle(self, *_):
-        """Active/désactive les sélecteurs structurés et les champs manuels."""
+        """Enable/disable structured selectors and manual input fields."""
         custom = self.v["res_custom"].get()
         state_struct = "disabled" if custom else "normal"
         state_manual = "normal" if custom else "disabled"
-        # Activer/désactiver les radio boutons définition et ratio
+        # Enable/disable definition and ratio radio buttons
         try:
             for w in self._def_radios:
                 w.config(state=state_struct)
@@ -2987,19 +2994,19 @@ class App(tk.Tk):
                 w.config(state=state_struct)
         except Exception:
             pass
-        # Activer/désactiver les champs manuels
+        # Enable/disable manual input fields
         try:
             self._res_w_entry.config(state=state_manual)
             self._res_h_entry.config(state=state_manual)
         except Exception:
             pass
         if not custom:
-            # Recalculer depuis les sélecteurs
+            # Recompute from selectors
             self._on_res_structured()
         self._update_res_preview()
 
     def _update_res_preview(self):
-        """Rafraîchit le label de résolution calculée."""
+        """Refresh the computed resolution label."""
         try:
             w = self.v["width"].get()
             h = self.v["height"].get()
@@ -3022,6 +3029,10 @@ class App(tk.Tk):
         # Mutually exclusive with Exclude (no_trois_shot)
         if active and self.v["kill_mod_no_trois_shot"].get():
             self.v["kill_mod_no_trois_shot"].set(False)
+        # Mutually exclusive with TROIS TAP
+        if active and self.v["kill_mod_trois_tap"].get():
+            self.v["kill_mod_trois_tap"].set(False)
+            self._disengage_trois_tap()
         # Auto TROIS TAP: if both TROIS SHOT + ONE TAP active → engage TROIS TAP
         if active and self.v["kill_mod_one_tap"].get():
             self.v["kill_mod_trois_shot"].set(False)
@@ -3061,6 +3072,10 @@ class App(tk.Tk):
         """Toggle ONE TAP. Forces and locks 'HS only'.
         If both TROIS SHOT + ONE TAP are now checked → auto-enable TROIS TAP."""
         active = self.v["kill_mod_one_tap"].get()
+        # Mutually exclusive with TROIS TAP
+        if active and self.v["kill_mod_trois_tap"].get():
+            self.v["kill_mod_trois_tap"].set(False)
+            self._disengage_trois_tap()
         # Auto TROIS TAP: if both TROIS SHOT + ONE TAP active → engage TROIS TAP
         if active and self.v["kill_mod_trois_shot"].get():
             self.v["kill_mod_trois_shot"].set(False)
@@ -3123,11 +3138,8 @@ class App(tk.Tk):
             pass
 
 
-
-
-
     def _refresh_weapons_lock(self, locked):
-        """Grise visuellement les checkboxes d'armes non éligibles quand locked=True."""
+        """Grey out ineligible weapon checkboxes when locked=True."""
         if not hasattr(self, "_wg_frame") or self._wg_frame is None:
             return
         for widget in self._wg_frame.winfo_descendants():
@@ -3233,7 +3245,6 @@ class App(tk.Tk):
 
         with self._dp2_cache_lock:
             fire_index = self._dp2_cache[cache_key]
-        TICK_WINDOW = 128
 
         def _is_lucky(kill_tick, killer_sid, weapon_raw):
             w_key = CSDM_TO_DP2_WEAPON.get(weapon_raw.lower().strip())
@@ -3249,14 +3260,14 @@ class App(tk.Tk):
             ticks_only = [e[0] for e in entries]
             pos = bisect.bisect_right(ticks_only, kill_tick) - 1
             best = None
-            best_dist = TICK_WINDOW + 1
+            best_dist = DP2_TICK_WINDOW + 1
             i = pos
             while i >= 0:
                 ftick, acc, scoped, vel = entries[i]
                 dist = kill_tick - ftick
                 if dist < 0:
                     i -= 1; continue
-                if dist >= TICK_WINDOW:
+                if dist >= DP2_TICK_WINDOW:
                     break
                 if dist < best_dist:
                     best_dist = dist
@@ -3275,7 +3286,7 @@ class App(tk.Tk):
                 result = acc > thresholds["acc"]
 
             self._alog(
-                f"  🎲 [{weapon_raw}] acc={acc:.4f}(seuil={thresholds['acc']}) "
+                f"  🎲 [{weapon_raw}] acc={acc:.4f}(threshold={thresholds['acc']}) "
                 f"scoped={scoped} vel={vel:.0f} → {'✓ TROIS SHOT' if result else '✗ precise'}",
                 "info" if result else "dim")
             return result
@@ -3295,90 +3306,29 @@ class App(tk.Tk):
 
         return filtered
 
-    def _apply_trois_shot_to_events(self, evts, cfg):
-        """Applies _trois_shot_filter on all demos in dict evts.
-        À appeler dans un thread de fond — fait du I/O (demoparser2).
-        Retourne un nouveau dict {demo_path: filtered_events} (demos vides exclues)."""
-        if not cfg.get("kill_mod_trois_shot"):
-            return evts
-        result = {}
-        for dp, events in evts.items():
-            n_before = len([e for e in events if e.get("type") == "kill"])
-            filtered = self._trois_shot_filter(dp, events, cfg)
-            n_after  = len([e for e in filtered if e.get("type") == "kill"])
-            self._alog(
-                f"  🎲 TROIS SHOT [{Path(dp).name}] : {n_before} kills → {n_after} TROIS SHOT",
-                "info" if n_after else "dim")
-            if filtered:
-                result[dp] = filtered
-        return result
-
     def _no_trois_shot_filter(self, demo_path, events, cfg):
-        """Inverse de _trois_shot_filter : garde les kills qui NE sont PAS lucky.
-
-        For weapons not eligible for TROIS SHOT, the kill is always kept
-        (the trois shot filter only applies to eligible precision weapons).
-        Retourne la liste filtrée.
+        """Keep only precise kills — inverse of TROIS SHOT.
+        Eligible weapons that are NOT lucky are kept, plus all non-eligible weapon kills.
         """
-        try:
-            from demoparser2 import DemoParser
-        except ImportError:
-            self._alog("  ⚠ Exclude: demoparser2 not installed (pip install demoparser2)", "warn")
-            return events
-
-        if not os.path.isfile(demo_path):
-            return events
-
-        # Réutiliser _trois_shot_filter pour obtenir les lucky, puis inverser
-        lucky_events = self._trois_shot_filter(demo_path, events, cfg)
-        lucky_ids = {id(e) for e in lucky_events}
-
+        lucky_evts = self._trois_shot_filter(demo_path, events, cfg)
+        lucky_sig = {
+            (e.get("tick"), str(e.get("killer_sid")))
+            for e in lucky_evts if e.get("type") == "kill"
+        }
         filtered = []
-        for evt in events:
-            if evt.get("type") != "kill":
-                filtered.append(evt)
+        for e in events:
+            if e.get("type") != "kill":
+                filtered.append(e)
                 continue
-            weapon_raw = evt.get("weapon", "").lower().strip()
-            # Arme non éligible → toujours garder
-            if weapon_raw not in TROIS_SHOT_ELIGIBLE_LOWER:
-                filtered.append(evt)
-                continue
-            # Arme éligible → garder seulement si NON lucky
-            if id(evt) not in lucky_ids:
-                filtered.append(evt)
+            sig = (e.get("tick"), str(e.get("killer_sid")))
+            if sig not in lucky_sig:
+                filtered.append(e)
         return filtered
 
-    def _apply_no_trois_shot_to_events(self, evts, cfg):
-        """Applique _no_trois_shot_filter sur tous les demos.
-        Retourne un nouveau dict {demo_path: filtered_events}."""
-        if not cfg.get("kill_mod_no_trois_shot"):
-            return evts
-        result = {}
-        for dp, events in evts.items():
-            n_before = len([e for e in events if e.get("type") == "kill"])
-            filtered = self._no_trois_shot_filter(dp, events, cfg)
-            n_after  = len([e for e in filtered if e.get("type") == "kill"])
-            self._alog(
-                f"  🚫🎲 Exclude [{Path(dp).name}] : {n_before} kills → {n_after} precise",
-                "info" if n_after else "dim")
-            if filtered:
-                result[dp] = filtered
-        return result
-
-    # ── ONE TAP (v66) ─────────────────────────────────────────────────────────
     def _one_tap_filter(self, demo_path, events, cfg):
-        """Keep only true one-tap kills (ONE TAP filter).
-
-        Definition:
-          - Isolated shot: no weapon_fire from same player+weapon in 2s BEFORE
-          - No weapon_fire from same player+weapon in 2s AFTER
-          - Headshot already guaranteed by DB (headshots_only forced by toggle)
-
-        Uses demoparser2. Returns the filtered list.
-
-        v73 optimizations:
-          – Parse cache (_dp2_cache): each demo parsed at most once per run.
-          – to_numpy() instead of itertuples() for DataFrame iteration.
+        """Keep only isolated single-shot kills.
+        A kill is kept if the killer fired no other shot within ±ONE_TAP_WINDOW ticks.
+        (Headshot is already guaranteed by the DB query when kill_mod_one_tap is enabled.)
         """
         try:
             from demoparser2 import DemoParser
@@ -3389,7 +3339,9 @@ class App(tk.Tk):
         if not os.path.isfile(demo_path):
             return events
 
-        # ── Parse / cache ────────────────────────────────────────────────────
+        WINDOW = DP2_TICK_WINDOW  # 128 ticks ≈ 2s at 64 tick/s
+
+        # ── Parse / cache ─────────────────────────────────────────────────────
         cache_key = ("one_tap", demo_path)
         with self._dp2_cache_lock:
             already = cache_key in self._dp2_cache
@@ -3410,127 +3362,105 @@ class App(tk.Tk):
                     self._dp2_cache[cache_key] = {}
             else:
                 cols = list(fire_df.columns)
-                def _col(name):
-                    if name in cols: return name
-                    if f"user_{name}" in cols: return f"user_{name}"
-                    return None
-
-                col_sid = _col("player_steamid") or _col("steamid")
+                col_sid = next(
+                    (c for c in ("player_steamid", "user_player_steamid", "user_steamid")
+                     if c in cols), None)
                 if not col_sid:
-                    self._alog("  ⚠ ONE TAP: steamid column not found", "warn")
+                    self._alog("  ⚠ ONE TAP: player_steamid column not found in weapon_fire", "warn")
                     with self._dp2_cache_lock:
                         self._dp2_cache[cache_key] = {}
                 else:
-                    fires_by_player_weapon = defaultdict(list)
-                    arr = fire_df[["tick", "weapon", col_sid]].to_numpy()
-                    for row in arr:
-                        tick    = int(row[0] or 0)
-                        wp      = str(row[1] or "").lower()
-                        sid     = str(row[2] or "")
-                        wp_norm = wp[7:] if wp.startswith("weapon_") else wp
-                        fires_by_player_weapon[(sid, wp_norm)].append(tick)
-                    for k in fires_by_player_weapon:
-                        fires_by_player_weapon[k].sort()
+                    shots_by_sid: dict = defaultdict(list)
+                    for row in fire_df[["tick", col_sid]].to_numpy():
+                        tick = int(row[0] or 0)
+                        sid  = str(row[1] or "")
+                        shots_by_sid[sid].append(tick)
+                    for sid in shots_by_sid:
+                        shots_by_sid[sid].sort()
                     with self._dp2_cache_lock:
-                        self._dp2_cache[cache_key] = dict(fires_by_player_weapon)
+                        self._dp2_cache[cache_key] = dict(shots_by_sid)
 
         with self._dp2_cache_lock:
-            fires_by_player_weapon = self._dp2_cache[cache_key]
-        WINDOW = 128  # CS2 = 64 ticks/s → 2s = 128 ticks
+            shots_by_sid = self._dp2_cache.get(cache_key, {})
 
-        def _is_one_tap(kill_tick, killer_sid, weapon_raw):
-            w_lower = weapon_raw.lower().strip()
-            dp2     = CSDM_TO_DP2_WEAPON.get(w_lower)
-            wp_norm = (dp2[7:] if dp2.startswith("weapon_") else dp2) if dp2 else \
-                      (w_lower[7:] if w_lower.startswith("weapon_") else w_lower)
-
-            fire_ticks = fires_by_player_weapon.get((killer_sid, wp_norm))
-            if not fire_ticks:
+        def _is_isolated(kill_tick, killer_sid):
+            ticks = shots_by_sid.get(str(killer_sid), [])
+            if not ticks:
                 return False
-
-            idx = bisect.bisect_right(fire_ticks, kill_tick) - 1
-            if idx < 0:
-                return False
-            fire_tick = fire_ticks[idx]
-            if kill_tick - fire_tick > WINDOW:
-                return False
-
-            # Silence before: no shot in [fire_tick-WINDOW, fire_tick)
-            idx_before  = bisect.bisect_left(fire_ticks, fire_tick - WINDOW)
-            tirs_avant  = [t for t in fire_ticks[idx_before:idx] if t < fire_tick]
-            if tirs_avant:
-                return False
-
-            # Silence after: no shot in (fire_tick, fire_tick+WINDOW]
-            idx_after   = bisect.bisect_right(fire_ticks, fire_tick)
-            tirs_apres  = [t for t in fire_ticks[idx_after:] if t <= fire_tick + WINDOW]
-            if tirs_apres:
-                return False
-
-            return True
+            lo, hi = kill_tick - WINDOW, kill_tick + WINDOW
+            pos = bisect.bisect_left(ticks, lo)
+            count = 0
+            for i in range(pos, len(ticks)):
+                if ticks[i] > hi:
+                    break
+                count += 1
+                if count > 1:
+                    return False  # more than one shot in the window
+            return count == 1
 
         filtered = []
         for evt in events:
             if evt.get("type") != "kill":
                 filtered.append(evt)
                 continue
-            weapon_raw = evt.get("weapon", "")
             killer_sid = str(evt.get("killer_sid", ""))
             kill_tick  = int(evt.get("tick", 0))
-            if _is_one_tap(kill_tick, killer_sid, weapon_raw):
+            isolated = _is_isolated(kill_tick, killer_sid)
+            self._alog(
+                f"  🎯 [tick={kill_tick}] sid={killer_sid} → "
+                f"{'✓ isolated' if isolated else '✗ not isolated'}",
+                "info" if isolated else "dim")
+            if isolated:
                 filtered.append(evt)
 
         return filtered
 
+    def _trois_tap_filter(self, demo_path, events, cfg):
+        """TROIS TAP = TROIS SHOT AND ONE TAP combined.
+        Keeps only lucky kills (eligible precision weapons) that are also isolated single shots.
+        """
+        lucky_events = self._trois_shot_filter(demo_path, events, cfg)
+        return self._one_tap_filter(demo_path, lucky_events, cfg)
+
+    def _apply_filter_to_events(self, evts, cfg, cfg_key, filter_fn, label):
+        """Apply a per-demo filter function to all demos in evts.
+
+        Skips if cfg_key is falsy. Returns a new {demo_path: events} dict
+        with empty-demo paths removed.
+        """
+        if not cfg.get(cfg_key):
+            return evts
+        result = {}
+        for dp, events in evts.items():
+            n_before = _count_kills(events)
+            filtered = filter_fn(dp, events, cfg)
+            n_after  = _count_kills(filtered)
+            self._alog(
+                f"  {label} [{Path(dp).name}] : {n_before} kills → {n_after}",
+                "info" if n_after else "dim")
+            if filtered:
+                result[dp] = filtered
+        return result
+
+    def _apply_trois_shot_to_events(self, evts, cfg):
+        return self._apply_filter_to_events(
+            evts, cfg, "kill_mod_trois_shot",
+            self._trois_shot_filter, "🎲 TROIS SHOT → TROIS SHOT")
+
+    def _apply_no_trois_shot_to_events(self, evts, cfg):
+        return self._apply_filter_to_events(
+            evts, cfg, "kill_mod_no_trois_shot",
+            self._no_trois_shot_filter, "🚫🎲 Exclude → precise")
 
     def _apply_one_tap_to_events(self, evts, cfg):
-        """Applique _one_tap_filter sur tous les demos.
-        Retourne un nouveau dict {demo_path: filtered_events}."""
-        if not cfg.get("kill_mod_one_tap"):
-            return evts
-        result = {}
-        for dp, events in evts.items():
-            n_before = len([e for e in events if e.get("type") == "kill"])
-            filtered = self._one_tap_filter(dp, events, cfg)
-            n_after  = len([e for e in filtered if e.get("type") == "kill"])
-            self._alog(
-                f"  🎯 ONE TAP [{Path(dp).name}]: {n_before} kills → {n_after} one tap",
-                "info" if n_after else "dim")
-            if filtered:
-                result[dp] = filtered
-        return result
-
-    # ── TROIS TAP (v68) ───────────────────────────────────────────────────────
-    def _trois_tap_filter(self, demo_path, events, cfg):
-        """Filtre les kills qui sont à la fois lucky (TROIS SHOT) ET one-tap isolé.
-
-        Enchaîne _trois_shot_filter puis _one_tap_filter sur le résultat.
-        Le headshot est garanti par la BDD (headshots_only forcé par le toggle).
-        Retourne la liste filtrée.
-        """
-        # Étape 1 : garder uniquement les kills lucky
-        lucky = self._trois_shot_filter(demo_path, events, cfg)
-        if not lucky:
-            return lucky
-        # Étape 2 : parmi les lucky, garder uniquement les one-tap
-        return self._one_tap_filter(demo_path, lucky, cfg)
+        return self._apply_filter_to_events(
+            evts, cfg, "kill_mod_one_tap",
+            self._one_tap_filter, "🎯 ONE TAP → one tap")
 
     def _apply_trois_tap_to_events(self, evts, cfg):
-        """Applique _trois_tap_filter sur tous les demos.
-        Retourne un nouveau dict {demo_path: filtered_events}."""
-        if not cfg.get("kill_mod_trois_tap"):
-            return evts
-        result = {}
-        for dp, events in evts.items():
-            n_before = len([e for e in events if e.get("type") == "kill"])
-            filtered = self._trois_tap_filter(dp, events, cfg)
-            n_after  = len([e for e in filtered if e.get("type") == "kill"])
-            self._alog(
-                f"  🎯🎲 TROIS TAP [{Path(dp).name}] : {n_before} kills → {n_after} TROIS TAP",
-                "info" if n_after else "dim")
-            if filtered:
-                result[dp] = filtered
-        return result
+        return self._apply_filter_to_events(
+            evts, cfg, "kill_mod_trois_tap",
+            self._trois_tap_filter, "🎯🎲 TROIS TAP → TROIS TAP")
 
     def _tab_tags(self, parent):
         p = self._make_tab_scroll(parent)
@@ -3538,7 +3468,7 @@ class App(tk.Tk):
         sec = Sec(p, "🏷 TAGS  —  click to select/deselect")
         sec.pack(fill="x", pady=(0, 10))
 
-        self._tags_active = set()   # IDs des tags actuellement sélectionnés
+        self._tags_active = set()   # IDs of currently selected tags
 
         self._tags_list_frame = tk.Frame(sec, bg=BG2)
         self._tags_list_frame.pack(fill="x", pady=(6, 0))
@@ -3560,7 +3490,7 @@ class App(tk.Tk):
                                      fg=MUTED, bg=BG2, anchor="w")
         self._tag_sel_lbl.pack(fill="x", pady=(6, 0))
 
-        # Tag auto à l'export : utilise la sélection active (multi-tag possible)
+        # Auto-tag on export: uses the active selection (multi-tag supported)
         auto_row = tk.Frame(sec, bg=BG2)
         auto_row.pack(fill="x", pady=(4, 0))
         self._tag_auto_var = tk.BooleanVar(
@@ -3577,17 +3507,17 @@ class App(tk.Tk):
 
         def _on_tag_auto_toggle(*_):
             self.v["tag_enabled"].set(self._tag_auto_var.get())
-            # tag_on_export = premier tag actif (compat batch) ; les autres sont dans _tags_active
+            # tag_on_export = first active tag (batch compat) ; others are in _tags_active
             active_names = self._get_active_tag_names()
             self.v["tag_on_export"].set(active_names[0] if active_names else "")
         self._tag_auto_var.trace_add("write", _on_tag_auto_toggle)
 
-        # ── PLAGE DES TAGS ──────────────────────────────
+        # ── TAG DATE RANGE ──────────────────────────────
         sec_plage = Sec(p, "📅 TAG RANGE")
         sec_plage.pack(fill="x", pady=(0, 6))
         desc_label(sec_plage,
                    "Calculates the first and last demo with the selected tags, "
-                   "et propose d'appliquer ces dates comme filtre dans Capturer.").pack(fill="x")
+                   "and suggests applying these dates as a filter in Capture.").pack(fill="x")
 
         plage_btn_row = tk.Frame(sec_plage, bg=BG2)
         plage_btn_row.pack(fill="x", pady=(6, 0))
@@ -3596,7 +3526,7 @@ class App(tk.Tk):
                   cursor="hand2", activebackground="#7db8f0",
                   command=self._tag_calc_range).pack(side="left", ipady=4, ipadx=8)
 
-        # Résultat de la plage — affiché dynamiquement
+        # Range result — displayed dynamically
         plage_result = tk.Frame(sec_plage, bg=BG2)
         plage_result.pack(fill="x", pady=(6, 0))
 
@@ -3636,11 +3566,11 @@ class App(tk.Tk):
                 "Sets date_from to the day after the last tagged demo and clears date_to.\n"
                 "Use: run preview after to see remaining demos to tag.")
 
-        # Stocker les dates calculées
+        # Store computed dates
         self._plage_date_start = ""   # DD-MM-YYYY
         self._plage_date_end   = ""   # DD-MM-YYYY
 
-        # ── OPÉRATIONS ──────────────────────────────────
+        # ── OPERATIONS ──────────────────────────────────
         sec2 = Sec(p, "OPERATIONS")
         sec2.pack(fill="x", pady=(0, 6))
 
@@ -3673,7 +3603,7 @@ class App(tk.Tk):
                   relief="flat", bd=0, cursor="hand2", activebackground="#fca5a5",
                   command=self._tag_remove_selected).pack(side="left", padx=(6, 0), ipady=4, ipadx=6)
 
-        # Liste des démos trouvées
+        # List of found demos
         lf = tk.Frame(sec2, bg=BG2)
         lf.pack(fill="x", pady=(6, 0))
         lf.rowconfigure(0, weight=1)
@@ -3785,7 +3715,7 @@ class App(tk.Tk):
                 prefix = "✓  " if active else "○  "
                 fg_c = _contrast_fg(bg_c) if active else TEXT
 
-                # Carré coloré toujours visible — plein si actif, bordure seule si inactif
+                # Colored square — filled when active, border-only when inactive
                 swatch_frame = tk.Frame(row,
                                         bg=bg_c if active else BG2,
                                         width=14, height=14,
@@ -3814,7 +3744,7 @@ class App(tk.Tk):
                     command=lambda i=tid, n=tname: self._delete_tag_ui(i, n)
                 ).pack(side="right", padx=(4, 2))
 
-        # Mettre à jour le label de sélection et tag auto
+        # Update the selection label and auto-tag
         active_names = self._get_active_tag_names()
         if hasattr(self, '_tag_sel_lbl'):
             if active_names:
@@ -3823,21 +3753,20 @@ class App(tk.Tk):
                     fg=ORANGE)
             else:
                 self._tag_sel_lbl.config(text="No tag selected", fg=MUTED)
-        # Sync tag auto : tag_on_export = premier tag actif, tag_enabled = checkbox
+        # Sync auto tag : tag_on_export = first active tag, tag_enabled = checkbox
         if hasattr(self, '_tag_auto_lbl'):
             if active_names:
                 self._tag_auto_lbl.config(
                     text=f"→ {', '.join(active_names)}", fg=ORANGE)
-                # Mettre à jour tag_on_export avec le premier tag actif
+                # Update tag_on_export with the first active tag
                 self.v["tag_on_export"].set(active_names[0])
             else:
                 self._tag_auto_lbl.config(text="(no tag selected)", fg=MUTED)
                 self.v["tag_on_export"].set("")
 
     def _tag_search_demos(self):
-        """Cherche les démos qui correspondent à la config (joueur+events+armes+dates)
-        ET qui ont déjà les tags sélectionnés en BDD.
-        Utile pour vérifier ce qui est déjà tagué dans la période courante."""
+        """Find demos matching config (player+events+weapons+dates)
+        that already have the selected tags in the DB."""
         active_ids = list(self._tags_active)
         active_names = self._get_active_tag_names()
         if not active_ids:
@@ -3865,7 +3794,7 @@ class App(tk.Tk):
         cfg = self._build_run_cfg()
 
         def task():
-            # 1. Récupérer les checksums déjà taguées avec les tags sélectionnés
+            # 1. Fetch checksums already tagged with the selected tags
             try:
                 conn = self._pg()
                 with conn.cursor() as cur:
@@ -3881,7 +3810,7 @@ class App(tk.Tk):
                     self._tag_search_status.config(text="Error", fg=RED)))
                 return
 
-            # 2. Requête config (joueur+events+armes+dates)
+            # 2. Config query (player+events+weapons+dates)
             try:
                 evts = self._query_events(cfg)
             except Exception as e:
@@ -3890,7 +3819,7 @@ class App(tk.Tk):
                     self._tag_search_status.config(text="Error", fg=RED)))
                 return
 
-            # 3. Intersection : garder seulement les démos déjà taguées
+            # 3. Intersection: keep only already-tagged demos
             found = []
             for dp in sorted(evts.keys(), key=self._demo_sort_key):
                 chk = self._demo_checksums.get(dp) or self._get_demo_checksum(dp)
@@ -3925,8 +3854,8 @@ class App(tk.Tk):
         threading.Thread(target=task, daemon=True).start()
 
     def _tag_calc_range(self):
-        """Calcule la première et dernière démo ayant les tags sélectionnés (sans filtre config).
-        Affiche la plage et active les boutons d'application."""
+        """Compute the date range of demos with selected tags (no config filter).
+        Shows the range and enables the apply buttons."""
         active_ids = list(self._tags_active)
         active_names = self._get_active_tag_names()
         if not active_ids:
@@ -4011,14 +3940,14 @@ class App(tk.Tk):
                 self._plage_date_end   = date_end   or ""
                 if date_start and date_end:
                     self._plage_lbl.config(
-                        text=f"{len(demos)} demo(s) — «{_names_str}»  |  "
+                        text=f"{len(demos)} demo(s) — \"{_names_str}\"  |  "
                              f"Start: {date_start}   End: {date_end}   After: {date_after}",
                         fg=GREEN)
                     for btn in (self._plage_btn_start, self._plage_btn_end,
                                 self._plage_btn_full, self._plage_btn_after):
                         btn.config(state="normal")
                     self._alog(
-                        f"[TAGS/range] {len(demos)} demo(s) «{_names_str}» — "
+                        f"[TAGS/range] {len(demos)} demo(s) \"{_names_str}\" — "
                         f"start: {date_start}  end: {date_end}  after: {date_after}",
                         "ok")
                 else:
@@ -4057,8 +3986,8 @@ class App(tk.Tk):
             self._alog(f"[TAGS/range] After range: date_from → {after}, date_to cleared", "ok")
 
     def _tag_search_last_tagged(self):
-        """Même intersection que Par config (config ∩ tags BDD),
-        trouve la démo la plus récente et applique date_from au lendemain."""
+        """Same intersection as By config (config ∩ DB tags),
+        finds the most recent demo and applies date_from to the next day."""
         active_ids = list(self._tags_active)
         active_names = self._get_active_tag_names()
         if not active_ids:
@@ -4080,7 +4009,7 @@ class App(tk.Tk):
         cfg = self._build_run_cfg()
 
         def task():
-            # 1. Checksums taguées en BDD
+            # 1. Checksums tagged in DB
             try:
                 conn = self._pg()
                 with conn.cursor() as cur:
@@ -4094,14 +4023,14 @@ class App(tk.Tk):
                 self.after(0, lambda err=e: self._alog(f"Tags 📅 DB error: {err}", "err"))
                 return
 
-            # 2. Démos correspondant à la config
+            # 2. Demos matching config
             try:
                 evts = self._query_events(cfg)
             except Exception as e:
                 self.after(0, lambda err=e: self._alog(f"Tags 📅 config error: {err}", "err"))
                 return
 
-            # 3. Intersection : démos config ∩ taguées
+            # 3. Intersection: config demos ∩ tagged
             matched = []
             for dp in evts:
                 chk = self._demo_checksums.get(dp) or self._get_demo_checksum(dp)
@@ -4111,11 +4040,11 @@ class App(tk.Tk):
             if not matched:
                 _names_str = ", ".join(active_names)
                 self.after(0, lambda: (
-                    self._alog(f"[TAGS/📅] No tagged demo in current config «{_names_str}».", "warn"),
+                    self._alog(f"[TAGS/📅] No tagged demo in current config \"{_names_str}\".", "warn"),
                     self._tag_search_status.config(text="No tagged demos.", fg=YELLOW)))
                 return
 
-            # 4. Trouver la plus récente
+            # 4. Find the most recent
             matched_sorted = sorted(matched, key=self._demo_sort_key)
             last_demo = matched_sorted[-1]
             last_ts = self._get_demo_ts(last_demo)
@@ -4226,7 +4155,7 @@ class App(tk.Tk):
         else:
             messagebox.showerror("Tags", f"Error: {err}")
 
-    # ── TAB OUTILS ──
+    # ── TAB TOOLS ──
     def _tab_outils(self, parent):
         p = self._make_tab_scroll(parent)
 
@@ -4354,19 +4283,19 @@ class App(tk.Tk):
         self._log(f"Preset '{name}' loaded.", "ok")
 
     def _post_apply_ui(self):
-        """Synchronise les widgets dérivés après un _apply_config (résolution, slow-motion…)."""
-        # Combo résolution : refléter width × height courants
+        """Sync derived widgets after _apply_config (resolution, slow-motion…)."""
+        # Resolution combo: reflect current width × height
         try:
             w = self.v["width"].get()
             h = self.v["height"].get()
             self.v["resolution"].set(f"{w}x{h}")
         except Exception:
             pass
-        # Sélecteurs structurés v60 : déduire définition + ratio depuis width/height
+        # v60 structured selectors: infer definition + ratio from width/height
         try:
             w = self.v["width"].get()
             h = self.v["height"].get()
-            # Définition
+            # Definition
             def_lbl = next((lbl for lbl, dh in DEFINITIONS if dh == h), None)
             # Ratio
             ratio_lbl = None
@@ -4439,7 +4368,7 @@ class App(tk.Tk):
                  command=lambda v: lbl.config(text=f"{int(float(v))}s")).pack(fill="x", pady=(2, 0))
 
     def _calc_summary(self, all_events, cfg):
-        """Retourne (nb_demos, nb_clips, total_sec, avg_sec) depuis les events et la config."""
+        """Return (nb_demos, nb_clips, total_sec, avg_sec) from events and config."""
         tickrate = cfg.get("tickrate", 64)
         before_s = self._effective_before(cfg)
         after_s = cfg.get("after", 5)
@@ -4464,21 +4393,21 @@ class App(tk.Tk):
     @staticmethod
     def _read_demo_date_from_info(demo_path):
         """
-        Lit le fichier .info à côté du .dem et en extrait le timestamp Unix
-        de la date de partie réelle.
+        Read the .info file next to the .dem and extract the Unix timestamp
+        of the actual match date.
 
-        Le .info est un protobuf binaire. Le champ qui contient la date est un
-        varint (field 5, type 0) qui encode un Unix timestamp en secondes.
+        The .info file is a binary protobuf. The date field is a varint
+        (field 5, type 0) encoding a Unix timestamp in seconds.
 
-        Format du message CDataGCCStrike15_v2_MatchInfo :
+        CDataGCCStrike15_v2_MatchInfo format:
           field 1 = matchid (uint64)
-          field 2 = matchtime (uint32) ← timestamp de la partie
+          field 2 = matchtime (uint32) ← match timestamp
           ...
-        On fait un parsing minimal sans dépendance protobuf.
+        Minimal parsing with no protobuf dependency.
         """
         info_path = Path(demo_path).with_suffix(".info")
         if not info_path.exists():
-            # Essayer aussi demo_path + ".info" (certaines versions ajoutent au nom)
+            # Also try demo_path + ".info" (some versions append to the name)
             info_path2 = Path(str(demo_path) + ".info")
             if info_path2.exists():
                 info_path = info_path2
@@ -4522,17 +4451,15 @@ class App(tk.Tk):
                 elif wire_type in (1, 5):
                     i += 8 if wire_type == 1 else 4
                 else:
-                    break   # wire type inconnu, on arrête
+                    break   # unknown wire type, stop
         except Exception:
             pass
         return None
 
     @staticmethod
     def _ts_from_demo_path(demo_path):
-        """Retourne la date de modification du fichier .dem comme timestamp Unix,
-        ou None si le fichier n'existe pas.
-        C'est le meilleur fallback quand le .info est absent : la mtime du .dem
-        correspond généralement à la date de téléchargement, proche de la partie."""
+        """Return the .dem file mtime as a Unix timestamp, or None if not found.
+        Best fallback when .info is absent — typically close to the download date."""
         try:
             p = Path(demo_path)
             if p.is_file():
@@ -4542,8 +4469,8 @@ class App(tk.Tk):
         return None
 
     def _get_demo_ts(self, demo_path):
-        """Retourne le timestamp canonique de la démo (même source pour affichage ET filtre).
-        Priorité : 1) .info  2) mtime du .dem  (None si aucune source disponible)."""
+        """Return the canonical demo timestamp (same source for display AND filter).
+        Priority: 1) .info file  2) .dem mtime  (None if unavailable)."""
         ts = self._read_demo_date_from_info(demo_path)
         if ts is not None:
             return ts
@@ -4556,7 +4483,7 @@ class App(tk.Tk):
                 return datetime.fromtimestamp(ts).strftime("%d %m %Y")
             except Exception:
                 pass
-        # Fallback BDD (souvent = date d'import)
+        # Fallback DB (often = import date)
         raw = self._demo_dates.get(demo_path)
         if raw is None:
             return "??-??-????"
@@ -4658,7 +4585,7 @@ class App(tk.Tk):
         date_from_iso = cfg.get("date_from", "")
         date_to_iso   = cfg.get("date_to", "")
 
-        # Pré-calcul des bornes epoch pour le filtre Python post-requête
+        # Pre-compute epoch bounds for the post-query Python date filter
         ts_from = None
         ts_to   = None
         if date_from_iso:
@@ -4691,8 +4618,8 @@ class App(tk.Tk):
         try:
             with conn.cursor() as cur:
                 tc = self._find_col("kills", ["tick", "killer_tick", "round_tick"])
-                # Colonne tick de mort de la victim — pour les grenades/molotov où
-                # le tick BDD est le lancer mais la mort arrive après
+                # Victim death tick — for grenades/molotov where the DB tick
+                # is the throw but death occurs later
                 dtc = self._find_col("kills", ["victim_death_tick", "death_tick",
                                                 "killed_tick", "victim_tick"])
                 dc = self._find_col("matches",
@@ -4715,7 +4642,7 @@ class App(tk.Tk):
                 kills_on = cfg["events_kills"]
                 deaths_on = cfg["events_deaths"]
                 weapons = cfg["weapons"]
-                # ONE TAP et TROIS TAP impliquent headshot obligatoire en BDD
+                # ONE TAP and TROIS TAP require mandatory headshot in DB
                 headshots_only = (cfg.get("headshots_only", False)
                                   or cfg.get("kill_mod_one_tap", False)
                                   or cfg.get("kill_mod_trois_tap", False))
@@ -4723,7 +4650,7 @@ class App(tk.Tk):
                 include_teamkills = (_tkmode != "exclude")
                 teamkills_only    = (_tkmode == "only")
 
-                # Colonne headshot (optionnelle)
+                # Headshot column (optional)
                 hc = self._find_col("kills", ["is_headshot", "headshot", "is_hs", "hs"])
                 hsql = ""
                 if headshots_only and hc:
@@ -4745,7 +4672,7 @@ class App(tk.Tk):
                     else:
                         self._alog("⚠ Exclude teamkills: team columns not found — filter ignored.", "warn")
 
-                # Filtre suicides — weapon_name IN ('world','suicide','world_entity',...)
+                # Suicide filter — weapon_name IN ('world','suicide','world_entity',...)
                 SUICIDE_WEAPONS = ("world", "suicide", "world_entity", "trigger_hurt",
                                    "fall", "env_fire", "planted_c4")
                 suicidesql = ""
@@ -4786,8 +4713,8 @@ class App(tk.Tk):
                         missing_labels = ", ".join(
                             m.replace("kill_mod_", "").replace("_", " ") for m in missing_mods)
                         if not mod_clauses:
-                            # Tous les modificateurs cochés sont absents de la BDD →
-                            # impossible de filtrer, on renvoie zéro résultat plutôt que tout
+                            # All checked modifiers absent from DB →
+                            # cannot filter, return empty rather than all clips
                             self._alog(
                                 f"⛔ Modifiers not found in DB: {missing_labels}. "
                                 f"No clips returned — uncheck these modifiers or check the schema.",
@@ -4802,7 +4729,7 @@ class App(tk.Tk):
                     if mod_clauses:
                         modsql = " AND (" + " OR ".join(mod_clauses) + ")"
 
-                date_col = self._date_col   # peut être None → auto-détection ci-dessous
+                date_col = self._date_col   # may be None → auto-detected below
                 if not date_col and self._db_schema.get("matches"):
                     _m_types = self._db_col_types.get("matches", {})
                     _DATE_TYPES = {
@@ -4824,12 +4751,12 @@ class App(tk.Tk):
                         self._date_col      = date_col
                         self._date_col_type = _m_types.get(date_col, "").lower()
 
-                # _build_dsql vide : le filtre date se fait en Python post-requête
+                # Empty _build_dsql: date filter applied in Python post-query
                 def _build_dsql(base_params):
                     return ""
 
                 if (kills_on or deaths_on) and tc and kc:
-                    # Construire la clause joueur pour N SIDs
+                    # Build the player clause for N SIDs
                     sid_ph = ",".join(["%s"] * len(sids))
                     per_sid_conds = []
                     per_sid_params = []
@@ -4939,8 +4866,8 @@ class App(tk.Tk):
         finally:
             conn.close()
 
-        # Appliqué ici plutôt qu'en SQL car la colonne BDD contient souvent
-        # la date d'import et non la date de partie.
+        # Applied here rather than SQL because the DB column often contains
+        # the import date and not the actual match date.
         if ts_from is not None or ts_to is not None:
             results = {
                 dp: evts_val for dp, evts_val in results.items()
@@ -4949,8 +4876,8 @@ class App(tk.Tk):
 
         return results
     def _effective_before(self, cfg):
-        """Retourne le nombre de secondes AVANT effectif.
-        En mode 'both', victim_pre_s s'additionne à before pour que
+        """Return the effective BEFORE duration in seconds.
+        In 'both' mode, victim_pre_s is added to before so that
         the killer phase is complete in the recorded sequence."""
         before = cfg.get("before", 3)
         if cfg.get("perspective") == "both":
@@ -5005,7 +4932,7 @@ class App(tk.Tk):
         victim_pre_ticks = max(0, int(victim_pre_s) * tickrate)
 
         def _build_cams_killer(seq):
-            """Mode killer : caméra sur notre joueur, bascule sur le killer à chaque event."""
+            """Killer mode: camera on our player, switches to the killer at each event."""
             sorted_evts = sorted(seq["events"], key=lambda e: e["tick"])
             cam_ticks = build_camera_ticks(seq, tickrate)
             cams = []
@@ -5023,16 +4950,16 @@ class App(tk.Tk):
             return cams
 
         def _build_cams_victim(seq):
-            """Mode victim : caméra fixe et constante sur la victim du premier kill
-            de nos joueurs. Si l'event est une mort de notre joueur, on le suit lui.
-            Aucun switch de caméra pendant toute la séquence."""
+            """Victim mode: camera fixed on the victim of the first kill by our player.
+            If the event is our player's death, the camera follows our player.
+            No camera switch during the whole sequence."""
             sorted_evts = sorted(
                 [e for e in seq["events"] if e.get("killer_sid") in sids_active
                  or e.get("victim_sid") in sids_active],
                 key=lambda e: e["tick"]
             )
 
-            # Déterminer la cible unique pour toute la séquence
+            # Determine the single camera target for the whole sequence
             target_sid = primary_sid
             if sorted_evts:
                 first_ev = sorted_evts[0]
@@ -5043,15 +4970,15 @@ class App(tk.Tk):
                     # Notre joueur tue : on suit sa victim
                     target_sid = first_ev["victim_sid"]
 
-            # Un seul point caméra au start_tick suffit — CSDM maintient la cible
+            # A single camera point at start_tick is enough — CSDM holds the target
             return [{"tick": seq["start_tick"], "playerSteamId": target_sid,
                      "playerName": self._player_names.get(target_sid, "")}]
 
         def _build_cams_both(seq):
-            """Mode les-deux : caméra sur le killer depuis le début de la séquence,
-            bascule sur la victim victim_pre_ticks avant le kill.
-            La séquence est déjà étendue de victim_pre_s par _effective_before,
-            donc le switch est garanti à l'intérieur du clip."""
+            """Both mode: camera on the killer from the start of the sequence,
+            switches to victim victim_pre_ticks before the kill.
+            Sequence already extended by victim_pre_s via _effective_before,
+            so the switch is guaranteed inside the clip."""
             sorted_evts = sorted(
                 [e for e in seq["events"] if e.get("killer_sid") in sids_active
                  or e.get("victim_sid") in sids_active],
@@ -5061,7 +4988,7 @@ class App(tk.Tk):
                 return [{"tick": seq["start_tick"], "playerSteamId": primary_sid,
                          "playerName": self._player_names.get(primary_sid, "")}]
 
-            # Construire une timeline de (tick, target_sid) explicite
+            # Build an explicit (tick, target_sid) timeline
             timeline = []
 
             for ev in sorted_evts:
@@ -5073,13 +5000,13 @@ class App(tk.Tk):
                 else:
                     ksid = ev.get("killer_sid") or primary_sid
                     vsid = ev.get("victim_sid") or primary_sid
-                    # Phase killer : depuis le début de la séquence
+                    # Killer phase: from the start of the sequence
                     timeline.append((seq["start_tick"], ksid))
                     # Phase victim : victim_pre_ticks avant le kill
                     switch_tick = max(seq["start_tick"], ev_tick - victim_pre_ticks)
                     timeline.append((switch_tick, vsid))
 
-            # Dédupliquer : garder la dernière instruction par tick
+            # Deduplicate: keep the last instruction per tick
             timeline.sort(key=lambda x: x[0])
             deduped = {}
             for t_entry, tsid in timeline:
@@ -5125,17 +5052,17 @@ class App(tk.Tk):
                         cam_sids.add(vsid)
 
 
-            # Collecter les killers et victims de la séquence
+            # Collect killers and victims for the sequence
             seq_killer_sids = {ev.get("killer_sid") for ev in seq["events"] if ev.get("killer_sid")}
             seq_victim_sids  = {ev.get("victim_sid")  for ev in seq["events"] if ev.get("victim_sid")}
             all_seq_sids = (cam_sids | seq_killer_sids | seq_victim_sids) - {None, ""}
 
             players_opts = []
             seen_opts = set()
-            # Nos joueurs actifs en premier, puis les autres SIDs de la séquence
+            # Active players first, then other SIDs in the sequence
             ordered = list(sids_active) + sorted(all_seq_sids - sids_active)
-            # En mode victim, les SIDs visés par la caméra doivent avoir showKill:true
-            # sinon CSDM ignore le switch de caméra vers eux
+            # In victim mode, camera-target SIDs must have showKill:true
+            # otherwise CSDM ignores the camera switch
             cam_target_sids = {c["playerSteamId"] for c in cams if c.get("playerSteamId")}
 
             for psid in ordered:
@@ -5204,7 +5131,7 @@ class App(tk.Tk):
                 if dl_arg not in extra:
                     extra = (dl_arg + " " + extra).strip()
 
-            # Commandes physique CS2 — injectées si différentes des défauts
+            # CS2 physics commands — injected if different from defaults
             phys_cmds = []
             rg = cfg.get("phys_ragdoll_gravity", 600)
             if int(rg) != 600:
@@ -5224,7 +5151,7 @@ class App(tk.Tk):
             if phys_cmds:
                 extra = (" ".join(phys_cmds) + " " + extra).strip()
 
-            # Mode fenêtre CS2
+            # CS2 window mode
             wm = cfg.get("cs2_window_mode", "none")
             _WM_FLAGS = {
                 "fullscreen": "-fullscreen",
@@ -5238,14 +5165,14 @@ class App(tk.Tk):
             if extra:
                 hlae_options["extraArgs"] = extra
 
-        # Preset encodage — injecté dans outputParameters pour les codecs CPU uniquement
-        # Les codecs GPU (NVENC/AMF) ignorent -preset de libx264/libx265
+        # Encoding preset — injected into outputParameters for CPU codecs only
+        # GPU codecs (NVENC/AMF) ignore -preset from libx264/libx265
         _CPU_CODECS = {"libx264", "libx265", "libsvtav1", "libaom-av1", "libvpx-vp9",
                        "prores_ks", "utvideo"}
         video_codec = cfg.get("video_codec", "libx264")
         video_preset = cfg.get("video_preset", "medium").strip()
         user_out_params = cfg.get("ffmpeg_output_params", "").strip()
-        # N'injecter le preset que si : codec CPU + preset non vide + pas déjà dans les params user
+        # Only inject preset if: CPU codec + non-empty preset + not already in paramsr
         if (video_codec in _CPU_CODECS and video_preset
                 and "-preset" not in user_out_params):
             preset_injection = f"-preset {video_preset}"
@@ -5290,14 +5217,13 @@ class App(tk.Tk):
     RETRYABLE = ["game error", "game crashed", "process exited", "timed out"]
     FATAL = ["is not iterable", "ENOENT", "Cannot find", "not found", "TypeError",
              "ReferenceError", "SyntaxError", "FATAL", "Unhandled", "Cannot read properties"]
-    # "error:" (avec deux points) évite les faux positifs sur "no errors found",
+    # "error:" (with colon) avoids false positives on "no errors found",
     # "error-corrected", "errorless", etc.
     ALL_ERR = RETRYABLE + FATAL + ["error:", "Error:"]
 
     def _start_cs2_minimize_watcher(self):
-        """Lance un thread qui attend l'apparition de la fenêtre CS2
-        et la minimise dès qu'elle est visible, une seule fois.
-        Nécessite pywin32 ; sans lui, retourne silencieusement."""
+        """Start a thread that waits for the CS2 window and minimizes it once.
+        Requires pywin32; returns silently without it."""
         def _watch():
             try:
                 import win32gui
@@ -5337,8 +5263,8 @@ class App(tk.Tk):
                 time.sleep(0.1)
 
             if not first_seen:
-                return  # CS2 non trouvé dans le délai
-            # CS2 minimisé une seule fois — le thread s'arrête.
+                return  # CS2 not found within timeout
+            # CS2 minimized once — thread stops.
 
         threading.Thread(target=_watch, daemon=True).start()
 
@@ -5347,7 +5273,7 @@ class App(tk.Tk):
         try:
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           text=True, encoding="utf-8", errors="replace", bufsize=1)
-            # Lancer le watcher CS2 si l'option est activée
+            # Start CS2 minimize watcher if the option is enabled
             if getattr(self, "v", {}) and self.v.get("cs2_minimize") and self.v["cs2_minimize"].get():
                 self._start_cs2_minimize_watcher()
             for line in iter(self._proc.stdout.readline, ""):
@@ -5461,6 +5387,7 @@ class App(tk.Tk):
         self._alog(f"  ✓ Pre-parse done ({done} demos)", "ok")
 
 
+    def _dry_run(self):
         if not self.player_search.get_steam_ids():
             messagebox.showerror("", "Check at least one registered account.")
             return
@@ -5500,7 +5427,7 @@ class App(tk.Tk):
         threading.Thread(target=task, daemon=True).start()
 
     def _show_preview(self, evts, cfg):
-        """Affiche les résultats d'un aperçu. Doit être appelé sur le thread principal."""
+        """Display preview results. Must be called on the main thread."""
         if not evts:
             self._log("No events.", "warn")
             self._summary_lbl.config(text="  No clips found.", fg=MUTED)
@@ -5599,7 +5526,7 @@ class App(tk.Tk):
             self._alog("  Assemblage: FFmpeg introuvable.", "err")
             return
 
-        # Collecter tous les fichiers vidéo dans les dossiers produits
+        # Collect all video files from produced directories
         _asm_base = (cfg.get("output_dir_assembled") or
                     cfg.get("output_dir_clips") or
                     cfg.get("output_dir") or "").strip()
@@ -5610,7 +5537,7 @@ class App(tk.Tk):
             if os.path.isdir(d):
                 for ext in (f".{container}", ".mp4", ".avi", ".mkv", ".mov"):
                     clips.extend(sorted(Path(d).glob(f"*{ext}")))
-        # Dédupliquer en gardant l'ordre
+        # Deduplicate preserving order
         seen = set()
         clips = [c for c in clips if not (str(c) in seen or seen.add(str(c)))]
 
@@ -5620,7 +5547,7 @@ class App(tk.Tk):
 
         self._alog(f"  {len(clips)} clip(s) to assemble…", "info")
 
-        # Résoudre le chemin de sortie
+        # Resolve the output path
         out_name = (cfg.get("assemble_output", "assembled.mp4") or "assembled.mp4").strip()
         if not os.path.isabs(out_name):
             out_name = os.path.join(out_root, out_name)
@@ -5628,10 +5555,10 @@ class App(tk.Tk):
             out_name = out_name + f".{container}"
         os.makedirs(os.path.dirname(out_name) or ".", exist_ok=True)
 
-        # Écrire la liste FFmpeg concat
-        # Utiliser des chemins Windows avec backslashes — FFmpeg concat les accepte mieux
-        # Pas d'apostrophes ni de guillemets dans le format concat : on utilise les guillemets doubles
-        # et on échappe les caractères spéciaux (# interprété comme séquence sinon)
+        # Write the FFmpeg concat list
+        # Use Windows paths with backslashes — FFmpeg concat handles them better
+        # No apostrophes or quotes in concat format: use double quotes
+        # and escape special chars (# would be interpreted as a sequence otherwise)
         try:
             lst = tempfile.NamedTemporaryFile(mode="w", suffix=".txt", prefix="csdm_concat_",
                                               delete=False, encoding="utf-8")
@@ -5644,9 +5571,8 @@ class App(tk.Tk):
             self._alog(f"  Assembly: list error — {e}", "err")
             return
 
-        # Le # dans out_name pose problème à FFmpeg sur la ligne de commande.
-        # On utilise un fichier de sortie temporaire sans caractères spéciaux,
-        # puis on renomme après coup.
+        # The # in out_name causes issues with FFmpeg on the command line.
+        # Use a temp output file without special chars, then rename.
         special_chars = set('#%?*')
         needs_rename = any(c in special_chars for c in os.path.basename(out_name))
         if needs_rename:
@@ -5655,17 +5581,17 @@ class App(tk.Tk):
         else:
             tmp_out = out_name
 
-        # movflags+faststart uniquement pour mp4/mov (non supporté par matroska/avi)
+        # movflags+faststart only for mp4/mov (not supported by matroska/avi)
         fast_start = ["-movflags", "+faststart"] if container in ("mp4", "mov") else []
 
         cmd = [ffmpeg, "-y",
-               "-fflags", "+genpts",           # recalcule les PTS manquants/négatifs
+               "-fflags", "+genpts",           # recompute missing/negative PTS
                "-f", "concat", "-safe", "0",
                "-i", lst_path,
-               "-c:v", "copy",                 # vidéo sans ré-encodage
-               "-c:a", "aac",                  # ré-encode audio pour corriger le drift
+               "-c:v", "copy",                 # copy video stream (no re-encode)
+               "-c:a", "aac",                  # re-encode audio to fix drift
                "-b:a", f"{cfg.get('audio_bitrate', 256)}k",
-               "-af", "aresample=async=1000",  # recale l'audio sur la timeline vidéo
+               "-af", "aresample=async=1000",  # resync audio to video timeline
                ] + fast_start + [
                "-f", ffmpeg_fmt, tmp_out]
 
@@ -5676,7 +5602,7 @@ class App(tk.Tk):
             pass
 
         if success:
-            # Renommer vers le nom final si on a utilisé un fichier temporaire
+            # Rename to final name if a temp file was used
             if needs_rename and tmp_out != out_name:
                 try:
                     if os.path.exists(out_name):
@@ -5703,7 +5629,7 @@ class App(tk.Tk):
                     try:
                         if d.resolve() == out_root:
                             continue
-                        # Supprimer même si non vide (fichiers résiduels JSON etc.)
+                        # Delete even if non-empty (residual JSON files etc.)
                         shutil.rmtree(d, ignore_errors=True)
                         if not d.exists():
                             removed_dirs += 1
@@ -5721,6 +5647,44 @@ class App(tk.Tk):
                     pass
             err_msg = errs[0] if errs else f"code {rc}"
             self._alog(f"  ✗ Assembly failed: {err_msg}", "err")
+
+    def _apply_dp2_modifiers(self, dp, events, cfg):
+        """Apply active demoparser2 kill modifiers for one demo.
+
+        Returns the filtered event list, or None if no kills remain
+        (caller should skip this demo).
+        TROIS TAP is exclusive; the others are cumulative (AND logic).
+        """
+        modifiers = [
+            ("kill_mod_trois_tap",     self._trois_tap_filter,
+             "🎯🎲 TROIS TAP",  "TROIS TAP",  "0 TROIS TAP"),
+        ]
+        cumulative = [
+            ("kill_mod_trois_shot",    self._trois_shot_filter,
+             "🎲 TROIS SHOT",   "TROIS SHOT", "0 TROIS SHOT"),
+            ("kill_mod_no_trois_shot", self._no_trois_shot_filter,
+             "🚫🎲 Exclude",    "precise",    "0 EXCLUDE"),
+            ("kill_mod_one_tap",       self._one_tap_filter,
+             "🎯 ONE TAP",      "one tap",    "0 ONE TAP"),
+        ]
+
+        if cfg.get("kill_mod_trois_tap"):
+            active = modifiers
+        else:
+            active = [m for m in cumulative if cfg.get(m[0])]
+
+        for cfg_key, filter_fn, log_label, result_label, skip_label in active:
+            n_before = _count_kills(events)
+            events   = filter_fn(dp, events, cfg)
+            n_after  = _count_kills(events)
+            self._alog(
+                f"  {log_label} : {n_before} kills → {n_after} {result_label}",
+                "info")
+            if not events:
+                self._alog(f"  ⏭ SKIP: {skip_label} in this demo", "dim")
+                return None
+        return events
+
 
     def _worker(self, cfg):
         cli = self._resolve_cli(cfg["csdm_exe"])
@@ -5749,7 +5713,7 @@ class App(tk.Tk):
             hlae_info = f" | FOV:{fov}"
             if int(sm) != 100:
                 hlae_info += f" Slow:{sm}%"
-            # Physique non-défaut
+            # Non-default physics
             phys_parts = []
             rg = cfg.get("phys_ragdoll_gravity", 600)
             if int(rg) != 600:   phys_parts.append(f"RagGrav:{rg}")
@@ -5790,7 +5754,7 @@ class App(tk.Tk):
             self.after(0, self._reset_btns)
             return
         te = sum(len(e) for e in all_events.values())
-        # Calcul résumé une seule fois (réutilisé à la fin)
+        # Compute summary once (reused at the end)
         _nd, _nc, _ts, _as = self._calc_summary(all_events, cfg)
         _stxt = self._fmt_summary(_nd, _nc, _ts, _as)
         self.after(0, lambda t=_stxt: self._summary_lbl.config(text=t + "  [running…]", fg=YELLOW))
@@ -5809,15 +5773,15 @@ class App(tk.Tk):
 
         ok = fail = skip = retried = tagged = 0
         summary = []
-        produced_dirs = []   # dossiers de sortie des démos réussies (pour assemblage)
+        produced_dirs = []   # output dirs of successful demos (for assembly)
 
         # ── Cache reset + parallel DP2 pre-parse ─────────────────────────────
         self._dp2_cache = {}
         self._preparse_dp2(cfg, [dp for dp, _ in demo_list])
         # ─────────────────────────────────────────────────────────────────────
 
-        skip_already_tagged = False   # True = ignorer les démos déjà taguées
-        _already_tagged_paths = set() # chemins des démos déjà taguées
+        skip_already_tagged = False   # True = skip already-tagged demos
+        _already_tagged_paths = set() # paths of already-tagged demos
         if tag_enabled:
             ts = self._tags_schema
             jt       = ts.get("junction_table")
@@ -5832,13 +5796,13 @@ class App(tk.Tk):
                 try:
                     conn = self._pg()
                     with conn.cursor() as cur:
-                        # Récupérer tous les checksums déjà associés à ce tag
+                        # Fetch all checksums already associated with this tag
                         cur.execute(
                             f'SELECT "{jt_match}" FROM "{jt}" WHERE "{jt_tag}"=%s',
                             (tag_id,))
                         tagged_checksums = {r[0] for r in cur.fetchall()}
                     conn.close()
-                    # Mapper les demos de la liste vers leurs checksums
+                    # Map demo paths to their checksums
                     for dp, _ in demo_list:
                         chk = self._get_demo_checksum(dp)
                         if chk and chk in tagged_checksums:
@@ -5848,8 +5812,8 @@ class App(tk.Tk):
 
             if _already_tagged_paths:
                 n_already = len(_already_tagged_paths)
-                # Demander à l'utilisateur — doit se faire sur le thread principal
-                # Oui = inclure quand même, Non = ignorer, Annuler = stopper + refaire aperçu sans elles
+                # Ask the user — must run on the main thread
+                # Yes = include anyway, No = ignore, Cancel = stop and redo preview
                 _ev = threading.Event()
                 _choice = [None]  # True = include, False = ignore, None = cancel
 
@@ -5857,7 +5821,7 @@ class App(tk.Tk):
                     lines = "\n".join(f"  • {nm}" for nm in names[:5])
                     ellipsis = "\n  …" if n > 5 else ""
                     msg = (
-                        f"{n}/{len(demo_list)} demo(s) already have tag «{tag_name}»:\n"
+                        f"{n}/{len(demo_list)} demo(s) already have tag \"{tag_name}\":\n"
                         f"{lines}{ellipsis}\n\n"
                         f"[Yes] Include anyway\n"
                         f"[No] Ignore\n"
@@ -5876,7 +5840,7 @@ class App(tk.Tk):
                 _ev.wait()
                 choice = _choice[0]
                 if choice is None:
-                    # Annuler → refaire l'aperçu sans les démos déjà taguées
+                    # Cancel → redo preview without already-tagged demos
                     filtered_events = {dp: ev for dp, ev in all_events.items()
                                        if dp not in _already_tagged_paths}
                     self._alog(f"  ⏭ Cancelled — preview restarted without {n_already} already-tagged demo(s)", "info")
@@ -5885,7 +5849,7 @@ class App(tk.Tk):
                         self._log(f"  PREVIEW (without already tagged)  —  {datetime.now().strftime('%H:%M:%S')}", "info")
                         self._log(f"{'─' * 60}", "dim")
                         self._summary_lbl.config(text="  Computing…", fg=YELLOW)
-                        # v63 : TROIS SHOT en thread de fond même pour le _redo
+                        # Run DP2 filters in background thread for the redo preview too
                         _fe = filtered_events
                         def _bg():
                             nonlocal _fe
@@ -5921,7 +5885,7 @@ class App(tk.Tk):
                     skip += 1
                 break
 
-            # Ignorer les démos déjà taguées si l'utilisateur l'a choisi
+            # Skip already-tagged demos if the user chose to ignore them
             if skip_already_tagged and dp in _already_tagged_paths:
                 dn_skip = Path(dp).name
                 self._alog(f"  ⏭ SKIP (already tagged): {dn_skip}", "dim")
@@ -5929,50 +5893,12 @@ class App(tk.Tk):
                 skip += 1
                 continue
 
-            # ── Modificateurs demoparser2 ─────────────────────────────────────
-            # trois_tap est exclusif. trois_shot, no_trois_shot et one_tap
-            # sont cumulatifs : ils s'appliquent en séquence (ET logique).
-            if cfg.get("kill_mod_trois_tap"):
-                n_before = len([e for e in events if e.get("type") == "kill"])
-                events = self._trois_tap_filter(dp, events, cfg)
-                n_after = len([e for e in events if e.get("type") == "kill"])
-                self._alog(f"  🎯🎲 TROIS TAP : {n_before} kills → {n_after} TROIS TAP", "info")
-                if not events:
-                    self._alog("  ⏭ SKIP: 0 trois taps in this demo", "dim")
-                    summary.append((Path(dp).name, "SKIP", 0, 0, "0 TROIS TAP"))
-                    skip += 1
-                    continue
-            else:
-                if cfg.get("kill_mod_trois_shot"):
-                    n_before = len([e for e in events if e.get("type") == "kill"])
-                    events = self._trois_shot_filter(dp, events, cfg)
-                    n_after = len([e for e in events if e.get("type") == "kill"])
-                    self._alog(f"  🎲 TROIS SHOT : {n_before} kills → {n_after} TROIS SHOT", "info")
-                    if not events:
-                        self._alog("  ⏭ SKIP: 0 TROIS SHOT kills in this demo", "dim")
-                        summary.append((Path(dp).name, "SKIP", 0, 0, "0 TROIS SHOT"))
-                        skip += 1
-                        continue
-                if cfg.get("kill_mod_no_trois_shot"):
-                    n_before = len([e for e in events if e.get("type") == "kill"])
-                    events = self._no_trois_shot_filter(dp, events, cfg)
-                    n_after = len([e for e in events if e.get("type") == "kill"])
-                    self._alog(f"  🚫🎲 Exclude : {n_before} kills → {n_after} precise", "info")
-                    if not events:
-                        self._alog("  ⏭ SKIP: 0 precise kills in this demo", "dim")
-                        summary.append((Path(dp).name, "SKIP", 0, 0, "0 EXCLUDE"))
-                        skip += 1
-                        continue
-                if cfg.get("kill_mod_one_tap"):
-                    n_before = len([e for e in events if e.get("type") == "kill"])
-                    events = self._one_tap_filter(dp, events, cfg)
-                    n_after = len([e for e in events if e.get("type") == "kill"])
-                    self._alog(f"  🎯 ONE TAP: {n_before} kills → {n_after} one tap", "info")
-                    if not events:
-                        self._alog("  ⏭ SKIP: 0 one taps in this demo", "dim")
-                        summary.append((Path(dp).name, "SKIP", 0, 0, "0 ONE TAP"))
-                        skip += 1
-                        continue
+            # ── demoparser2 kill modifiers ─────────────────────────────────────
+            events = self._apply_dp2_modifiers(dp, events, cfg)
+            if events is None:
+                summary.append((Path(dp).name, "SKIP", 0, 0, "0 kills after filter"))
+                skip += 1
+                continue
 
             seqs = self._build_sequences(events, cfg["tickrate"], self._effective_before(cfg), cfg["after"])
             if not seqs:
@@ -6045,7 +5971,7 @@ class App(tk.Tk):
                 ri = f" x{att}" if att > 1 else ""
                 tag_msg = ""
                 if tag_enabled:
-                    # Multi-tags : on utilise _tags_active si disponible, sinon tag_name seul
+                    # Multi-tags: use _tags_active if available, else tag_name alone
                     _auto_names = self._get_active_tag_names() if self._get_active_tag_names() else ([tag_name] if tag_name else [])
                     _tag_ok_names, _tag_fail = [], ""
                     for _tn in _auto_names:
@@ -6058,7 +5984,7 @@ class App(tk.Tk):
                         tagged += 1
                         tag_msg = f" \U0001f3f7 {', '.join(_tag_ok_names)}"
                     if _tag_fail:
-                        tag_msg += f" \U0001f3f7 ECHEC: {_tag_fail}"
+                        tag_msg += f" \U0001f3f7 FAILED: {_tag_fail}"
                 self.after(0, lambda d=ds, r=ri, tm=tag_msg:
                            self._log(f"  ✓ OK [{d}]{r}{tm}", "ok"))
                 summary.append((dn, "OK", dur, att, ""))
@@ -6102,7 +6028,7 @@ class App(tk.Tk):
         self._alog("═" * 60, "dim")
         self.after(0, lambda: self.progress_lbl.config(
             text=f"{ok}/{len(demo_list)} OK ({fmt_duration(bd)})"))
-        # Résumé final — réutilise le summary calculé avant la boucle
+        # Final summary — reuse the summary computed before the loop
         _color = GREEN if fail == 0 else (YELLOW if ok > 0 else RED)
         _status = f"  ✓ {ok}/{len(demo_list)} demos OK" if fail == 0 else f"  ⚠ {ok} OK / {fail} failed"
         _stxt_final = self._fmt_summary(_nd, _nc, _ts, _as) + f"  —  {fmt_duration(bd)}{_status}"
