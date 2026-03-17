@@ -5,6 +5,14 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v76]
+### Fixed
+- **ONE TAP always returned 0 results** (`✗ not isolated` on every kill across all demos): `_one_tap_filter` was indexing weapon_fire shots by `sid` alone — any shot fired by the player with *any* weapon within ±128 ticks invalidated the kill. Since players constantly fire different weapons, every kill was rejected. The index is now keyed by `(sid, weapon_suffix)` matching exactly `_trois_shot_filter`'s approach, so isolation is checked per-weapon: a Desert Eagle kill is only rejected if the player fired another Desert Eagle within the window.
+- **TROIS TAP always returned 0 results**: inherited the same bug via `_trois_tap_filter → _one_tap_filter`.
+- **Log improved**: `_is_isolated` now logs the weapon name alongside tick and sid for easier diagnosis (`🎯 [Desert Eagle] [tick=…] sid=… → ✓/✗`).
+
+---
+
 ## [v75]
 ### Added
 - **`_one_tap_filter`** implemented: uses demoparser2 `weapon_fire` events to verify that exactly one shot was fired within ±128 ticks (~2s at 64 tick/s) around the kill tick. Headshot is pre-guaranteed by the DB query. Result cached under key `("one_tap", demo_path)`.

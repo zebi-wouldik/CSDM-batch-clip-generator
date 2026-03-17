@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v75"""
+"""CSDM Batch Clips Generator v76"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v75"
+APP_VERSION = "v76"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -3342,6 +3342,11 @@ class App(tk.Tk):
         WINDOW = DP2_TICK_WINDOW  # 128 ticks ≈ 2s at 64 tick/s
 
         # ── Parse / cache ─────────────────────────────────────────────────────
+        # Index: {(sid, weapon_suffix) → sorted [tick, …]}
+        # Isolation is checked per-weapon: a Deagle kill is only isolated if no
+        # other Deagle shot was fired by that player within ±WINDOW ticks.
+        # Using all-weapon shots would always reject kills (players fire many
+        # different weapons during a match).
         cache_key = ("one_tap", demo_path)
         with self._dp2_cache_lock:
             already = cache_key in self._dp2_cache
@@ -3370,21 +3375,33 @@ class App(tk.Tk):
                     with self._dp2_cache_lock:
                         self._dp2_cache[cache_key] = {}
                 else:
-                    shots_by_sid: dict = defaultdict(list)
-                    for row in fire_df[["tick", col_sid]].to_numpy():
+                    # Group by (sid, weapon_suffix) — same logic as _trois_shot_filter
+                    shots_index: dict = defaultdict(list)
+                    for row in fire_df[["tick", "weapon", col_sid]].to_numpy():
                         tick = int(row[0] or 0)
-                        sid  = str(row[1] or "")
-                        shots_by_sid[sid].append(tick)
-                    for sid in shots_by_sid:
-                        shots_by_sid[sid].sort()
+                        wpn  = str(row[1] or "").lower()
+                        sid  = str(row[2] or "")
+                        wpn_s = wpn[7:] if wpn.startswith("weapon_") else wpn
+                        shots_index[(sid, wpn_s)].append(tick)
+                    for k in shots_index:
+                        shots_index[k].sort()
                     with self._dp2_cache_lock:
-                        self._dp2_cache[cache_key] = dict(shots_by_sid)
+                        self._dp2_cache[cache_key] = dict(shots_index)
 
         with self._dp2_cache_lock:
-            shots_by_sid = self._dp2_cache.get(cache_key, {})
+            shots_index = self._dp2_cache.get(cache_key, {})
 
-        def _is_isolated(kill_tick, killer_sid):
-            ticks = shots_by_sid.get(str(killer_sid), [])
+        def _is_isolated(kill_tick, killer_sid, weapon_raw):
+            """True iff exactly 1 shot with this weapon was fired in [kill_tick-WINDOW, kill_tick+WINDOW]."""
+            # Resolve weapon suffix the same way as _trois_shot_filter
+            w_key = CSDM_TO_DP2_WEAPON.get(weapon_raw.lower().strip())
+            if w_key:
+                wpn_s = w_key[7:] if w_key.startswith("weapon_") else w_key
+            else:
+                wpn_s = weapon_raw.lower().strip()
+                if wpn_s.startswith("weapon_"):
+                    wpn_s = wpn_s[7:]
+            ticks = shots_index.get((str(killer_sid), wpn_s), [])
             if not ticks:
                 return False
             lo, hi = kill_tick - WINDOW, kill_tick + WINDOW
@@ -3395,7 +3412,7 @@ class App(tk.Tk):
                     break
                 count += 1
                 if count > 1:
-                    return False  # more than one shot in the window
+                    return False  # more than one shot with this weapon in the window
             return count == 1
 
         filtered = []
@@ -3403,11 +3420,12 @@ class App(tk.Tk):
             if evt.get("type") != "kill":
                 filtered.append(evt)
                 continue
-            killer_sid = str(evt.get("killer_sid", ""))
-            kill_tick  = int(evt.get("tick", 0))
-            isolated = _is_isolated(kill_tick, killer_sid)
+            killer_sid  = str(evt.get("killer_sid", ""))
+            kill_tick   = int(evt.get("tick", 0))
+            weapon_raw  = evt.get("weapon", "")
+            isolated = _is_isolated(kill_tick, killer_sid, weapon_raw)
             self._alog(
-                f"  🎯 [tick={kill_tick}] sid={killer_sid} → "
+                f"  🎯 [{weapon_raw}] [tick={kill_tick}] sid={killer_sid} → "
                 f"{'✓ isolated' if isolated else '✗ not isolated'}",
                 "info" if isolated else "dim")
             if isolated:
