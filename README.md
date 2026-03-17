@@ -1,5 +1,3 @@
-# CSDM-batch-clip-generator
-Tool for CS2 clips making.
 # CSDM Batch Sequence Generator
 
 A desktop GUI tool for **batch-recording CS2 highlight clips** from demo files, built on top of [CS Demo Manager (CSDM)](https://cs-demo-manager.com/) and HLAE.
