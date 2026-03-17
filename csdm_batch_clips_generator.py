@@ -1,217 +1,12 @@
 #!/usr/bin/env python3
-"""
-CSDM Batch Sequence Generator v72
-──────────────────────────────────
-v72 :
-  • "Both" now counts victim_pre_s in clip duration:
-    _effective_before(cfg) returns before + victim_pre_s in both mode,
-    used in _build_sequences at all call sites (preview, batch, summary).
-    Sequence starts before+victim_pre_s seconds before the kill — the
-    killer phase is complete from the very first frame.
-  • Removed victim_pre_s ≤ before clamping in _build_cams_both
-    (no longer needed since the sequence is now wide enough).
+"""CSDM Batch Clips Generator v74"""
 
-v71 :
-  • "Exclude lucky" renamed "Exclude" (LUCKY SHOT checkbox).
-  • Cumulative modifiers: no_lucky_shot + one_tap now apply
-    sequentially (AND logic). elif chains replaced with independent if
-    blocks in _run_batch, _dry_run and _redo.
-    Only lucky_tap stays exclusive (it is already an intersection).
-  • UI toggles fixed: no_lucky_shot and one_tap no longer mutually
-    exclusive. Only lucky_shot ↔ no_lucky_shot and lucky_tap ↔ all
-    remain exclusive.
-  • Preview summary: shows all actually active modifiers
-    instead of hiding those skipped by elif chains.
-
-v70 :
-  • POV Victim simplified: camera fixed constantly on the victim
-    of our players' first kill (no switch, no transition).
-  • "Both" takes over the killer→victim logic (ex-POV Victim v69):
-    camera on killer from start, switches to victim at
-    kill_tick - victim_pre_s seconds. The "Switch delay" slider is
-    now only visible in "Both" mode.
-  • "Switch delay" adds to BEFORE seconds: if before=3s and
-    victim_pre_s=2s, sequence starts 3s before kill, camera
-    follows killer for 2s before kill then switches to victim.
-    victim_pre_s is automatically added to BEFORE seconds so that
-    the killer phase is complete in the recorded sequence.
-
-v69 :
-  • Version number centralized in APP_VERSION constant — window title
-    and header label update automatically.
-  • POV Victim rework:
-    – New parameter "Killer seconds before switch" (victim_pre_s, default 2s):
-      duration the camera follows our killer BEFORE switching
-      to the victim at the exact kill tick.
-    – Camera now only follows events where killer_sid belongs to our
-      active players — no more jumps to random players in
-      merged multi-kill sequences.
-    – "Both" mode refactored the same way: transition at the
-      exact first kill tick, not at the arbitrary midpoint of cam_ticks.
-    – UI "Switch delay" slider visible only when perspective = victim or both.
-
-v68 :
-  • Fix "Free dimensions": Definition radio buttons are now
-    properly disabled when checkbox is ticked (stored in self._def_radios).
-  • New modifier "NO LUCKY SHOT" (kill_mod_no_lucky_shot):
-    excludes lucky kills — exact inverse of the LUCKY SHOT filter.
-    Checkbox shown under "Enable" in the LUCKY SHOT UI section.
-  • New modifier "LUCKY TAP" (kill_mod_lucky_tap):
-    intersection LUCKY SHOT ∩ ONE TAP — lucky AND isolated headshot kill.
-    Forces HS only. Eligible weapons = LUCKY SHOT (Deagle, R8, AWP…).
-    Integrated in preview, _redo, _run_batch, summary.
-  • Minimize watcher simplified: Phase 2 (looping re-minimization
-    for 20s) removed. CS2 is minimized once at
-    launch, then the thread stops.
-
-v67 (appliqué en patch externe, intégré ici) :
-  • stop_guard_event removed (Phase 2 removed — no longer needed).
-
-v66 :
-  • New modifier ONE TAP (demoparser2):
-    – Mandatory headshot (forced in DB + locks "HS only").
-    – No shot from same player+weapon in the 2s BEFORE the shot (silence).
-    – No shot from same player+weapon in the 2s AFTER the shot (no follow-up).
-    – Detection via bisect on index (sid, weapon) → O(log n), no loop.
-    – Integrated in preview, _redo and per-demo _run_batch.
-  • Tickrate removed from UI (CS2 = fixed 64 ticks); value 64 kept
-    internally for all tick calculations.
-
-v65 :
-  • Fix LUCKY SHOT — thresholds recalibrated from real observed values:
-    accuracy_penalty in demoparser2 = Source2 radians, real range 0.004–0.050.
-    Old thresholds (0.15–0.30) impossible to reach → 0 lucky shots systematically.
-    New thresholds: Deagle/R8 > 0.015, snipers > 0.010 (+ scope/vel).
-  • Removed dead loop duplicate filtered (refactoring artifact).
-  • Temporary per-kill calibration log: acc / scoped / vel / verdict.
-
-v64 :
-  • Fix LUCKY SHOT — 3 bugs fixed using diagnostic logs:
-    1. Columns prefixed "user_": demoparser2 prefixes all player fields
-       requested with "user_" (e.g. user_accuracy_penalty, user_is_scoped…).
-       → Dynamic resolution: _col() tries raw name first then user_{name}.
-    2. Match window too small: 30 ticks (~0.23s) insufficient.
-       → Extended to 128 ticks (~1s), covers full animation + network latency.
-    3. Matching logic simplified: wp_suffix ("deagle") in wp ("weapon_deagle")
-       instead of endswith + double fallback logic that missed cases.
-  • Removed [DIAG] logs.
-
-v63 :
-  • Fix LUCKY SHOT #1: checking LUCKY SHOT now also unchecks
-    the category checkbox (not just individual weapons).
-  • Fix LUCKY SHOT #2: preview (F6 / Preview button) now applies
-    LUCKY SHOT filter via demoparser2 in background thread before showing
-    results — clip count reflects actual lucky kills.
-    Same for preview re-triggered after cancel (already-tagged demos).
-  • Indicator "🎲 LUCKY SHOT" visible in preview summary line.
-
-v62 :
-  • New modifier "LUCKY SHOT" — lucky kills on precision weapons.
-    – Eligible weapons: Deagle, R8 Revolver, AWP, SCAR-20, G3SG1, SSG 08.
-    – Detection via demoparser2 (Rust): accuracy_penalty, is_scoped, velocity
-      at exact shot tick → distinguishes real precision vs spam/no-scope/run&gun.
-    – Per-weapon thresholds: Deagle/R8 → bloom > 0.30; AWP/SSG → unscoped or bloom > 0.15;
-      SCAR-20/G3SG1 → speed > 100 u/s or unscoped or bloom > 0.15.
-    – Enable LUCKY SHOT → automatically locks ineligible weapons in filter.
-    – Requires: pip install demoparser2  (added to install_requirements.bat).
-
-v61 :
-  • Fix "Minimize on launch": CS2 briefly appeared on screen.
-    – Polling reduced from 500ms → 100ms to catch CS2 on its first frames.
-    – 20s guard phase after first hit: re-minimize if CS2
-      comes to the foreground during map loading.
-    – Timeout extended to 60s (instead of 45s).
-
-v60 :
-  • Rework of RESOLUTION & FRAMERATE section:
-    – Definition choice via radio buttons (720p / 1080p / 1440p / 4K).
-    – Aspect ratio choice (16:9 / 4:3 / 21:9 / 16:10 / 1:1) conditional on definition.
-    – Option "Custom" (checkbox) that disables both selectors and
-      enables free width × height fields.
-    – width/height auto-calculated from (definition × ratio) or entered manually.
-
-v59 :
-  • Modifiers not found in DB: if ALL absent → returns {} with error
-    instead of returning all clips without filter.
-    If partially absent → warning and apply remaining ones only.
-
-v58 :
-  • Tags tab rework — new TAG RANGE section:
-    Calculate range, Apply start, Apply end, Full range, After range.
-  • OPERATIONS section restructured: Search / Actions clearly separated.
-
-v57 :
-  • 📅 now uses the same config ∩ tags intersection as By config —
-    no more divergence between the two counts.
-
-v56 :
-  • By config: config ∩ DB tags intersection (demos already tagged in period).
-  • 📅: applies date_from directly without intermediate button.
-  • Removed _tag_suggest_btn widget and _tag_apply_suggest_date.
-
-v55 :
-  • Bugfix: extra args (spec_cmd + window_mode) were overwritten before injection.
-  • Enhanced logging: prefixes [PREVIEW/TAGS/config/tag/📅], active weapons by category,
-    output folder, auto-tags in preview.
-
-v54 :
-  • Separate output folders: raw clips, concatenated, assembled.
-  • Concatenate sequences disabled if Delete clips is active.
-  • Warning tooltip on Concatenate when Assemble is active.
-  • _collect_config syncs output_dir ← output_dir_clips for compat.
-
-v53 :
-  • Fix noSpectatorUi: injects hideSpectatorUi + extraArgs
-    +cl_draw_only_deathnotices 1 for all CSDM versions compatibility.
-  • Tags tab moved between Capture and Video.
-  • "By config" now requires a selected tag; description updated.
-  • Grey colors (MUTED/DESC_COLOR) brightened for contrast on dark background.
-  • Automatic versioning: each change increments the version.
-
-v47 :
-  • "🔍 By config" restored: full preview (player+events+weapons+dates) in
-    Tags listbox, directly taggable.
-  • "📅" separated: finds the most recent demo among selected tags,
-    proposes setting date_from to the next day.
-  • _tag_search_last_tagged uses selected tags (multi-tag).
-
-v46 :
-  • Moves "Concatenate sequences" to FINAL ASSEMBLY.
-
-v45 :
-  • Tags operations → console (removed inline status labels).
-  • Window 1600×900.
-  • Tags tab width fixed.
-
-v44 :
-  • X-Ray moved to IN-GAME OPTIONS (Video tab).
-  • Unicode weapon icons per category (WEAPON_ICONS).
-  • Hover tooltips (Tooltip class + add_tip) replace inline desc_labels.
-  • AUTO TAG moved to Tags tab, multi-tags via active selection.
-  • noSpectatorUi → hideSpectatorUi in hlaeOptions.
-
-v43 :
-  • CS2 window mode (None/Fullscreen/Windowed/Borderless) in
-    RESOLUTION & FRAMERATE, injected in extraArgs.
-  • Option "Minimize CS2 on launch" (optional pywin32).
-  • _start_cs2_minimize_watcher(): CS2 window monitoring thread.
-
-v42 :
-  • "Since last tag" → button "📅 By config" + separate "📅" button.
-  • Fix already-tagged demos dialog: Yes=include, No=ignore, Cancel=filtered preview.
-  • _show_preview() extracted as reusable method.
-  • Startup without iconify().
-
-v41 (refactor UI compact) :
-  • Capture tab condensed: options on horizontal rows, Timing+Order merged,
-    Date filter on a single row, reduced pady.
-  • Tags tab condensed: buttons on a single bar, listbox h=7.
-  • Added _tag_search_last_tagged: finds tagged demos, proposes date_from+1d.
-"""
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
 import subprocess, threading, json, os, tempfile, time, shutil, re, uuid, random
+import bisect, concurrent.futures
+from collections import defaultdict
 import calendar as cal_mod
 from datetime import datetime, timedelta, date
 from pathlib import Path
@@ -225,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v72"
+APP_VERSION = "v74"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -391,7 +186,7 @@ WEAPON_CATEGORIES = {
         "knife_skeleton", "knifegg",
         "Knife",
     ],
-    "Grenades & Utilities": [
+    "Grenades & Utility": [
         # Noms internes CSDM/Source
         "hegrenade", "incgrenade", "molotov", "inferno",
         "flashbang", "smokegrenade", "decoy",
@@ -420,10 +215,10 @@ WEAPON_CATEGORIES = {
     ],
 }
 
-WEAPON_ICONS = {'Pistolets': '🔫', 'SMGs': '🔫', 'Fusils': '🎯', 'Snipers': '🎯', 'Lourdes': '💥', 'Couteaux': '🔪', 'Grenades & Utilitaires': '💣', 'C4 / World': '💥', 'Divers': '⚡', 'Autres': '❓'}
+WEAPON_ICONS = {'Pistols': '🔫', 'SMGs': '🔫', 'Rifles': '🎯', 'Snipers': '🎯', 'Heavy': '💥', 'Knives': '🔪', 'Grenades & Utility': '💣', 'C4 / World': '💥', 'Misc': '⚡', 'Other': '❓'}
 
 def _weapon_category(weapon_name):
-    return _WEAPON_LOOKUP.get(weapon_name.lower().strip(), "Autres")
+    return _WEAPON_LOOKUP.get(weapon_name.lower().strip(), "Other")
 
 # Lookup plat construit une seule fois au chargement — O(1) au lieu de O(n²)
 _WEAPON_LOOKUP: dict = {
@@ -488,11 +283,11 @@ DEFAULT_CONFIG = {
     "kill_mod_airborne": False,        # killer en l'air
     "kill_mod_assisted_flash": False,  # victim aveuglée (kill "aveugle")
     "kill_mod_collateral": False,      # kill collatéral (balle traverse une victim)
-    # LUCKY SHOT modifier (v62) — lucky kills on precision weapons via demoparser2
+    # TROIS SHOT modifier (v62) — lucky kills on precision weapons via demoparser2
     "kill_mod_trois_shot": False,
     # Inverse modifier: exclude lucky kills (v68)
     "kill_mod_no_trois_shot": False,
-    # LUCKY TAP modifier (v68) — lucky AND isolated one-tap headshot
+    # TROIS TAP modifier (v68) — lucky AND isolated one-tap headshot
     "kill_mod_trois_tap": False,
     # ONE TAP modifier (v66) — isolated single shot headshot, no shot within ±2s
     "kill_mod_one_tap": False,
@@ -504,7 +299,6 @@ DEFAULT_CONFIG = {
     "hlae_fov": 90,
     "hlae_slow_motion": 100,   # % de vitesse : 100 = normal, 50 = demi-vitesse
     "hlae_afx_stream": False,  # recording HLAE AFX streams séparés
-    "hlae_skip_cs_intro": True,
     "hlae_no_spectator_ui": True,
     "hlae_extra_args": "",
     "hlae_workshop_download": False,
@@ -516,9 +310,11 @@ DEFAULT_CONFIG = {
     "phys_blood": True,                # violence_hblood
     "phys_dynamic_lighting": True,     # r_dynamic
     # CS2 window mode injected as Launch Option
-    "cs2_window_mode": "aucun",   # "aucun" | "fullscreen" | "windowed" | "noborder"
+    "cs2_window_mode": "none",   # "none" | "fullscreen" | "windowed" | "noborder"
     # Automatically minimize CS2 on launch (requires pywin32)
     "cs2_minimize": False,
+    # demoparser2 performance
+    "dp2_threads": 2,   # parallel threads for DP2 demo parsing (1–8)
 }
 
 PRESET_CATEGORIES = {
@@ -542,7 +338,7 @@ PRESET_KEYS = {
               "death_notices_duration", "show_only_death_notices", "concatenate_sequences",
               "subfolder_per_demo", "true_view",
               "hlae_fov", "hlae_slow_motion", "hlae_afx_stream",
-              "hlae_skip_cs_intro", "hlae_no_spectator_ui", "hlae_workshop_download",
+              "hlae_no_spectator_ui", "hlae_workshop_download",
               "hlae_extra_args",
               "phys_ragdoll_gravity", "phys_ragdoll_scale", "phys_ragdoll_enable",
               "phys_sv_gravity", "phys_blood", "phys_dynamic_lighting"],
@@ -772,8 +568,8 @@ class CalendarPopup(tk.Toplevel):
     def _draw(self):
         for w in self._grid.winfo_children():
             w.destroy()
-        MFR = ["", "Janvier", "Fevrier", "Mars", "Avril", "Mai", "Juin",
-               "Juillet", "Aout", "Septembre", "Octobre", "Novembre", "Decembre"]
+        MFR = ["", "January", "February", "March", "April", "May", "June",
+               "July", "August", "September", "October", "November", "December"]
         self._title.config(text=f"{MFR[self._month]} {self._year}")
         for ri, week in enumerate(cal_mod.monthcalendar(self._year, self._month)):
             for ci, day in enumerate(week):
@@ -805,7 +601,7 @@ class ColorPickerDialog(tk.Toplevel):
         self.grab_set()
         self.result = None
         self._color = initial_color
-        mlabel(self, "Couleurs rapides").pack(anchor="w", padx=12, pady=(12, 4))
+        mlabel(self, "Quick colors").pack(anchor="w", padx=12, pady=(12, 4))
         gf = tk.Frame(self, bg=BG2)
         gf.pack(padx=12)
         for i, c in enumerate(TAG_PRESET_COLORS):
@@ -815,7 +611,7 @@ class ColorPickerDialog(tk.Toplevel):
         tk.Frame(self, height=1, bg=BORDER).pack(fill="x", padx=12, pady=8)
         pr = tk.Frame(self, bg=BG2)
         pr.pack(fill="x", padx=12)
-        mlabel(pr, "Apercu:").pack(side="left")
+        mlabel(pr, "Preview:").pack(side="left")
         self._preview = tk.Label(pr, text="  TAG  ", font=("Consolas", 10, "bold"),
                                  bg=initial_color, fg=_contrast_fg(initial_color), padx=12, pady=4)
         self._preview.pack(side="left", padx=(8, 0))
@@ -831,7 +627,7 @@ class ColorPickerDialog(tk.Toplevel):
         tk.Button(br, text="  OK  ", font=FONT_SM, bg=ORANGE, fg="white", relief="flat",
                   bd=0, cursor="hand2", activebackground=ORANGE2,
                   command=self._ok).pack(side="right", ipady=4, ipadx=8)
-        tk.Button(br, text="Annuler", font=FONT_SM, bg=BG3, fg=MUTED, relief="flat",
+        tk.Button(br, text="Cancel", font=FONT_SM, bg=BG3, fg=MUTED, relief="flat",
                   bd=0, cursor="hand2", command=self.destroy).pack(side="right", padx=(0, 8), ipady=4, ipadx=8)
         self.update_idletasks()
         self.geometry(
@@ -1221,7 +1017,7 @@ class PathField(tk.Frame):
                  highlightcolor=ORANGE).pack(side="left", fill="x", expand=True, ipady=6, ipadx=8)
 
         def browse():
-            p = (filedialog.askopenfilename(filetypes=[("Exe", "*.exe;*.cmd"), ("Tous", "*.*")])
+            p = (filedialog.askopenfilename(filetypes=[("Exe", "*.exe;*.cmd"), ("All files", "*.*")])
                  if mode == "file" else filedialog.askdirectory())
             if p:
                 var.set(p)
@@ -1362,10 +1158,10 @@ class App(tk.Tk):
                      "death_notices_duration", "retry_count", "retry_delay", "delay_between_demos",
                      "hlae_fov", "hlae_slow_motion",
                      "phys_ragdoll_gravity", "phys_sv_gravity",
-                     "victim_pre_s"]
+                     "victim_pre_s", "dp2_threads"]
         bool_keys = ["use_config_file_mode", "close_game_after", "show_only_death_notices",
                       "concatenate_sequences", "subfolder_per_demo", "true_view", "tag_enabled",
-                      "hlae_afx_stream", "hlae_skip_cs_intro", "hlae_no_spectator_ui",
+                      "hlae_afx_stream", "hlae_no_spectator_ui",
                       "hlae_workshop_download",
                       "headshots_only", "include_suicides", "show_xray",
                       "kill_mod_through_smoke", "kill_mod_no_scope", "kill_mod_wall_bang",
@@ -1413,11 +1209,14 @@ class App(tk.Tk):
         self._running = False
         self._stop_after_current = False
         self._proc = None
+        self._dp2_cache      = {}                  # {(filter, demo_path): data} — reset each run
+        self._dp2_cache_lock = threading.Lock()    # protects _dp2_cache during parallel pre-parse
         self._db_schema = {}
         self._db_col_types = {}
         self._date_col = None
         self._date_col_type = ""      # type SQL réel de la colonne date
-        self._pending_restore_sid = None   # steam_id à restaurer une fois la BDD chargée
+        self._pending_restore_sid  = None   # steam_id à restaurer une fois la BDD chargée
+        self._pending_restore_tags = []     # noms de tags à restaurer une fois la BDD chargée
         self._sm_cb = None                 # référence à la combo slow-motion (maj preset)
 
         self._build_ui()
@@ -1469,7 +1268,7 @@ class App(tk.Tk):
         ok, p = check_ffmpeg_available()
         self._log(f"[PRE] FFmpeg: {p}" if ok else "[PRE] FFmpeg NON TROUVE", "ok" if ok else "err")
         cli = self._resolve_cli(self.v["csdm_exe"].get())
-        self._log(f"[PRE] CLI: {cli}" if os.path.isfile(cli) else f"[PRE] CLI introuvable: {cli}",
+        self._log(f"[PRE] CLI: {cli}" if os.path.isfile(cli) else f"[PRE] CLI not found: {cli}",
                   "ok" if os.path.isfile(cli) else "err")
         out = self.v["output_dir"].get().strip()
         if out:
@@ -1497,6 +1296,7 @@ class App(tk.Tk):
         cfg["steam_ids"]   = self.player_search.get_steam_ids()
         cfg["steam_id"]    = self.player_search.get_steam_id()    # compat
         cfg["player_name"] = self.player_search.get_name()
+        cfg["active_tags"] = self._get_active_tag_names()         # noms des tags cochés
         return cfg
 
     def _auto_save(self):
@@ -1534,10 +1334,27 @@ class App(tk.Tk):
                         break
                 else:
                     self._pending_restore_sid = val
+            elif k == "active_tags" and isinstance(val, list) and val:
+                # Restaurer les tags cochés — différé si la BDD n'est pas encore prête
+                self._restore_active_tags(val)
 
-    # ═══════════════════════════════════════════════════
-    #  PostgreSQL
-    # ═══════════════════════════════════════════════════
+    def _restore_active_tags(self, tag_names):
+        """Restore the set of active (checked) tags from a list of names.
+        If _tags_list is not yet populated (DB not connected), stores the names
+        in _pending_restore_tags for deferred restoration on _on_load_success."""
+        if self._tags_list:
+            self._tags_active.clear()
+            for tid, tn, _ in self._tags_list:
+                if tn in tag_names:
+                    self._tags_active.add(tid)
+            try:
+                self._refresh_tags_list_display()
+            except Exception:
+                pass
+        else:
+            self._pending_restore_tags = list(tag_names)
+
+
     def _pg(self):
         return psycopg2.connect(host=self.v["pg_host"].get(), port=int(self.v["pg_port"].get()),
                                 user=self.v["pg_user"].get(), password=self.v["pg_pass"].get(),
@@ -1726,8 +1543,13 @@ class App(tk.Tk):
         self._refresh_tag_combo()
         self._refresh_tags_list_display()
 
+        # Restauration différée des tags cochés (config chargée avant la BDD)
+        if self._pending_restore_tags:
+            self._restore_active_tags(self._pending_restore_tags)
+            self._pending_restore_tags = []
+
     def _on_load_fail(self, err):
-        self.db_status.set(f"Erreur: {err}")
+        self.db_status.set(f"Error: {err}")
         self.db_status_lbl.config(fg=RED)
 
     # ═══════════════════════════════════════════════════
@@ -1855,16 +1677,16 @@ class App(tk.Tk):
             self._tags_list.append((new_id, name, color))
             self._refresh_tag_combo()
             self._refresh_tags_list_display()
-            self._log(f"Tag '{name}' cree (id={new_id})", "ok")
+            self._log(f"Tag '{name}' created (id={new_id})", "ok")
             return name
         except Exception as e:
-            messagebox.showerror("Tags", f"Erreur:\n{e}")
+            messagebox.showerror("Tags", f"Error:\n{e}")
             return None
 
     def _delete_tag_from_db(self, tag_id, tag_name):
         ts = self._tags_schema
         if not ts.get("id_col"):
-            return False, "Schema inconnu"
+            return False, "Unknown schema"
         try:
             conn = self._pg()
             with conn.cursor() as cur:
@@ -1951,15 +1773,15 @@ class App(tk.Tk):
         jt_tag = ts.get("jt_tag_col")
         jt_match = ts.get("jt_match_col")
         if not jt or not jt_tag or not jt_match:
-            return False, f"Table de jonction introuvable (jt={jt}, tag={jt_tag}, match={jt_match})"
+            return False, f"Junction table not found (jt={jt}, tag={jt_tag}, match={jt_match})"
 
         tag_id = next((tid for tid, tn, _ in self._tags_list if tn == tag_name), None)
         if tag_id is None:
-            return False, f"Tag '{tag_name}' introuvable dans self._tags_list"
+            return False, f"Tag '{tag_name}' not found in self._tags_list"
 
         checksum = self._get_demo_checksum(demo_path)
         if not checksum:
-            return False, f"Checksum introuvable pour {os.path.basename(demo_path)}"
+            return False, f"Checksum not found for {os.path.basename(demo_path)}"
 
         try:
             conn = self._pg()
@@ -1989,11 +1811,11 @@ class App(tk.Tk):
         jt_tag = ts.get("jt_tag_col")
         jt_match = ts.get("jt_match_col")
         if not jt or not jt_tag or not jt_match:
-            return False, "Table de jonction introuvable"
+            return False, "Junction table not found"
 
         tag_id = next((tid for tid, tn, _ in self._tags_list if tn == tag_name), None)
         if tag_id is None:
-            return False, f"Tag '{tag_name}' introuvable"
+            return False, f"Tag '{tag_name}' not found"
 
         checksum = self._get_demo_checksum(demo_path)
         if not checksum:
@@ -2016,7 +1838,7 @@ class App(tk.Tk):
                 except Exception:
                     pass
         if not checksum:
-            return False, f"Checksum introuvable pour {os.path.basename(demo_path)}"
+            return False, f"Checksum not found for {os.path.basename(demo_path)}"
 
         try:
             conn = self._pg()
@@ -2293,7 +2115,7 @@ class App(tk.Tk):
     def _log_save(self):
         path = filedialog.asksaveasfilename(
             defaultextension=".txt",
-            filetypes=[("Fichier texte", "*.txt"), ("Tous", "*.*")],
+            filetypes=[("Text file", "*.txt"), ("All files", "*.*")],
             title="Save log")
         if not path:
             return
@@ -2478,7 +2300,7 @@ class App(tk.Tk):
         # ── TROIS SHOT (v62) ─────────────────────────────────────────────────
         trois_row = tk.Frame(sec, bg=BG2)
         trois_row.pack(fill="x", pady=(4, 0))
-        _ts_lbl = mlabel(trois_row, "🎲 LUCKY SHOT:")
+        _ts_lbl = mlabel(trois_row, "🎲 TROIS SHOT:")
         _ts_lbl.pack(side="left")
         add_tip(_ts_lbl,
                 "Lucky kills on single/semi-auto precision weapons.\n"
@@ -2494,9 +2316,9 @@ class App(tk.Tk):
                        command=self._on_no_trois_shot_toggle)
         _nts_cb.pack(side="left", padx=(12, 0))
         add_tip(_nts_cb,
-                "Exclude lucky kills — inverse of the LUCKY SHOT filter.\n"
+                "Exclude lucky kills — inverse of the TROIS SHOT filter.\n"
                 "Keeps only precise kills on these weapons.\n"
-                "⚠ Incompatible with 'Enable' LUCKY SHOT.")
+                "⚠ Incompatible with 'Enable' TROIS SHOT.")
         _ts_badge = tk.Label(trois_row, text="demoparser2",
                              font=FONT_DESC, fg=BLUE, bg=BG2)
         _ts_badge.pack(side="left", padx=(8, 0))
@@ -2505,14 +2327,14 @@ class App(tk.Tk):
         # ── TROIS TAP (v68) ────────────────────────────────────────────────────
         tt_row = tk.Frame(sec, bg=BG2)
         tt_row.pack(fill="x", pady=(4, 0))
-        _tt_lbl = mlabel(tt_row, "🎯🎲 LUCKY TAP:")
+        _tt_lbl = mlabel(tt_row, "🎯🎲 TROIS TAP:")
         _tt_lbl.pack(side="left")
         add_tip(_tt_lbl,
-                "LUCKY SHOT + ONE TAP: lucky AND isolated single-shot headshot.\n"
+                "TROIS SHOT + ONE TAP: lucky AND isolated single-shot headshot.\n"
                 "Combined conditions:\n"
                 "  • Mandatory headshot\n"
-                "  • Eligible LUCKY SHOT weapon (Deagle, R8, AWP, SCAR-20, G3SG1, SSG 08)\n"
-                "  • Lucky bloom / scope / velocity (LUCKY SHOT)\n"
+                "  • Eligible TROIS SHOT weapon (Deagle, R8, AWP, SCAR-20, G3SG1, SSG 08)\n"
+                "  • Bloom / scope / velocity (TROIS SHOT)\n"
                 "  • No shot in the 2s BEFORE and AFTER (ONE TAP)\n"
                 "Detection via demoparser2.\n\n"
                 "⚠ Enable → forces 'HS only' + locks ineligible weapons.")
@@ -2809,7 +2631,7 @@ class App(tk.Tk):
                 "None = does not change current mode.\n"
                 "Borderless windowed = -windowed -noborder (recommended for recording behind other windows).")
         for lbl, val in [
-            ("None",                    "aucun"),
+            ("None",                    "none"),
             ("Fullscreen",              "fullscreen"),
             ("Windowed",                  "windowed"),
             ("Borderless windowed",    "noborder"),
@@ -2983,8 +2805,6 @@ class App(tk.Tk):
         for txt, key, tip in [
             ("AFX Stream",      "hlae_afx_stream",
              "Records separate passes (color, depth, stencil) for compositing."),
-            ("Skip intro CS2",  "hlae_skip_cs_intro",
-             "Skip CS2 intro on launch for faster startup."),
             ("No spectator UI", "hlae_no_spectator_ui",
              "Hides spectator mode HUD elements for a cleaner render."),
         ]:
@@ -3037,9 +2857,9 @@ class App(tk.Tk):
         col_r = tk.Frame(phys_grid, bg=BG2)
         col_r.grid(row=0, column=1, sticky="new")
         for txt, key, tip in [
-            ("Physique ragdolls", "phys_ragdoll_enable",
+            ("Ragdoll physics",  "phys_ragdoll_enable",
              "cl_ragdoll_physics_enable\nDisable = frozen corpses."),
-            ("Sang sur les murs", "phys_blood",
+            ("Blood on walls",   "phys_blood",
              "violence_hblood\nDisable for a cleaner render."),
             ("Dynamic lighting", "phys_dynamic_lighting",
              "r_dynamic\nDisable to remove explosion flashes."),
@@ -3196,19 +3016,24 @@ class App(tk.Tk):
 
     # ── TROIS SHOT (v62) ──────────────────────────────────────────────────
     def _on_trois_shot_toggle(self, *_):
-        """Active/désactive TROIS SHOT : verrouille les armes non éligibles dans la liste."""
+        """Toggle TROIS SHOT. Locks ineligible weapons.
+        If both TROIS SHOT + ONE TAP are now checked → auto-enable TROIS TAP."""
         active = self.v["kill_mod_trois_shot"].get()
-        # Désactiver "Exclure lucky" si on active TROIS SHOT et vice-versa
+        # Mutually exclusive with Exclude (no_trois_shot)
         if active and self.v["kill_mod_no_trois_shot"].get():
             self.v["kill_mod_no_trois_shot"].set(False)
+        # Auto TROIS TAP: if both TROIS SHOT + ONE TAP active → engage TROIS TAP
+        if active and self.v["kill_mod_one_tap"].get():
+            self.v["kill_mod_trois_shot"].set(False)
+            self.v["kill_mod_one_tap"].set(False)
+            self.v["kill_mod_trois_tap"].set(True)
+            self._engage_trois_tap()
+            return
         if not hasattr(self, "sel_weapons"):
             return
         for w, var in self.sel_weapons.items():
-            w_lower = w.lower().strip()
-            eligible = w_lower in TROIS_SHOT_ELIGIBLE_LOWER
-            if active and not eligible:
+            if active and w.lower().strip() not in TROIS_SHOT_ELIGIBLE_LOWER:
                 var.set(False)
-        # ── Fix v63 : mettre à jour TOUTES les checkboxes de catégorie ──
         if hasattr(self, "_cat_vars"):
             for cat in self._cat_vars:
                 self._update_cat_var(cat)
@@ -3218,9 +3043,8 @@ class App(tk.Tk):
             pass
 
     def _on_no_trois_shot_toggle(self, *_):
-        """Active/désactive l'exclusion des kills lucky (inverse TROIS SHOT).
-        Mutuellement exclusif avec TROIS SHOT et TROIS TAP uniquement.
-        Compatible avec ONE TAP (les deux peuvent être cochés simultanément)."""
+        """Toggle Exclude (inverse TROIS SHOT).
+        Mutually exclusive with TROIS SHOT and TROIS TAP only."""
         active = self.v["kill_mod_no_trois_shot"].get()
         if active:
             if self.v["kill_mod_trois_shot"].get():
@@ -3231,49 +3055,76 @@ class App(tk.Tk):
                     pass
             if self.v["kill_mod_trois_tap"].get():
                 self.v["kill_mod_trois_tap"].set(False)
-                try:
-                    self._hs_cb.config(state="normal")
-                except Exception:
-                    pass
+                self._disengage_trois_tap()
 
-    def _on_trois_tap_toggle(self, *_):
-        """Active/désactive TROIS TAP : force HS only + verrouille armes non éligibles.
-        Exclusif avec tous les autres modificateurs (il est déjà une intersection)."""
-        active = self.v["kill_mod_trois_tap"].get()
-        if active:
-            for key in ("kill_mod_no_trois_shot", "kill_mod_trois_shot", "kill_mod_one_tap"):
-                if self.v[key].get():
-                    self.v[key].set(False)
-            try:
-                self._refresh_weapons_lock(False)
-            except Exception:
-                pass
-        # Force headshot comme ONE TAP
+    def _on_one_tap_toggle(self, *_):
+        """Toggle ONE TAP. Forces and locks 'HS only'.
+        If both TROIS SHOT + ONE TAP are now checked → auto-enable TROIS TAP."""
+        active = self.v["kill_mod_one_tap"].get()
+        # Auto TROIS TAP: if both TROIS SHOT + ONE TAP active → engage TROIS TAP
+        if active and self.v["kill_mod_trois_shot"].get():
+            self.v["kill_mod_trois_shot"].set(False)
+            self.v["kill_mod_one_tap"].set(False)
+            self.v["kill_mod_trois_tap"].set(True)
+            self._engage_trois_tap()
+            return
         try:
             if active:
                 self.v["headshots_only"].set(True)
                 self._hs_cb.config(state="disabled")
             else:
-                # Ne relâcher que si ONE TAP est aussi désactivé
-                if not self.v["kill_mod_one_tap"].get():
+                if not self.v["kill_mod_trois_tap"].get():
                     self._hs_cb.config(state="normal")
         except Exception:
             pass
-        # Verrouiller les armes non éligibles comme TROIS SHOT
+
+    def _on_trois_tap_toggle(self, *_):
+        """Toggle TROIS TAP checkbox — called by the UI widget only."""
+        if self.v["kill_mod_trois_tap"].get():
+            # Clear individual modifiers, engage locks
+            self.v["kill_mod_trois_shot"].set(False)
+            self.v["kill_mod_one_tap"].set(False)
+            self.v["kill_mod_no_trois_shot"].set(False)
+            self._engage_trois_tap()
+        else:
+            # User manually unchecked → simply disengage, do NOT restore sub-modifiers
+            self._disengage_trois_tap()
+
+    def _engage_trois_tap(self):
+        """Apply all side-effects of TROIS TAP becoming active."""
+        try:
+            self.v["headshots_only"].set(True)
+            self._hs_cb.config(state="disabled")
+        except Exception:
+            pass
         if not hasattr(self, "sel_weapons"):
             return
         for w, var in self.sel_weapons.items():
-            w_lower = w.lower().strip()
-            eligible = w_lower in TROIS_SHOT_ELIGIBLE_LOWER
-            if active and not eligible:
+            if w.lower().strip() not in TROIS_SHOT_ELIGIBLE_LOWER:
                 var.set(False)
         if hasattr(self, "_cat_vars"):
             for cat in self._cat_vars:
                 self._update_cat_var(cat)
         try:
-            self._refresh_weapons_lock(active)
+            self._refresh_weapons_lock(True)
         except Exception:
             pass
+
+    def _disengage_trois_tap(self):
+        """Undo side-effects of TROIS TAP (unlock weapons, release HS lock)."""
+        try:
+            self._refresh_weapons_lock(False)
+        except Exception:
+            pass
+        try:
+            if not self.v["kill_mod_one_tap"].get():
+                self._hs_cb.config(state="normal")
+        except Exception:
+            pass
+
+
+
+
 
     def _refresh_weapons_lock(self, locked):
         """Grise visuellement les checkboxes d'armes non éligibles quand locked=True."""
@@ -3292,100 +3143,130 @@ class App(tk.Tk):
                                       tk.BooleanVar(value=False)).get() else TEXT)
 
     def _trois_shot_filter(self, demo_path, events, cfg):
-        """Filtre les events pour ne garder que les kills lucky (TROIS SHOT).
+        """Keep only lucky kills (TROIS SHOT filter).
 
-        Utilise demoparser2 pour lire le weapon_fire du tireur au tick du kill
-        et évaluer accuracy_penalty / is_scoped / velocity.
-        Retourne la liste filtrée (peut être vide).
+        Uses demoparser2 to read weapon_fire at the kill tick and evaluate
+        accuracy_penalty / is_scoped / velocity.
+        Returns the filtered list (may be empty).
+
+        v73 optimizations:
+          – Parse cache (_dp2_cache): each demo parsed at most once per run.
+          – Bisect index {(sid, wpn_suffix) → [(tick, acc, scoped, vel)]}: O(log n).
+          – to_numpy() instead of itertuples() for DataFrame iteration.
         """
         try:
             from demoparser2 import DemoParser
         except ImportError:
-            self._alog("  ⚠ LUCKY SHOT: demoparser2 not installed (pip install demoparser2)", "warn")
+            self._alog("  ⚠ TROIS SHOT: demoparser2 not installed (pip install demoparser2)", "warn")
             return events
 
         if not os.path.isfile(demo_path):
             return events
 
-        try:
-            parser = DemoParser(demo_path)
-            fire_df = parser.parse_event(
-                "weapon_fire",
-                player=["is_scoped", "velocity_X", "velocity_Y",
-                        "accuracy_penalty", "player_steamid"],
-                other=[],
-            )
-        except Exception as e:
-            self._alog(f"  ⚠ LUCKY SHOT parse error ({Path(demo_path).name}): {e}", "warn")
-            return events
+        # ── Parse / cache ────────────────────────────────────────────────────
+        cache_key = ("trois_shot", demo_path)
+        with self._dp2_cache_lock:
+            already = cache_key in self._dp2_cache
+        if not already:
+            try:
+                parser = DemoParser(demo_path)
+                fire_df = parser.parse_event(
+                    "weapon_fire",
+                    player=["is_scoped", "velocity_X", "velocity_Y",
+                            "accuracy_penalty", "player_steamid"],
+                    other=[],
+                )
+            except Exception as e:
+                self._alog(f"  ⚠ TROIS SHOT parse error ({Path(demo_path).name}): {e}", "warn")
+                return events
 
-        if fire_df is None or len(fire_df) == 0:
-            return events
+            if fire_df is None or len(fire_df) == 0:
+                with self._dp2_cache_lock:
+                    self._dp2_cache[cache_key] = {}
+            else:
+                cols = list(fire_df.columns)
+                def _col(name):
+                    if name in cols: return name
+                    if f"user_{name}" in cols: return f"user_{name}"
+                    return None
 
-        # Résoudre les noms de colonnes : demoparser2 préfixe les champs player avec "user_"
-        cols = list(fire_df.columns)
-        def _col(name):
-            """Retourne le nom de colonne réel : préfixé user_ ou non."""
-            if name in cols:
-                return name
-            if f"user_{name}" in cols:
-                return f"user_{name}"
-            return None
+                col_sid   = _col("player_steamid") or _col("steamid")
+                col_acc   = _col("accuracy_penalty")
+                col_scope = _col("is_scoped")
+                col_vx    = _col("velocity_X")
+                col_vy    = _col("velocity_Y")
 
-        col_sid   = _col("player_steamid") or _col("steamid")
-        col_acc   = _col("accuracy_penalty")
-        col_scope = _col("is_scoped")
-        col_vx    = _col("velocity_X")
-        col_vy    = _col("velocity_Y")
-        col_tick  = "tick"   # tick n'est jamais préfixé
-        col_wpn   = "weapon" # idem
+                if not col_sid or not col_acc:
+                    self._alog("  ⚠ TROIS SHOT: columns not found in weapon_fire", "warn")
+                    with self._dp2_cache_lock:
+                        self._dp2_cache[cache_key] = {}
+                else:
+                    np_cols  = ["tick", "weapon", col_sid, col_acc]
+                    opt_cols = ([col_scope] if col_scope else []) + \
+                               ([col_vx]    if col_vx    else []) + \
+                               ([col_vy]    if col_vy    else [])
+                    arr = fire_df[np_cols + opt_cols].to_numpy()
 
-        if not col_sid or not col_acc:
-            self._alog("  ⚠ LUCKY SHOT: columns not found in weapon_fire", "warn")
-            return events
+                    i_scope = 4                                if col_scope else None
+                    i_vx    = 4 + (1 if col_scope else 0)     if col_vx    else None
+                    i_vy    = 4 + (1 if col_scope else 0) \
+                                + (1 if col_vx    else 0)     if col_vy    else None
 
-        # Search window: 128 ticks = ~1s (covers animation + network latency)
+                    fire_index = defaultdict(list)
+                    for row in arr:
+                        tick   = int(row[0]   or 0)
+                        wpn    = str(row[1]   or "").lower()
+                        sid    = str(row[2]   or "")
+                        acc    = float(row[3] or 0)
+                        scoped = bool(row[i_scope]) if i_scope is not None else False
+                        vx     = float(row[i_vx])   if i_vx   is not None else 0.0
+                        vy     = float(row[i_vy])   if i_vy   is not None else 0.0
+                        vel    = (vx**2 + vy**2) ** 0.5
+                        wpn_s  = wpn[7:] if wpn.startswith("weapon_") else wpn
+                        fire_index[(sid, wpn_s)].append((tick, acc, scoped, vel))
+
+                    for k in fire_index:
+                        fire_index[k].sort(key=lambda r: r[0])
+
+                    with self._dp2_cache_lock:
+                        self._dp2_cache[cache_key] = dict(fire_index)
+
+        with self._dp2_cache_lock:
+            fire_index = self._dp2_cache[cache_key]
         TICK_WINDOW = 128
-
-        fire_records = []
-        for row in fire_df.itertuples(index=False):
-            sid    = str(getattr(row, col_sid, "") or "")
-            weapon = str(getattr(row, col_wpn, "") or "").lower()
-            tick   = int(getattr(row, col_tick, 0) or 0)
-            acc    = float(getattr(row, col_acc, 0) or 0)
-            scoped = bool(getattr(row, col_scope, False) or False) if col_scope else False
-            vx     = float(getattr(row, col_vx, 0) or 0) if col_vx else 0.0
-            vy     = float(getattr(row, col_vy, 0) or 0) if col_vy else 0.0
-            vel    = (vx**2 + vy**2) ** 0.5
-            fire_records.append((sid, weapon, tick, acc, scoped, vel))
-
-        fire_records.sort(key=lambda r: r[2])
 
         def _is_lucky(kill_tick, killer_sid, weapon_raw):
             w_key = CSDM_TO_DP2_WEAPON.get(weapon_raw.lower().strip())
             if w_key is None:
                 return False
             thresholds = TROIS_SHOT_THRESHOLDS[w_key]
-            wp_suffix = w_key.replace("weapon_", "")
+            wp_suffix  = w_key[7:] if w_key.startswith("weapon_") else w_key
 
+            entries = fire_index.get((killer_sid, wp_suffix))
+            if not entries:
+                return False
+
+            ticks_only = [e[0] for e in entries]
+            pos = bisect.bisect_right(ticks_only, kill_tick) - 1
             best = None
             best_dist = TICK_WINDOW + 1
-            for sid, wp, ftick, acc, scoped, vel in fire_records:
-                if sid != killer_sid:
-                    continue
-                if wp_suffix not in wp:
-                    continue
+            i = pos
+            while i >= 0:
+                ftick, acc, scoped, vel = entries[i]
                 dist = kill_tick - ftick
-                if 0 <= dist < best_dist:
+                if dist < 0:
+                    i -= 1; continue
+                if dist >= TICK_WINDOW:
+                    break
+                if dist < best_dist:
                     best_dist = dist
                     best = (acc, scoped, vel)
+                i -= 1
 
             if best is None:
                 return False
 
             acc, scoped, vel = best
-
-            # Log chaque évaluation pour calibration
             if thresholds["scope"] and thresholds["vel"]:
                 result = (not scoped) or (acc > thresholds["acc"]) or (vel > 100)
             elif thresholds["scope"]:
@@ -3395,16 +3276,16 @@ class App(tk.Tk):
 
             self._alog(
                 f"  🎲 [{weapon_raw}] acc={acc:.4f}(seuil={thresholds['acc']}) "
-                f"scoped={scoped} vel={vel:.0f} → {'✓ LUCKY' if result else '✗ precise'}",
+                f"scoped={scoped} vel={vel:.0f} → {'✓ TROIS SHOT' if result else '✗ precise'}",
                 "info" if result else "dim")
             return result
 
         filtered = []
-        for events in events:
-            if events.get("type") != "kill":
+        for evt in events:
+            if evt.get("type") != "kill":
                 filtered.append(evt)
                 continue
-            weapon_raw = events.get("weapon", "")
+            weapon_raw = evt.get("weapon", "")
             killer_sid = str(evt.get("killer_sid", ""))
             kill_tick  = int(evt.get("tick", 0))
             if weapon_raw.lower().strip() not in TROIS_SHOT_ELIGIBLE_LOWER:
@@ -3414,19 +3295,19 @@ class App(tk.Tk):
 
         return filtered
 
-    def _apply_trois_shot_to_events(self, eventss, cfg):
-        """Applique _trois_shot_filter sur tous les demos d'un dict eventss.
+    def _apply_trois_shot_to_events(self, evts, cfg):
+        """Applies _trois_shot_filter on all demos in dict evts.
         À appeler dans un thread de fond — fait du I/O (demoparser2).
         Retourne un nouveau dict {demo_path: filtered_events} (demos vides exclues)."""
         if not cfg.get("kill_mod_trois_shot"):
-            return eventss
+            return evts
         result = {}
-        for dp, events in eventss.items():
+        for dp, events in evts.items():
             n_before = len([e for e in events if e.get("type") == "kill"])
             filtered = self._trois_shot_filter(dp, events, cfg)
             n_after  = len([e for e in filtered if e.get("type") == "kill"])
             self._alog(
-                f"  🎲 LUCKY SHOT [{Path(dp).name}] : {n_before} kills → {n_after} lucky",
+                f"  🎲 TROIS SHOT [{Path(dp).name}] : {n_before} kills → {n_after} TROIS SHOT",
                 "info" if n_after else "dim")
             if filtered:
                 result[dp] = filtered
@@ -3435,14 +3316,14 @@ class App(tk.Tk):
     def _no_trois_shot_filter(self, demo_path, events, cfg):
         """Inverse de _trois_shot_filter : garde les kills qui NE sont PAS lucky.
 
-        For weapons not eligible for LUCKY SHOT, the kill is always kept
-        (the lucky filter only applies to eligible precision weapons).
+        For weapons not eligible for TROIS SHOT, the kill is always kept
+        (the trois shot filter only applies to eligible precision weapons).
         Retourne la liste filtrée.
         """
         try:
             from demoparser2 import DemoParser
         except ImportError:
-            self._alog("  ⚠ Exclude lucky: demoparser2 not installed (pip install demoparser2)", "warn")
+            self._alog("  ⚠ Exclude: demoparser2 not installed (pip install demoparser2)", "warn")
             return events
 
         if not os.path.isfile(demo_path):
@@ -3453,11 +3334,11 @@ class App(tk.Tk):
         lucky_ids = {id(e) for e in lucky_events}
 
         filtered = []
-        for events in events:
-            if events.get("type") != "kill":
+        for evt in events:
+            if evt.get("type") != "kill":
                 filtered.append(evt)
                 continue
-            weapon_raw = events.get("weapon", "").lower().strip()
+            weapon_raw = evt.get("weapon", "").lower().strip()
             # Arme non éligible → toujours garder
             if weapon_raw not in TROIS_SHOT_ELIGIBLE_LOWER:
                 filtered.append(evt)
@@ -3467,13 +3348,13 @@ class App(tk.Tk):
                 filtered.append(evt)
         return filtered
 
-    def _apply_no_trois_shot_to_events(self, eventss, cfg):
+    def _apply_no_trois_shot_to_events(self, evts, cfg):
         """Applique _no_trois_shot_filter sur tous les demos.
         Retourne un nouveau dict {demo_path: filtered_events}."""
         if not cfg.get("kill_mod_no_trois_shot"):
-            return eventss
+            return evts
         result = {}
-        for dp, events in eventss.items():
+        for dp, events in evts.items():
             n_before = len([e for e in events if e.get("type") == "kill"])
             filtered = self._no_trois_shot_filter(dp, events, cfg)
             n_after  = len([e for e in filtered if e.get("type") == "kill"])
@@ -3485,29 +3366,19 @@ class App(tk.Tk):
         return result
 
     # ── ONE TAP (v66) ─────────────────────────────────────────────────────────
-    def _on_one_tap_toggle(self, *_):
-        """Active/désactive ONE TAP : force et verrouille 'HS only'."""
-        active = self.v["kill_mod_one_tap"].get()
-        try:
-            if active:
-                self.v["headshots_only"].set(True)
-                self._hs_cb.config(state="disabled")
-            else:
-                # Ne relâcher que si TROIS TAP est aussi désactivé
-                if not self.v["kill_mod_trois_tap"].get():
-                    self._hs_cb.config(state="normal")
-        except Exception:
-            pass
-
     def _one_tap_filter(self, demo_path, events, cfg):
-        """Filtre les kills pour ne garder que les one tap vrais.
+        """Keep only true one-tap kills (ONE TAP filter).
 
-        Définition :
-          - tir unique : aucun weapon_fire du même joueur+arme dans les 2s AVANT
-          - aucun weapon_fire du même joueur+arme dans les 2s APRÈS
-          - (le headshot est déjà garanti par la BDD via headshots_only)
+        Definition:
+          - Isolated shot: no weapon_fire from same player+weapon in 2s BEFORE
+          - No weapon_fire from same player+weapon in 2s AFTER
+          - Headshot already guaranteed by DB (headshots_only forced by toggle)
 
-        Utilise demoparser2. Retourne la liste filtrée.
+        Uses demoparser2. Returns the filtered list.
+
+        v73 optimizations:
+          – Parse cache (_dp2_cache): each demo parsed at most once per run.
+          – to_numpy() instead of itertuples() for DataFrame iteration.
         """
         try:
             from demoparser2 import DemoParser
@@ -3518,101 +3389,92 @@ class App(tk.Tk):
         if not os.path.isfile(demo_path):
             return events
 
-        try:
-            parser = DemoParser(demo_path)
-            fire_df = parser.parse_event(
-                "weapon_fire",
-                player=["player_steamid"],
-                other=[],
-            )
-        except Exception as e:
-            self._alog(f"  ⚠ ONE TAP parse error ({Path(demo_path).name}): {e}", "warn")
-            return events
+        # ── Parse / cache ────────────────────────────────────────────────────
+        cache_key = ("one_tap", demo_path)
+        with self._dp2_cache_lock:
+            already = cache_key in self._dp2_cache
+        if not already:
+            try:
+                parser = DemoParser(demo_path)
+                fire_df = parser.parse_event(
+                    "weapon_fire",
+                    player=["player_steamid"],
+                    other=[],
+                )
+            except Exception as e:
+                self._alog(f"  ⚠ ONE TAP parse error ({Path(demo_path).name}): {e}", "warn")
+                return events
 
-        if fire_df is None or len(fire_df) == 0:
-            return events
+            if fire_df is None or len(fire_df) == 0:
+                with self._dp2_cache_lock:
+                    self._dp2_cache[cache_key] = {}
+            else:
+                cols = list(fire_df.columns)
+                def _col(name):
+                    if name in cols: return name
+                    if f"user_{name}" in cols: return f"user_{name}"
+                    return None
 
-        # Résolution colonnes (préfixe user_ possible)
-        cols = list(fire_df.columns)
-        def _col(name):
-            if name in cols: return name
-            if f"user_{name}" in cols: return f"user_{name}"
-            return None
+                col_sid = _col("player_steamid") or _col("steamid")
+                if not col_sid:
+                    self._alog("  ⚠ ONE TAP: steamid column not found", "warn")
+                    with self._dp2_cache_lock:
+                        self._dp2_cache[cache_key] = {}
+                else:
+                    fires_by_player_weapon = defaultdict(list)
+                    arr = fire_df[["tick", "weapon", col_sid]].to_numpy()
+                    for row in arr:
+                        tick    = int(row[0] or 0)
+                        wp      = str(row[1] or "").lower()
+                        sid     = str(row[2] or "")
+                        wp_norm = wp[7:] if wp.startswith("weapon_") else wp
+                        fires_by_player_weapon[(sid, wp_norm)].append(tick)
+                    for k in fires_by_player_weapon:
+                        fires_by_player_weapon[k].sort()
+                    with self._dp2_cache_lock:
+                        self._dp2_cache[cache_key] = dict(fires_by_player_weapon)
 
-        col_sid = _col("player_steamid") or _col("steamid")
-        if not col_sid:
-            self._alog("  ⚠ ONE TAP: steamid column not found", "warn")
-            return events
-
-        # CS2 = 64 ticks fixes. Fenêtre 2s = 128 ticks.
-        TICKRATE   = 64
-        WINDOW     = 2 * TICKRATE  # 128 ticks = 2 secondes exactes
-
-        # Indexer tous les tirs par (steamid, weapon_suffix)
-        from collections import defaultdict
-        fires_by_player_weapon = defaultdict(list)  # (sid, wp_suffix) → [tick, ...]
-
-        for row in fire_df.itertuples(index=False):
-            sid = str(getattr(row, col_sid, "") or "")
-            wp  = str(getattr(row, "weapon", "") or "").lower()
-            # Normalize: "weapon_deagle" → "deagle"
-            wp_norm = wp.replace("weapon_", "") if wp.startswith("weapon_") else wp
-            tick = int(getattr(row, "tick", 0) or 0)
-            fires_by_player_weapon[(sid, wp_norm)].append(tick)
-
-        # Sort each list
-        for key in fires_by_player_weapon:
-            fires_by_player_weapon[key].sort()
-
-        import bisect
+        with self._dp2_cache_lock:
+            fires_by_player_weapon = self._dp2_cache[cache_key]
+        WINDOW = 128  # CS2 = 64 ticks/s → 2s = 128 ticks
 
         def _is_one_tap(kill_tick, killer_sid, weapon_raw):
-            # Normaliser le nom CSDM vers le suffixe demoparser2
             w_lower = weapon_raw.lower().strip()
-            # Mapping direct ou depuis CSDM_TO_DP2_WEAPON
-            dp2 = CSDM_TO_DP2_WEAPON.get(w_lower)
-            if dp2:
-                wp_norm = dp2.replace("weapon_", "")
-            else:
-                # Fallback : utiliser tel quel sans préfixe
-                wp_norm = w_lower.replace("weapon_", "")
+            dp2     = CSDM_TO_DP2_WEAPON.get(w_lower)
+            wp_norm = (dp2[7:] if dp2.startswith("weapon_") else dp2) if dp2 else \
+                      (w_lower[7:] if w_lower.startswith("weapon_") else w_lower)
 
-            key = (killer_sid, wp_norm)
-            fire_ticks = fires_by_player_weapon.get(key)
+            fire_ticks = fires_by_player_weapon.get((killer_sid, wp_norm))
             if not fire_ticks:
-                return False  # Aucun tir trouvé du tout → ne pas inclure
+                return False
 
-            # Find the shot matching this kill (closest ≤ kill_tick within 128t)
             idx = bisect.bisect_right(fire_ticks, kill_tick) - 1
             if idx < 0:
                 return False
             fire_tick = fire_ticks[idx]
             if kill_tick - fire_tick > WINDOW:
-                return False  # Trop loin
+                return False
 
-            # Check silence BEFORE: no shot in [fire_tick-WINDOW, fire_tick)
-            before_start = fire_tick - WINDOW
-            idx_before = bisect.bisect_left(fire_ticks, before_start)
-            # Shots before fire_tick in window
-            tirs_avant = [t for t in fire_ticks[idx_before:idx] if t < fire_tick]
+            # Silence before: no shot in [fire_tick-WINDOW, fire_tick)
+            idx_before  = bisect.bisect_left(fire_ticks, fire_tick - WINDOW)
+            tirs_avant  = [t for t in fire_ticks[idx_before:idx] if t < fire_tick]
             if tirs_avant:
                 return False
 
-            # Check silence AFTER: no shot in (fire_tick, fire_tick+WINDOW]
-            after_end = fire_tick + WINDOW
-            idx_after_start = bisect.bisect_right(fire_ticks, fire_tick)
-            tirs_apres = [t for t in fire_ticks[idx_after_start:] if t <= after_end]
+            # Silence after: no shot in (fire_tick, fire_tick+WINDOW]
+            idx_after   = bisect.bisect_right(fire_ticks, fire_tick)
+            tirs_apres  = [t for t in fire_ticks[idx_after:] if t <= fire_tick + WINDOW]
             if tirs_apres:
                 return False
 
             return True
 
         filtered = []
-        for events in events:
-            if events.get("type") != "kill":
+        for evt in events:
+            if evt.get("type") != "kill":
                 filtered.append(evt)
                 continue
-            weapon_raw = events.get("weapon", "")
+            weapon_raw = evt.get("weapon", "")
             killer_sid = str(evt.get("killer_sid", ""))
             kill_tick  = int(evt.get("tick", 0))
             if _is_one_tap(kill_tick, killer_sid, weapon_raw):
@@ -3620,13 +3482,14 @@ class App(tk.Tk):
 
         return filtered
 
-    def _apply_one_tap_to_events(self, eventss, cfg):
+
+    def _apply_one_tap_to_events(self, evts, cfg):
         """Applique _one_tap_filter sur tous les demos.
         Retourne un nouveau dict {demo_path: filtered_events}."""
         if not cfg.get("kill_mod_one_tap"):
-            return eventss
+            return evts
         result = {}
-        for dp, events in eventss.items():
+        for dp, events in evts.items():
             n_before = len([e for e in events if e.get("type") == "kill"])
             filtered = self._one_tap_filter(dp, events, cfg)
             n_after  = len([e for e in filtered if e.get("type") == "kill"])
@@ -3652,18 +3515,18 @@ class App(tk.Tk):
         # Étape 2 : parmi les lucky, garder uniquement les one-tap
         return self._one_tap_filter(demo_path, lucky, cfg)
 
-    def _apply_trois_tap_to_events(self, eventss, cfg):
+    def _apply_trois_tap_to_events(self, evts, cfg):
         """Applique _trois_tap_filter sur tous les demos.
         Retourne un nouveau dict {demo_path: filtered_events}."""
         if not cfg.get("kill_mod_trois_tap"):
-            return eventss
+            return evts
         result = {}
-        for dp, events in eventss.items():
+        for dp, events in evts.items():
             n_before = len([e for e in events if e.get("type") == "kill"])
             filtered = self._trois_tap_filter(dp, events, cfg)
             n_after  = len([e for e in filtered if e.get("type") == "kill"])
             self._alog(
-                f"  🎯🎲 LUCKY TAP [{Path(dp).name}] : {n_before} kills → {n_after} lucky tap",
+                f"  🎯🎲 TROIS TAP [{Path(dp).name}] : {n_before} kills → {n_after} TROIS TAP",
                 "info" if n_after else "dim")
             if filtered:
                 result[dp] = filtered
@@ -3783,7 +3646,7 @@ class App(tk.Tk):
 
         row1 = tk.Frame(sec2, bg=BG2)
         row1.pack(fill="x", pady=(4, 0))
-        mlabel(row1, "Recherche :").pack(side="left")
+        mlabel(row1, "Search:").pack(side="left")
         tk.Button(row1, text="🔍 By tag",
                   font=FONT_SM, bg=ORANGE, fg="white", relief="flat", bd=0,
                   cursor="hand2", activebackground=ORANGE2,
@@ -3877,7 +3740,7 @@ class App(tk.Tk):
                 conn.close()
             except Exception as e:
                 self.after(0, lambda err=e: (self._alog(f"Tags erreur: {err}", "err"),
-                                         self._tag_search_status.config(text=f"Erreur", fg=RED)))
+                                         self._tag_search_status.config(text="Error", fg=RED)))
                 return
 
             found = [(str(r[0]), 0, 0) for r in rows]
@@ -4014,17 +3877,17 @@ class App(tk.Tk):
                 conn.close()
             except Exception as e:
                 self.after(0, lambda err=e: (
-                    self._alog(f"[TAGS/config] Erreur BDD : {err}", "err"),
-                    self._tag_search_status.config(text="Erreur", fg=RED)))
+                    self._alog(f"[TAGS/config] DB error: {err}", "err"),
+                    self._tag_search_status.config(text="Error", fg=RED)))
                 return
 
             # 2. Requête config (joueur+events+armes+dates)
             try:
-                eventss = self._query_events(cfg)
+                evts = self._query_events(cfg)
             except Exception as e:
                 self.after(0, lambda err=e: (
-                    self._alog(f"[TAGS/config] Erreur config : {err}", "err"),
-                    self._tag_search_status.config(text="Erreur", fg=RED)))
+                    self._alog(f"[TAGS/config] Config error: {err}", "err"),
+                    self._tag_search_status.config(text="Error", fg=RED)))
                 return
 
             # 3. Intersection : garder seulement les démos déjà taguées
@@ -4233,14 +4096,14 @@ class App(tk.Tk):
 
             # 2. Démos correspondant à la config
             try:
-                eventss = self._query_events(cfg)
+                evts = self._query_events(cfg)
             except Exception as e:
                 self.after(0, lambda err=e: self._alog(f"Tags 📅 config error: {err}", "err"))
                 return
 
             # 3. Intersection : démos config ∩ taguées
             matched = []
-            for dp in eventss:
+            for dp in evts:
                 chk = self._demo_checksums.get(dp) or self._get_demo_checksum(dp)
                 if chk and chk in tagged_checksums:
                     matched.append(dp)
@@ -4307,7 +4170,7 @@ class App(tk.Tk):
             self._alog("Tags: select at least one tag.", "err")
             return
         if not self._tag_found_demos:
-            self._alog("Tags : lance d'abord une recherche.", "err")
+            self._alog("Tags: run a search first.", "err")
             return
         demos = [dp for dp, _, _ in self._tag_found_demos]
         for name in names:
@@ -4353,7 +4216,7 @@ class App(tk.Tk):
         threading.Thread(target=task, daemon=True).start()
 
     def _delete_tag_ui(self, tag_id, tag_name):
-        if not messagebox.askyesno("Supprimer tag", f"Supprimer '{tag_name}' et ses liens ?"):
+        if not messagebox.askyesno("Delete tag", f"Delete '{tag_name}' and all its links?"):
             return
         ok, err = self._delete_tag_from_db(tag_id, tag_name)
         if ok:
@@ -4361,7 +4224,7 @@ class App(tk.Tk):
             self._refresh_tags_list_display()
             self._log(f"Tag '{tag_name}' supprime.", "ok")
         else:
-            messagebox.showerror("Tags", f"Erreur: {err}")
+            messagebox.showerror("Tags", f"Error: {err}")
 
     # ── TAB OUTILS ──
     def _tab_outils(self, parent):
@@ -4416,13 +4279,38 @@ class App(tk.Tk):
         tk.Label(br, textvariable=self.db_status, font=("Consolas", 9, "bold"), bg=BG2,
                  fg=YELLOW).pack(side="left", padx=(12, 0))
 
+        sec_perf = Sec(p, "PERFORMANCE")
+        sec_perf.pack(fill="x", pady=(0, 10))
+
+        dp2_row = tk.Frame(sec_perf, bg=BG2)
+        dp2_row.pack(fill="x", pady=(6, 0))
+        dp2_top = tk.Frame(dp2_row, bg=BG2)
+        dp2_top.pack(fill="x")
+        mlabel(dp2_top, "DP2 parse threads").pack(side="left")
+        _dp2_val_lbl = tk.Label(dp2_top,
+                                text=str(self.v["dp2_threads"].get()),
+                                font=FONT_SM, fg=ORANGE, bg=BG2)
+        _dp2_val_lbl.pack(side="right")
+        tk.Scale(dp2_row, from_=1, to=8,
+                 variable=self.v["dp2_threads"],
+                 orient="horizontal", bg=BG2, fg=TEXT,
+                 troughcolor=BG3, activebackground=ORANGE,
+                 highlightthickness=0, bd=0, showvalue=False, cursor="hand2",
+                 command=lambda v: _dp2_val_lbl.config(
+                     text=str(int(float(v))))).pack(fill="x", pady=(2, 0))
+        add_tip(dp2_row,
+                "Number of parallel threads used to pre-parse demo files\n"
+                "with demoparser2 (TROIS SHOT / ONE TAP / TROIS TAP filters).\n"
+                "Higher = faster pre-parse on multi-core CPUs.\n"
+                "Recommended: 2–4.  Set to 1 to disable parallelism.")
+
         sec_pre = Sec(p, "SAVE A PRESET")
         sec_pre.pack(fill="x", pady=(0, 10))
 
         self._preset_name_var = tk.StringVar()
         nr = tk.Frame(sec_pre, bg=BG2)
         nr.pack(fill="x", pady=(6, 0))
-        mlabel(nr, "Nom :").pack(side="left")
+        mlabel(nr, "Name:").pack(side="left")
         sentry(nr, self._preset_name_var).pack(side="left", fill="x", expand=True,
                                                 padx=(6, 0), ipady=4)
 
@@ -4446,7 +4334,7 @@ class App(tk.Tk):
     def _save_preset(self):
         name = self._preset_name_var.get().strip()
         if not name:
-            messagebox.showerror("Preset", "Donne un nom.")
+            messagebox.showerror("Preset", "Enter a name.")
             return
         cat = self._preset_cat_var.get()
         cfg = self._collect_config()
@@ -4455,7 +4343,7 @@ class App(tk.Tk):
         self.presets[name] = {"type": cat, "data": data}
         save_presets(self.presets)
         self._refresh_preset_list()
-        messagebox.showinfo("Preset", f"'{name}' sauvegarde.")
+        messagebox.showinfo("Preset", f"'{name}' saved.")
 
     def _load_preset(self, name):
         p = self.presets.get(name)
@@ -4463,7 +4351,7 @@ class App(tk.Tk):
             return
         self._apply_config(p["data"], keys=PRESET_KEYS.get(p.get("type", "full")))
         self._post_apply_ui()
-        self._log(f"Preset '{name}' charge.", "ok")
+        self._log(f"Preset '{name}' loaded.", "ok")
 
     def _post_apply_ui(self):
         """Synchronise les widgets dérivés après un _apply_config (résolution, slow-motion…)."""
@@ -4504,7 +4392,7 @@ class App(tk.Tk):
             pass
 
     def _delete_preset(self, name):
-        if messagebox.askyesno("Delete", f"Supprimer '{name}' ?"):
+        if messagebox.askyesno("Delete", f"Delete '{name}'?"):
             self.presets.pop(name, None)
             save_presets(self.presets)
             self._refresh_preset_list()
@@ -4820,9 +4708,9 @@ class App(tk.Tk):
                             vc = c
                             break
                 if not dc:
-                    raise Exception("Col demo introuvable")
+                    raise Exception("Demo path column not found")
                 if not mkk or not mkm:
-                    raise Exception("Jointure kills<->matches introuvable")
+                    raise Exception("kills<->matches join column not found")
 
                 kills_on = cfg["events_kills"]
                 deaths_on = cfg["events_deaths"]
@@ -4901,7 +4789,7 @@ class App(tk.Tk):
                             # Tous les modificateurs cochés sont absents de la BDD →
                             # impossible de filtrer, on renvoie zéro résultat plutôt que tout
                             self._alog(
-                                f"⛔ Modificateurs introuvables en BDD : {missing_labels}. "
+                                f"⛔ Modifiers not found in DB: {missing_labels}. "
                                 f"No clips returned — uncheck these modifiers or check the schema.",
                                 "err")
                             conn.close()
@@ -5055,7 +4943,7 @@ class App(tk.Tk):
         # la date d'import et non la date de partie.
         if ts_from is not None or ts_to is not None:
             results = {
-                dp: eventss for dp, eventss in results.items()
+                dp: evts_val for dp, evts_val in results.items()
                 if _demo_passes_date_filter(dp)
             }
 
@@ -5305,8 +5193,6 @@ class App(tk.Tk):
                 hlae_options["host_timescale"] = round(int(slow_mo) / 100.0, 4)
             if cfg.get("hlae_afx_stream", False):
                 hlae_options["afxStream"] = True
-            if cfg.get("hlae_skip_cs_intro", True):
-                hlae_options["skipIntro"] = True
             extra = cfg.get("hlae_extra_args", "").strip()
             if cfg.get("hlae_no_spectator_ui", True):
                 hlae_options["hideSpectatorUi"] = True
@@ -5339,7 +5225,7 @@ class App(tk.Tk):
                 extra = (" ".join(phys_cmds) + " " + extra).strip()
 
             # Mode fenêtre CS2
-            wm = cfg.get("cs2_window_mode", "aucun")
+            wm = cfg.get("cs2_window_mode", "none")
             _WM_FLAGS = {
                 "fullscreen": "-fullscreen",
                 "windowed":   "-windowed",
@@ -5527,7 +5413,54 @@ class App(tk.Tk):
         self.stop_btn.config(state="disabled")
         self.kill_btn.config(state="disabled")
 
-    def _dry_run(self):
+    def _preparse_dp2(self, cfg, demo_paths):
+        """Pre-parse demo files with demoparser2 in parallel threads.
+
+        Populates _dp2_cache for all demos that need it (TROIS SHOT / ONE TAP /
+        TROIS TAP filters), using up to dp2_threads parallel workers.
+        Thread-safe via _dp2_cache_lock.
+        Called at the start of each batch and preview run.
+        """
+        needs_trois = cfg.get("kill_mod_trois_shot") or \
+                      cfg.get("kill_mod_no_trois_shot") or \
+                      cfg.get("kill_mod_trois_tap")
+        needs_one   = cfg.get("kill_mod_one_tap") or cfg.get("kill_mod_trois_tap")
+        if not (needs_trois or needs_one):
+            return
+
+        paths = [dp for dp in demo_paths if os.path.isfile(dp)]
+        if not paths:
+            return
+
+        n_threads = max(1, min(8, int(cfg.get("dp2_threads", 2))))
+        self._alog(
+            f"  ⚡ Pre-parsing {len(paths)} demo(s) with {n_threads} thread(s)…",
+            "info")
+
+        def _worker(dp):
+            dummy = []
+            if needs_trois:
+                self._trois_shot_filter(dp, dummy, cfg)
+            if needs_one:
+                self._one_tap_filter(dp, dummy, cfg)
+
+        done = 0
+        with concurrent.futures.ThreadPoolExecutor(max_workers=n_threads) as ex:
+            futs = {ex.submit(_worker, dp): dp for dp in paths}
+            for fut in concurrent.futures.as_completed(futs):
+                done += 1
+                try:
+                    fut.result()
+                except Exception as e:
+                    self._alog(
+                        f"  ⚠ Pre-parse error ({Path(futs[fut]).name}): {e}",
+                        "warn")
+                self.after(0, lambda d=done, t=len(paths):
+                           self.progress_lbl.config(text=f"Pre-parse {d}/{t}"))
+
+        self._alog(f"  ✓ Pre-parse done ({done} demos)", "ok")
+
+
         if not self.player_search.get_steam_ids():
             messagebox.showerror("", "Check at least one registered account.")
             return
@@ -5539,36 +5472,40 @@ class App(tk.Tk):
 
         def task():
             try:
-                eventss = self._query_events(cfg)
+                evts = self._query_events(cfg)
             except Exception as e:
-                self._alog(f"Erreur: {e}", "err")
+                self._alog(f"Error: {e}", "err")
                 return
-            # Appliquer les modificateurs demoparser2 en fond avant l'aperçu.
-            # trois_tap est exclusif. no_trois_shot et one_tap sont cumulatifs (ET logique).
+            # ── Cache reset + parallel DP2 pre-parse ─────────────────────────
+            self._dp2_cache = {}
+            self._preparse_dp2(cfg, list(evts.keys()))
+            # ─────────────────────────────────────────────────────────────────
+            # Apply demoparser2 modifiers before preview.
+            # trois_tap is exclusive; trois_shot + no_trois_shot + one_tap are cumulative (AND).
             if cfg.get("kill_mod_trois_tap"):
-                self._alog("  🎯🎲 LUCKY TAP — analyzing demos…", "info")
-                eventss = self._apply_trois_tap_to_events(evts, cfg)
+                self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
+                evts = self._apply_trois_tap_to_events(evts, cfg)
             else:
                 if cfg.get("kill_mod_trois_shot"):
-                    self._alog("  🎲 LUCKY SHOT — analyzing demos…", "info")
-                    eventss = self._apply_trois_shot_to_events(evts, cfg)
+                    self._alog("  🎲 TROIS SHOT — analyzing demos…", "info")
+                    evts = self._apply_trois_shot_to_events(evts, cfg)
                 if cfg.get("kill_mod_no_trois_shot"):
                     self._alog("  🚫🎲 Exclude — analyzing demos…", "info")
-                    eventss = self._apply_no_trois_shot_to_events(evts, cfg)
+                    evts = self._apply_no_trois_shot_to_events(evts, cfg)
                 if cfg.get("kill_mod_one_tap"):
                     self._alog("  🎯 ONE TAP — analyzing demos…", "info")
-                    eventss = self._apply_one_tap_to_events(evts, cfg)
-            self.after(0, lambda eventss=evts, cfg=cfg: self._show_preview(evts, cfg))
+                    evts = self._apply_one_tap_to_events(evts, cfg)
+            self.after(0, lambda evts=evts, cfg=cfg: self._show_preview(evts, cfg))
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _show_preview(self, eventss, cfg):
+    def _show_preview(self, evts, cfg):
         """Affiche les résultats d'un aperçu. Doit être appelé sur le thread principal."""
-        if not eventss:
+        if not evts:
             self._log("No events.", "warn")
             self._summary_lbl.config(text="  No clips found.", fg=MUTED)
             return
-        te = sum(len(e) for e in eventss.values())
+        te = sum(len(e) for e in evts.values())
         self._log(f"Player(s): {self._player_str(cfg)}", "info")
         _auto_tags = self._get_active_tag_names() if self.v["tag_enabled"].get() else []
         if _auto_tags:
@@ -5595,9 +5532,9 @@ class App(tk.Tk):
         _tkm = cfg.get("teamkills_mode", "include")
         tk_str = ("  🚫 TK excluded" if _tkm == "exclude" else
                   "  ⚔ TK only" if _tkm == "only" else "")
-        ts_str  = "  🎲 LUCKY SHOT"    if cfg.get("kill_mod_trois_shot")    else ""
+        ts_str  = "  🎲 TROIS SHOT"    if cfg.get("kill_mod_trois_shot")    else ""
         nts_str = "  🚫🎲 Exclude"      if cfg.get("kill_mod_no_trois_shot") else ""
-        tt_str  = "  🎯🎲 LUCKY TAP"   if cfg.get("kill_mod_trois_tap")     else ""
+        tt_str  = "  🎯🎲 TROIS TAP"   if cfg.get("kill_mod_trois_tap")     else ""
         ot_str  = "  🎯 ONE TAP"        if cfg.get("kill_mod_one_tap")       else ""
         self._log(f"Order: {'Chronological' if order == 'chrono' else 'Random'} | "
                   f"{len(evts)} demo(s), {te} events{hs_str}{tk_str}{ts_str}{nts_str}{tt_str}{ot_str}", "ok")
@@ -5793,7 +5730,7 @@ class App(tk.Tk):
             if w:
                 cli = w
             else:
-                self._alog(f"CLI introuvable: {cli}", "err")
+                self._alog(f"CLI not found: {cli}", "err")
                 self.after(0, self._reset_btns)
                 return
         player_str = self._player_str(cfg)
@@ -5844,7 +5781,7 @@ class App(tk.Tk):
         try:
             all_events = self._query_events(cfg)
         except Exception as e:
-            self._alog(f"Erreur: {e}", "err")
+            self._alog(f"Error: {e}", "err")
             self.after(0, self._reset_btns)
             return
         if not all_events:
@@ -5873,6 +5810,11 @@ class App(tk.Tk):
         ok = fail = skip = retried = tagged = 0
         summary = []
         produced_dirs = []   # dossiers de sortie des démos réussies (pour assemblage)
+
+        # ── Cache reset + parallel DP2 pre-parse ─────────────────────────────
+        self._dp2_cache = {}
+        self._preparse_dp2(cfg, [dp for dp, _ in demo_list])
+        # ─────────────────────────────────────────────────────────────────────
 
         skip_already_tagged = False   # True = ignorer les démos déjà taguées
         _already_tagged_paths = set() # chemins des démos déjà taguées
@@ -5935,7 +5877,7 @@ class App(tk.Tk):
                 choice = _choice[0]
                 if choice is None:
                     # Annuler → refaire l'aperçu sans les démos déjà taguées
-                    filtered_events = {dp: eventss for dp, eventss in all_events.items()
+                    filtered_events = {dp: ev for dp, ev in all_events.items()
                                        if dp not in _already_tagged_paths}
                     self._alog(f"  ⏭ Cancelled — preview restarted without {n_already} already-tagged demo(s)", "info")
                     def _redo():
@@ -5948,11 +5890,11 @@ class App(tk.Tk):
                         def _bg():
                             nonlocal _fe
                             if cfg.get("kill_mod_trois_tap"):
-                                self._alog("  🎯🎲 LUCKY TAP — analyzing demos…", "info")
+                                self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
                                 _fe = self._apply_trois_tap_to_events(_fe, cfg)
                             else:
                                 if cfg.get("kill_mod_trois_shot"):
-                                    self._alog("  🎲 LUCKY SHOT — analyzing demos…", "info")
+                                    self._alog("  🎲 TROIS SHOT — analyzing demos…", "info")
                                     _fe = self._apply_trois_shot_to_events(_fe, cfg)
                                 if cfg.get("kill_mod_no_trois_shot"):
                                     self._alog("  🚫🎲 Exclude — analyzing demos…", "info")
@@ -5994,10 +5936,10 @@ class App(tk.Tk):
                 n_before = len([e for e in events if e.get("type") == "kill"])
                 events = self._trois_tap_filter(dp, events, cfg)
                 n_after = len([e for e in events if e.get("type") == "kill"])
-                self._alog(f"  🎯🎲 LUCKY TAP : {n_before} kills → {n_after} lucky tap", "info")
+                self._alog(f"  🎯🎲 TROIS TAP : {n_before} kills → {n_after} TROIS TAP", "info")
                 if not events:
-                    self._alog("  ⏭ SKIP: 0 lucky taps in this demo", "dim")
-                    summary.append((Path(dp).name, "SKIP", 0, 0, "0 LUCKY TAP"))
+                    self._alog("  ⏭ SKIP: 0 trois taps in this demo", "dim")
+                    summary.append((Path(dp).name, "SKIP", 0, 0, "0 TROIS TAP"))
                     skip += 1
                     continue
             else:
@@ -6005,10 +5947,10 @@ class App(tk.Tk):
                     n_before = len([e for e in events if e.get("type") == "kill"])
                     events = self._trois_shot_filter(dp, events, cfg)
                     n_after = len([e for e in events if e.get("type") == "kill"])
-                    self._alog(f"  🎲 LUCKY SHOT : {n_before} kills → {n_after} lucky", "info")
+                    self._alog(f"  🎲 TROIS SHOT : {n_before} kills → {n_after} TROIS SHOT", "info")
                     if not events:
-                        self._alog("  ⏭ SKIP: 0 lucky kills in this demo", "dim")
-                        summary.append((Path(dp).name, "SKIP", 0, 0, "0 LUCKY SHOT"))
+                        self._alog("  ⏭ SKIP: 0 TROIS SHOT kills in this demo", "dim")
+                        summary.append((Path(dp).name, "SKIP", 0, 0, "0 TROIS SHOT"))
                         skip += 1
                         continue
                 if cfg.get("kill_mod_no_trois_shot"):
