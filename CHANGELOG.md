@@ -5,6 +5,22 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v91]
+### Fixed
+- **`_effective_before` perspective leak**: `victim_pre_s` was added to `before` regardless of perspective mode because `victim_pre_s=2` is stored in config and persisted across sessions. A saved config with `perspective=both` would inflate clip duration even after switching back to `POV Killer`. Added `max(0, ...)` guard and clarified docstring: only `perspective == "both"` triggers the addition.
+
+### Changed
+- **"Full round" → "Full clutch"** everywhere (UI radio label, clutch tooltip, config comment, `_build_clutch_sequences` docstring). A clutch clip spans `first_kill_tick − before` to `last_kill_tick + after` — not the entire CS round. The old name implied the full 115s round was recorded.
+- **Adaptive preview avg line**: The `▶ N clips | avg. Xs/clip` line is now context-aware:
+  - Regular clips only → `avg. Xs/clip`
+  - Clutch clips only → `avg. Xs/clutch`
+  - Mixed → `N clips avg. Xs  +  M clutch avg. Ys` (separate averages, since clutch duration is structurally different from per-kill clips)
+
+### Notes — TROIS SHOT scoped behaviour (confirmed, no change)
+For AWP/SSG08, the lucky condition is `(not scoped) OR (acc > 0.010)`. A **scoped** shot is still caught as "lucky" if `acc > 0.010` — this covers the case where the player scoped in and fired before the sway settled (CS2 accuracy_penalty doesn't drop to minimum the instant you scope). This is correct: "aiming" doesn't guarantee a precise shot if the scope isn't fully steadied. No threshold change needed.
+
+---
+
 ## [v90]
 ### Changed
 - **Header active player label** now mirrors the exact text from the Capture tab's active-accounts label (`_active_lbl`) in real time. Previously `_hdr_player_lbl` was updated by `_on_player_change` only — which only fired on DB-list selection and showed a truncated single-player shortname. The header now always shows the same string as the tab (e.g. `3 active: PLURTH WURTH, MAMMOUTH, TROIS SHOT TROIS`).

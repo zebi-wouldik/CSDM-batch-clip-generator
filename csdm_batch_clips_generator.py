@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v90"""
+"""CSDM Batch Clips Generator v91"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v90"
+APP_VERSION = "v91"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -327,7 +327,7 @@ DEFAULT_CONFIG = {
     "clutch_min_kills":   2,       # minimum clutch size = opponents alive when player became last alive (1v2+)
     "clutch_max_kills":   5,       # maximum clutch size (5 = ace clutch only)
     "clutch_require_win": False,   # only include clutches where the player's team won the round
-    "clutch_clip_mode":   "full",  # "full" = one clip per clutch | "individual" = one clip per kill
+    "clutch_clip_mode":   "full",  # "full" = one clip per clutch (first→last kill) | "individual" = one clip per kill
     # Sequence options
     "show_xray": True,
     # Encoding preset (libx264/libx265/libsvtav1 only — no effect on GPU)
@@ -2481,8 +2481,8 @@ class App(tk.Tk):
                 "Detection: at the player's first kill tick in the round, all teammates\n"
                 "must already be dead. Clutch size = opponents alive at that moment.\n\n"
                 "Min / Max 1v: filter by size (1v2+, 1v3 only, etc.).\n"
-                "Full round = one clip from first to last kill of the clutch.\n"
-                "Per kill = one clip per kill (standard BEFORE/AFTER seconds).\n"
+                "Full clutch = one clip from the first kill to the last kill of the clutch.\n"
+                "Per kill   = one clip per kill (standard BEFORE/AFTER seconds).\n"
                 "Win only = only clutches the player's team won.\n\n"
                 "⚠ Requires team/side columns in the kills table.\n"
                 "  Can be combined with Kills / Deaths / Rounds.")
@@ -2509,7 +2509,7 @@ class App(tk.Tk):
 
         mlabel(self._clutch_opts_row, "  Clip:").pack(side="left", padx=(8, 0))
         for lbl, val, tip in [
-            ("Full round",   "full",       "One continuous clip spanning all kills in the round."),
+            ("Full clutch",  "full",       "One clip from the first kill to the last kill of the clutch (+ before/after seconds)."),
             ("Per kill",     "individual", "One clip per kill (standard BEFORE/AFTER padding)."),
         ]:
             _rb = hradio(self._clutch_opts_row, lbl, self.v["clutch_clip_mode"], val)
@@ -5444,11 +5444,13 @@ class App(tk.Tk):
         return results
     def _effective_before(self, cfg):
         """Return the effective BEFORE duration in seconds.
-        In 'both' mode, victim_pre_s is added to before so that
-        the killer phase is complete in the recorded sequence."""
+        In 'both' mode, victim_pre_s is added so the killer phase is fully
+        included in the recorded sequence.
+        Any other perspective — killer, victim — uses before as-is.
+        """
         before = cfg.get("before", 3)
         if cfg.get("perspective") == "both":
-            before = before + cfg.get("victim_pre_s", 0)
+            before = before + max(0, cfg.get("victim_pre_s", 0))
         return before
 
     def _build_sequences(self, events, tickrate, before_s, after_s):
@@ -5473,14 +5475,12 @@ class App(tk.Tk):
     def _build_clutch_sequences(self, clutch_groups, tickrate, before_s, after_s):
         """Build one sequence per clutch group.
 
-        Each group is a list of kill events belonging to the same clutch (same
-        player, same round). The sequence spans from the FIRST kill minus before_s
-        to the LAST kill plus after_s — unlike normal sequences which are built
-        per-kill and then merged, clutch sequences are intentionally contiguous
-        regardless of the gap between kills.
+        Each group is the player's kills in a clutch round.
+        The sequence spans from the FIRST kill minus before_s to the LAST kill
+        plus after_s. This is NOT the full CS round — it covers only the kill
+        window of the clutch (± padding).
 
-        clip_mode="individual": fall back to standard per-kill sequences (merging
-        may still join close kills).
+        clip_mode="individual": fall back to standard per-kill sequences.
         """
         sequences = []
         for kills in clutch_groups:
@@ -6405,7 +6405,9 @@ class App(tk.Tk):
         before_s  = self._effective_before(cfg)
         after_s   = cfg["after"]
         nb_clips  = 0
+        nb_clutch_clips = 0
         total_ticks = 0
+        clutch_ticks = 0
         sorted_demos = sorted(evts.keys(), key=self._demo_sort_key)
         # Populate demo picker with the range-filtered demo list
         self._demo_picker_populate(sorted_demos, keep_existing=False)
@@ -6425,8 +6427,12 @@ class App(tk.Tk):
                 if non_clutch:
                     seqs = self._build_sequences(non_clutch, tickrate, before_s, after_s)
                 if clutch_groups:
-                    seqs += self._build_clutch_sequences(
+                    c_seqs = self._build_clutch_sequences(
                         list(clutch_groups.values()), tickrate, before_s, after_s)
+                    seqs += c_seqs
+                    nb_clutch_clips += len(c_seqs)
+                    for s in c_seqs:
+                        clutch_ticks += s["end_tick"] - s["start_tick"]
                 seqs.sort(key=lambda s: s["start_tick"])
             else:
                 seqs = self._build_sequences(evts[dp], tickrate, before_s, after_s)
@@ -6463,10 +6469,24 @@ class App(tk.Tk):
             _parts.append(f"total {timings['total'] + t_seqbuild:.2f}s")
             self._log(f"  ⏱ {' | '.join(_parts)}", "dim")
 
+        # Build adaptive summary line
+        h = self._hms
+        nb_regular = nb_clips - nb_clutch_clips
         summary_txt = self._fmt_summary(nb_demos, nb_clips, total_sec, avg_sec)
         self._log(f"\n{'─'*56}", "dim")
-        self._log(f"  ▶ {nb_clips} clips  |  total duration {self._hms(total_sec)}"
-                  f"  |  avg. {self._hms(avg_sec)}/clip", "ok")
+        avg_line = f"  ▶ {nb_clips} clips  |  total {h(total_sec)}"
+        if nb_clutch_clips > 0 and nb_regular > 0:
+            # Mixed: show separate averages
+            reg_sec   = (total_sec - clutch_ticks / tickrate) / nb_regular if nb_regular else 0
+            cl_sec    = (clutch_ticks / tickrate) / nb_clutch_clips if nb_clutch_clips else 0
+            avg_line += (f"  |  {nb_regular} clip{'s' if nb_regular!=1 else ''} avg. {h(reg_sec)}"
+                         f"  +  {nb_clutch_clips} clutch avg. {h(cl_sec)}")
+        elif nb_clutch_clips > 0:
+            # All clutch clips
+            avg_line += f"  |  avg. {h(avg_sec)}/clutch"
+        else:
+            avg_line += f"  |  avg. {h(avg_sec)}/clip"
+        self._log(avg_line, "ok")
         self._log(f"{'─'*56}", "dim")
         self._summary_lbl.config(text=summary_txt, fg=GREEN)
 
