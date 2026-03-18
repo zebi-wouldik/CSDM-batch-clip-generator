@@ -12,8 +12,6 @@
 
 ---
 
-## What is this?
-
 A Python GUI that plugs into [CS Demo Manager](https://cs-demo-manager.com/) and lets you batch-record highlights from your entire CS2 demo library — by player, event type, date range, weapon, and a growing list of kill modifiers (lucky shots, one-taps, clutches, spray transfers...).
 
 Pick your filters → Preview → Run. CSDM handles the actual recording; this tool handles everything else.
@@ -22,13 +20,13 @@ Pick your filters → Preview → Run. CSDM handles the actual recording; this t
 
 ## Requirements
 
-| Dependency | Notes |
+| Dependency | |
 |---|---|
 | **Python 3.10+** | |
 | **FFmpeg** | Must be in `PATH` |
 | **CS Demo Manager** | [cs-demo-manager.com](https://cs-demo-manager.com/) — provides the CLI and PostgreSQL DB |
-| `pip install psycopg2-binary` | Required — DB connection |
-| `pip install demoparser2` | Optional — needed for advanced kill modifiers (TROIS SHOT, ONE TAP, etc.) |
+| `pip install psycopg2-binary` | Required |
+| `pip install demoparser2` | Optional — needed for advanced kill modifiers |
 | `pip install pywin32` | Optional — CS2 auto-minimize on Windows |
 
 ---
@@ -39,26 +37,27 @@ Pick your filters → Preview → Run. CSDM handles the actual recording; this t
 python csdm_batch_clips_generator.py
 ```
 
-Then open the **Tools** tab and connect to PostgreSQL using the same credentials as CSDM.
+Open the **Tools** tab → connect to PostgreSQL with the same credentials as CSDM.
 
 ---
 
 ## Workflow
 
 ```
-Capture tab → select player(s) + filters → F6 Preview → F5 Run
+Capture tab  →  select player(s) + filters  →  F6 Preview  →  F5 Run
 ```
 
-- **Preview** shows clip count, estimated duration, and a per-demo breakdown. Uncheck any demo to exclude it.
-- **Manual mode** (after preview) lets you pick any demo from the full database, ignoring the date range.
-- **Auto-tag** optionally tags processed demos in CSDM when the batch completes.
+- **Preview** shows clip count, total duration, and a per-demo breakdown — uncheck any demo to exclude it
+- **Manual mode** lets you pick any demo from the full database regardless of date range
+- **Auto-tag** tags processed demos in CSDM when the batch completes
 
 ---
 
 ## Kill modifiers
 
 ### 🔵 demoparser2-powered
-> Demos are pre-parsed in parallel before the batch. The cache persists for the session — Preview → Batch never re-parses.
+
+> Demos are pre-parsed in parallel before the batch starts. The cache persists for the session — Preview → Batch never re-parses.
 
 | Modifier | What it captures |
 |---|---|
@@ -73,15 +72,14 @@ Capture tab → select player(s) + filters → F6 Preview → F5 Run
 
 > Modifiers stack with AND logic. Enabling TROIS SHOT + ONE TAP simultaneously auto-converts to TROIS TAP.
 
----
-
 ### 🟢 DB-only
+
 > No demoparser2 required — runs directly on the CSDM kills table.
 
 | Modifier | What it captures |
 |---|---|
 | 🚀 **Entry Frag** | First kill of the round |
-| 🃏 **Ace** | Rounds where the player eliminated all 5 opponents alone |
+| 🃏 **Ace** | Player eliminated all 5 opponents in a single round |
 | ⚡ **Multi-Kill** | N or more kills in one round within a configurable time window |
 | 💀 **BULLY** | Kill the same opponent for the Nth time in the match |
 | 💰 **Eco Frag** | Pistol kill against a full-buy opponent |
@@ -93,10 +91,10 @@ Capture tab → select player(s) + filters → F6 Preview → F5 Run
 
 Detects rounds where the player was the **last alive** on their team and killed all remaining opponents.
 
-| Option | Description |
+| Option | |
 |---|---|
-| **1v1 – 1v5** | Filter by opponent count. None checked = all included. |
-| **Full clutch** | One clip from first kill to last kill (+ before/after padding) |
+| **1v1 – 1v5** | Filter by opponent count — none checked = all sizes included |
+| **Full clutch** | One clip from first kill to last (+ before/after padding) |
 | **Per kill** | One clip per kill, standard padding |
 | **Win only** | Only clutches where the player's team won the round |
 
@@ -104,12 +102,14 @@ Detects rounds where the player was the **last alive** on their team and killed 
 
 ## Recording systems
 
-| System | Notes |
-|---|---|
-| ⚡ **HLAE** *(recommended)* | Full options: FOV, slow-motion, AFX streams, physics, gravity |
-| 🎮 **CS** *(native)* | Simpler setup, fewer options |
+Two systems available: **HLAE** and **CS** (native). The HLAE-specific panel hides automatically when CS mode is selected.
 
-The HLAE panel hides automatically when CS mode is selected. CS2 physics effects (ragdoll gravity, blood, dynamic lighting) are HLAE-only for now.
+| | HLAE | CS |
+|---|:---:|:---:|
+| FOV override | ✅ | ❌ |
+| Slow motion | ✅ | ❌ |
+| AFX streams | ✅ | ❌ |
+| CS2 effects (physics, gravity, blood) | ✅ | ✅ |
 
 ---
 
@@ -133,7 +133,7 @@ The HLAE panel hides automatically when CS mode is selected. CS2 physics effects
 
 <div align="center">
 
-*Built with Claude. My code knowledge is equal to the void space separating our planet from the sun.*
+*Built with Claude. My code knowledge is equal to the void space separating our planet from the sun.*  
 *Do as you wish with it.*
 
 </div>
