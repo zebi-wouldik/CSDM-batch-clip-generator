@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v81"""
+"""CSDM Batch Clips Generator v86"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v81"
+APP_VERSION = "v86"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -294,6 +294,12 @@ DEFAULT_CONFIG = {
     "kill_mod_trois_tap": False,
     # ONE TAP modifier (v66) — isolated single shot headshot, no shot within ±2s
     "kill_mod_one_tap": False,
+    # Clutch mode (v82) — player is last alive on team, kills remaining opponents
+    "clutch_enabled":     False,
+    "clutch_min_kills":   2,       # minimum clutch size = opponents alive when player became last alive (1v2+)
+    "clutch_max_kills":   5,       # maximum clutch size (5 = ace clutch only)
+    "clutch_require_win": False,   # only include clutches where the player's team won the round
+    "clutch_clip_mode":   "full",  # "full" = one clip per clutch | "individual" = one clip per kill
     # Sequence options
     "show_xray": True,
     # Encoding preset (libx264/libx265/libsvtav1 only — no effect on GPU)
@@ -335,6 +341,8 @@ PRESET_KEYS = {
                "kill_mod_airborne", "kill_mod_assisted_flash", "kill_mod_collateral",
                "kill_mod_trois_shot", "kill_mod_no_trois_shot", "kill_mod_trois_tap",
                "kill_mod_one_tap",
+               "clutch_enabled", "clutch_min_kills", "clutch_max_kills",
+               "clutch_require_win", "clutch_clip_mode",
                "clip_order", "show_xray"],
     "video": ["encoder", "recsys", "recording_output", "width", "height", "framerate",
               "crf", "video_codec", "video_preset", "audio_codec", "audio_bitrate",
@@ -1162,12 +1170,14 @@ class App(tk.Tk):
                      "tag_on_export", "perspective", "hlae_extra_args", "clip_order",
                      "cs2_window_mode",
                      "output_dir_clips", "output_dir_concat", "output_dir_assembled",
-                     "assemble_output", "video_preset", "teamkills_mode", "phys_ragdoll_scale"]
+                     "assemble_output", "video_preset", "teamkills_mode", "phys_ragdoll_scale",
+                     "clutch_clip_mode"]
         int_keys = ["before", "after", "tickrate", "width", "height", "framerate", "crf", "audio_bitrate",
                      "death_notices_duration", "retry_count", "retry_delay", "delay_between_demos",
                      "hlae_fov", "hlae_slow_motion",
                      "phys_ragdoll_gravity", "phys_sv_gravity",
-                     "victim_pre_s", "dp2_threads"]
+                     "victim_pre_s", "dp2_threads",
+                     "clutch_min_kills", "clutch_max_kills"]
         bool_keys = ["use_config_file_mode", "close_game_after", "show_only_death_notices",
                       "concatenate_sequences", "subfolder_per_demo", "true_view", "tag_enabled",
                       "hlae_afx_stream", "hlae_no_spectator_ui",
@@ -1179,7 +1189,8 @@ class App(tk.Tk):
                       "kill_mod_one_tap",
                       "assemble_after", "delete_after_assemble",
                       "phys_ragdoll_enable", "phys_blood", "phys_dynamic_lighting",
-                      "cs2_minimize"]
+                      "cs2_minimize",
+                      "clutch_enabled", "clutch_require_win"]
         for k in str_keys:
             val = str(self.cfg.get(k, DEFAULT_CONFIG.get(k, "")))
             if k in ("date_from", "date_to"):
@@ -2376,6 +2387,65 @@ class App(tk.Tk):
         _ot_badge.pack(side="left", padx=(8, 0))
         add_tip(_ot_badge, "Requires: pip install demoparser2")
 
+        # ── CLUTCH (v78) ───────────────────────────────────────────────────────
+        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
+        clutch_hdr = tk.Frame(sec, bg=BG2)
+        clutch_hdr.pack(fill="x")
+        _cl_lbl = mlabel(clutch_hdr, "🤝 CLUTCH:")
+        _cl_lbl.pack(side="left")
+        add_tip(_cl_lbl,
+                "Capture clutch situations — the player is the last alive on their team\n"
+                "and kills the remaining opponents to win the round alone.\n\n"
+                "Detection: at the tick of the player's first kill in the round,\n"
+                "all teammates must already be dead (player is sole survivor).\n"
+                "The clutch size = number of opponents still alive at that moment.\n\n"
+                "Min / Max: filter by clutch size (e.g. Min=2 = 1v2+, Max=5 = up to ace).\n\n"
+                "Clip mode:\n"
+                "  Full    = one continuous clip from first to last kill in the round\n"
+                "  Per kill = one clip per kill (standard before/after seconds)\n\n"
+                "Win only: only keep clutches where the player's team won the round.\n\n"
+                "⚠ Requires killer_side / victim_side columns in the kills table.\n"
+                "  Without side data, clutches cannot be detected and nothing is captured.\n\n"
+                "Clutch can be combined with Kills / Deaths / Rounds simultaneously.")
+        _cl_cb = hchk(clutch_hdr, "Enable", self.v["clutch_enabled"],
+                      command=self._on_clutch_toggle)
+        _cl_cb.pack(side="left", padx=(4, 0))
+
+        self._clutch_opts_row = tk.Frame(sec, bg=BG2)
+        self._clutch_opts_row.pack(fill="x", pady=(4, 0))
+
+        # Min kills
+        mlabel(self._clutch_opts_row, "Min 1v:").pack(side="left")
+        scombo(self._clutch_opts_row, self.v["clutch_min_kills"],
+               [1, 2, 3, 4, 5], 4).pack(side="left", padx=(4, 0))
+        add_tip(self._clutch_opts_row.winfo_children()[-1],
+                "Minimum clutch size: number of opponents alive when player became last alive.\n"
+                "2 = 1v2 and above  |  5 = 1v5 only (ace clutch).")
+
+        mlabel(self._clutch_opts_row, "  Max 1v:").pack(side="left", padx=(8, 0))
+        scombo(self._clutch_opts_row, self.v["clutch_max_kills"],
+               [1, 2, 3, 4, 5], 4).pack(side="left", padx=(4, 0))
+        add_tip(self._clutch_opts_row.winfo_children()[-1],
+                "Maximum clutch size — use 5 to capture everything up to and including ace clutches.")
+
+        mlabel(self._clutch_opts_row, "  Clip:").pack(side="left", padx=(8, 0))
+        for lbl, val, tip in [
+            ("Full round",   "full",       "One continuous clip spanning all kills in the round."),
+            ("Per kill",     "individual", "One clip per kill (standard BEFORE/AFTER padding)."),
+        ]:
+            _rb = hradio(self._clutch_opts_row, lbl, self.v["clutch_clip_mode"], val)
+            _rb.pack(side="left", padx=(4, 0))
+            add_tip(_rb, tip)
+
+        _req_win = hchk(self._clutch_opts_row, "Win only", self.v["clutch_require_win"])
+        _req_win.pack(side="left", padx=(12, 0))
+        add_tip(_req_win,
+                "Only capture clutches where the player's team won the round.\n"
+                "Requires winner data in the rounds table. If unavailable, all rounds included.")
+
+        # Auto-toggle visibility
+        self.after(50, self._on_clutch_toggle)
+
         persp_row = tk.Frame(sec, bg=BG2)
         persp_row.pack(fill="x", pady=(4, 0))
         mlabel(persp_row, "Perspective:").pack(side="left")
@@ -2578,11 +2648,10 @@ class App(tk.Tk):
              "HLAE = injects via HLAE into CS2 (recommended — full options).\n"
              "CS = native CSDM recording via CS2's startmovie command.\n\n"
              "⚠ HLAE-exclusive features not available in CS mode:\n"
-             "  custom FOV (mirv_fov), AFX streams, HLAE spectator UI,\n"
-             "  scope FOV fix, and other mirv_* commands.\n"
-             "ℹ Slow-motion, physics, and window mode are native CS2 features\n"
-             "  that work in CS mode but are NOT injected by this tool\n"
-             "  (no equivalent of hlaeOptions in CS mode JSON)."),
+             "  custom FOV (mirv_fov), AFX streams, No spectator UI,\n"
+             "  Fix scope FOV, and other mirv_* commands.\n"
+             "ℹ CS2 Effects (physics, gravity, blood) are injected in HLAE mode.\n"
+             "  In CS mode they are not yet supported (no extraArgs in CS JSON)."),
             ("Output", REC_OUTPUT_OPTIONS, "recording_output", "video / images / both.")
         ]):
             f = tk.Frame(rg, bg=BG2)
@@ -2655,34 +2724,6 @@ class App(tk.Tk):
         fps_frm.pack(side="left", padx=(0, 20))
         mlabel(fps_frm, "FPS").pack(anchor="w")
         scombo(fps_frm, self.v["framerate"], FRAMERATES, 6).pack(anchor="w", pady=(4, 0))
-
-        tk.Frame(bot_row, bg=BORDER, width=1).pack(side="left", fill="y", padx=(0, 20))
-
-        # CS2 window mode
-        wm_frm = tk.Frame(bot_row, bg=BG2)
-        wm_frm.pack(side="left", padx=(0, 20))
-        _wm_lbl = mlabel(wm_frm, "CS2 window mode")
-        _wm_lbl.pack(anchor="w")
-        add_tip(_wm_lbl,
-                "Launch flag injected into CS2 arguments (HLAE only).\n"
-                "None = does not change current mode.\n"
-                "Borderless windowed = -windowed -noborder (recommended for recording behind other windows).")
-        for lbl, val in [
-            ("None",               "none"),
-            ("Fullscreen",         "fullscreen"),
-            ("Windowed",           "windowed"),
-            ("Borderless windowed","noborder"),
-        ]:
-            hradio(wm_frm, lbl, self.v["cs2_window_mode"], val).pack(anchor="w", pady=(2, 0))
-
-        _min_row2 = tk.Frame(wm_frm, bg=BG2)
-        _min_row2.pack(anchor="w", pady=(6, 0))
-        _min_cb2 = hchk(_min_row2, "Minimize on launch", self.v["cs2_minimize"])
-        _min_cb2.pack(side="left")
-        add_tip(_min_cb2,
-                "Automatically minimizes CS2 window as soon as it appears.\n"
-                "Requires pywin32 (pip install pywin32).\n"
-                "Without pywin32: silently ignored.")
 
         sec = Sec(p, "VIDEO CODEC")
         sec.pack(fill="x", pady=(0, 10))
@@ -2808,13 +2849,11 @@ class App(tk.Tk):
         self._asm_names = load_asm_names()
         self._refresh_asm_names()
 
-        self._hlae_sec = Sec(p, "⚡ HLAE OPTIONS (advanced)")
-        self._hlae_sec.pack(fill="x", pady=(0, 12))
+        self._hlae_sec = Sec(p, "⚡ HLAE OPTIONS  —  HLAE mode only")
+        self._hlae_sec.pack(fill="x", pady=(0, 10))
         desc_label(self._hlae_sec,
-                   "These options are passed to HLAE via CSDM.\n"
-                   "They are not injected in CS mode (HLAE-exclusive features).\n"
-                   "ℹ Audio is captured directly by HLAE via startmovie (bypasses Windows mixer) —\n"
-                   "  muting CS2 in Windows does not affect clip audio.\n"
+                   "Passed to HLAE via CSDM. Not available in CS recording mode.\n"
+                   "ℹ Audio captured directly by HLAE (bypasses Windows mixer).\n"
                    "⚠ CS2 console may briefly appear during recording: this is normal.").pack(fill="x")
 
         # FOV
@@ -2822,63 +2861,98 @@ class App(tk.Tk):
         fov_row.pack(fill="x", pady=(8, 0))
         mlabel(fov_row, "FOV:").pack(side="left")
         sentry(fov_row, self.v["hlae_fov"], width=5).pack(side="left", padx=(6, 0), ipady=4)
-        desc_label(fov_row, "  (e.g. 90 = normal, 100-110 = wide, 60 = zoom)").pack(side="left", padx=(8, 0))
+        desc_label(fov_row, "  90 = default  |  100–110 = cinematic wide  |  60 = zoomed").pack(
+            side="left", padx=(8, 0))
 
         # Slow motion
         sm_row = tk.Frame(self._hlae_sec, bg=BG2)
         sm_row.pack(fill="x", pady=(6, 0))
         mlabel(sm_row, "Slow-motion (%):").pack(side="left")
         sm_cb = scombo(sm_row, tk.StringVar(), ["100", "75", "50", "33", "25", "10"], 6)
-        self._sm_cb = sm_cb   # kept for update on preset load
+        self._sm_cb = sm_cb
         sm_cb.set(str(self.v["hlae_slow_motion"].get()))
         sm_cb.pack(side="left", padx=(6, 0))
         sm_cb.bind("<<ComboboxSelected>>",
                    lambda e, c=sm_cb: self.v["hlae_slow_motion"].set(int(c.get())))
-        desc_label(sm_row, "  100 = normal speed, 50 = half speed").pack(side="left", padx=(8, 0))
+        desc_label(sm_row, "  100 = real speed  |  50 = half speed  |  25 = quarter").pack(
+            side="left", padx=(8, 0))
 
-        # Options bool HLAE (ligne compacte + tooltips)
+        # Bool options
         bool_opts = tk.Frame(self._hlae_sec, bg=BG2)
         bool_opts.pack(fill="x", pady=(8, 0))
         for txt, key, tip in [
             ("AFX Stream",      "hlae_afx_stream",
              "Records separate passes (color, depth, stencil) for compositing."),
             ("No spectator UI", "hlae_no_spectator_ui",
-             "Hides spectator mode HUD elements for a cleaner render."),
+             "Hides spectator HUD — injects +cl_draw_only_deathnotices 1."),
             ("Fix scope FOV",   "hlae_fix_scope_fov",
              "Injects: mirv_fov handleZoom enabled 1\n"
-             "Prevents mirv_fov from overriding the zoom FOV when a player\n"
-             "uses a scoped weapon (AWP, SSG 08, SCAR-20, G3SG1).\n"
-             "Without this, scoped shots appear at the custom FOV instead of\n"
-             "the correct zoomed FOV. Recommended: ON."),
+             "Prevents mirv_fov from overriding the zoomed FOV on scoped weapons.\n"
+             "Recommended: ON."),
+            ("Auto Workshop DL", "hlae_workshop_download",
+             "Injects +cl_downloadfilter all — allows CS2 to download old Workshop map versions."),
         ]:
             _cb = hchk(bool_opts, txt, self.v[key])
-            _cb.pack(side="left", padx=(0, 4))
+            _cb.pack(side="left", padx=(0, 6))
             add_tip(_cb, tip)
 
+        # Extra args
+        _ea_lbl = tk.Label(self._hlae_sec, text="Additional HLAE args:",
+                 font=FONT_SM, fg=MUTED, bg=BG2)
+        _ea_lbl.pack(anchor="w", pady=(8, 0))
+        add_tip(_ea_lbl,
+                "Arguments passed directly to the HLAE session.\n"
+                "⚠ If CS2 gets stuck on an old Workshop map: add "
+                "+cl_downloadfilter all in Steam Launch Options, not here.")
+        sentry(self._hlae_sec, self.v["hlae_extra_args"]).pack(fill="x", ipady=4, pady=(2, 0))
 
-        # Physique CS2
-        tk.Frame(self._hlae_sec, height=1, bg=BORDER).pack(fill="x", pady=(10, 6))
-        mlabel(self._hlae_sec, "CS2 physics:").pack(anchor="w")
-        desc_label(self._hlae_sec,
-                   "Console commands injected at startup. Allow modifying "
-                   "the appearance of ragdolls and game physics.").pack(anchor="w")
+        # ── CS2 EFFECTS (available in both modes) ────────────────────────────
+        self._cs2_sec = Sec(p, "🎮 CS2 EFFECTS  —  both HLAE and CS modes")
+        self._cs2_sec.pack(fill="x", pady=(0, 10))
+        desc_label(self._cs2_sec,
+                   "Console commands injected via extraArgs at CS2 startup.\n"
+                   "Work in both HLAE and CS recording modes.").pack(fill="x")
 
-        phys_grid = tk.Frame(self._hlae_sec, bg=BG2)
+        # CS2 window mode + minimize
+        win_row = tk.Frame(self._cs2_sec, bg=BG2)
+        win_row.pack(fill="x", pady=(8, 0))
+        _wm_lbl = mlabel(win_row, "Window mode:")
+        _wm_lbl.pack(side="left")
+        add_tip(_wm_lbl,
+                "Launch flag injected into CS2 arguments.\n"
+                "Borderless = -windowed -noborder (recommended for background recording).")
+        for lbl, val in [("None","none"),("Fullscreen","fullscreen"),
+                         ("Windowed","windowed"),("Borderless","noborder")]:
+            hradio(win_row, lbl, self.v["cs2_window_mode"], val).pack(side="left", padx=(4, 0))
+        _min_cb = hchk(win_row, "Minimize on launch", self.v["cs2_minimize"])
+        _min_cb.pack(side="left", padx=(16, 0))
+        add_tip(_min_cb,
+                "Automatically minimizes CS2 as soon as it appears.\n"
+                "Requires pywin32 (pip install pywin32). Silently ignored otherwise.")
+
+        # Physics grid
+        tk.Frame(self._cs2_sec, height=1, bg=BORDER).pack(fill="x", pady=(10, 6))
+        mlabel(self._cs2_sec, "Physics & visuals:").pack(anchor="w")
+        desc_label(self._cs2_sec,
+                   "Non-default values are injected as CS2 console commands on startup.").pack(
+            anchor="w")
+
+        phys_grid = tk.Frame(self._cs2_sec, bg=BG2)
         phys_grid.pack(fill="x", pady=(6, 0))
-        phys_grid.columnconfigure(0, weight=1)
+        phys_grid.columnconfigure(0, weight=2)
         phys_grid.columnconfigure(1, weight=1)
 
         col_l = tk.Frame(phys_grid, bg=BG2)
         col_l.grid(row=0, column=0, sticky="new", padx=(0, 16))
         for lbl, key, tip, presets in [
             ("cl_ragdoll_gravity", "phys_ragdoll_gravity",
-             "Ragdoll gravity (cl_ragdoll_gravity).\nDefault 600 | negative = float | 5000 = slam hard.",
+             "Ragdoll gravity.\nDefault 600 | 0 or negative = float | 5000 = slam hard.",
              ["600", "200", "0", "-200", "-500", "2000", "5000"]),
             ("ragdoll_gravity_scale", "phys_ragdoll_scale",
-             "Ragdoll gravity scale (ragdoll_gravity_scale).\nDefault 1.0 | 0.1 = slow | 3.0 = fast.",
+             "Ragdoll gravity scale.\nDefault 1.0 | 0.1 = slow | 3.0 = fast.",
              ["1.0", "0.5", "0.1", "0.0", "2.0", "3.0"]),
             ("sv_gravity", "phys_sv_gravity",
-             "World gravity (sv_gravity).\nDefault 800 | 200 = moon | 2000 = very heavy.",
+             "World gravity.\nDefault 800 | 200 = moon | 2000 = very heavy.",
              ["800", "400", "200", "100", "1200", "2000"]),
         ]:
             f = tk.Frame(col_l, bg=BG2)
@@ -2889,22 +2963,22 @@ class App(tk.Tk):
             row = tk.Frame(f, bg=BG2)
             row.pack(fill="x", pady=(2, 0))
             sentry(row, self.v[key], width=7).pack(side="left", ipady=4)
-            for p in presets:
-                tk.Button(row, text=p, font=FONT_DESC, bg=BG3, fg=TEXT,
+            for pv in presets:
+                tk.Button(row, text=pv, font=FONT_DESC, bg=BG3, fg=TEXT,
                           relief="flat", bd=0, cursor="hand2",
                           activebackground=BORDER, activeforeground=ORANGE,
-                          command=lambda v=p, k=key: self.v[k].set(v)
+                          command=lambda v=pv, k=key: self.v[k].set(v)
                           ).pack(side="left", padx=(4, 0), ipady=2, ipadx=3)
 
         col_r = tk.Frame(phys_grid, bg=BG2)
         col_r.grid(row=0, column=1, sticky="new")
         for txt, key, tip in [
             ("Ragdoll physics",  "phys_ragdoll_enable",
-             "cl_ragdoll_physics_enable\nDisable = frozen corpses."),
+             "cl_ragdoll_physics_enable — disable for frozen corpses."),
             ("Blood on walls",   "phys_blood",
-             "violence_hblood\nDisable for a cleaner render."),
+             "violence_hblood — disable for a cleaner render."),
             ("Dynamic lighting", "phys_dynamic_lighting",
-             "r_dynamic\nDisable to remove explosion flashes."),
+             "r_dynamic — disable to remove explosion flashes."),
         ]:
             f = tk.Frame(col_r, bg=BG2)
             f.pack(fill="x", pady=(0, 6))
@@ -2912,24 +2986,7 @@ class App(tk.Tk):
             _cb.pack(anchor="w")
             add_tip(_cb, tip)
 
-        # Args CLI additionnels
-        wdl_row = tk.Frame(self._hlae_sec, bg=BG2)
-        wdl_row.pack(fill="x", pady=(8, 0))
-        _wdl_cb = hchk(wdl_row, "Auto Workshop downloads",
-             self.v["hlae_workshop_download"])
-        _wdl_cb.pack(side="left")
-        add_tip(_wdl_cb, "Injects +cl_downloadfilter all — allows downloading "
-                         "old Workshop map versions to be downloaded.")
-
-        _ea_lbl = tk.Label(self._hlae_sec, text="Additional CLI args (HLAE):",
-                 font=FONT_SM, fg=MUTED, bg=BG2)
-        _ea_lbl.pack(anchor="w", pady=(8, 0))
-        add_tip(_ea_lbl, "Arguments passed directly to the HLAE session.\n"
-                         "⚠ If CS2 gets stuck on an old Workshop map: add "
-                         "+cl_downloadfilter all in Steam Launch Options, not here.")
-        sentry(self._hlae_sec, self.v["hlae_extra_args"]).pack(fill="x", ipady=4, pady=(2, 0))
-
-        # Trace recsys to show/hide
+        # Trace recsys to show/hide HLAE-exclusive section
         self.v["recsys"].trace_add("write", self._on_recsys_change)
         self._on_recsys_change()
 
@@ -2977,9 +3034,10 @@ class App(tk.Tk):
         try:
             is_hlae = self.v["recsys"].get() == "HLAE"
             if is_hlae:
-                self._hlae_sec.pack(fill="x", pady=(0, 12))
+                self._hlae_sec.pack(fill="x", pady=(0, 10))
             else:
                 self._hlae_sec.pack_forget()
+            # CS2 EFFECTS section is always visible (both modes)
         except Exception:
             pass
 
@@ -3142,6 +3200,16 @@ class App(tk.Tk):
         else:
             # User manually unchecked → simply disengage, do NOT restore sub-modifiers
             self._disengage_trois_tap()
+
+    def _on_clutch_toggle(self, *_):
+        """Show/hide clutch options row based on clutch_enabled."""
+        try:
+            if self.v["clutch_enabled"].get():
+                self._clutch_opts_row.pack(fill="x", pady=(4, 0))
+            else:
+                self._clutch_opts_row.pack_forget()
+        except Exception:
+            pass
 
     def _engage_trois_tap(self):
         """Apply all side-effects of TROIS TAP becoming active."""
@@ -3836,8 +3904,8 @@ class App(tk.Tk):
         if not self.player_search.get_steam_ids():
             self._alog("[TAGS/config] Select at least one player account in Capture.", "err")
             return
-        if not any(v.get() for v in self.sel_events.values()):
-            self._alog("[TAGS/config] Select at least one event in Capture.", "err")
+        if not any(v.get() for v in self.sel_events.values()) and not self.v["clutch_enabled"].get():
+            self._alog("[TAGS/config] Select at least one event or enable Clutch.", "err")
             return
 
         ts = self._tags_schema
@@ -4668,7 +4736,7 @@ class App(tk.Tk):
                 return True
             ts = self._get_demo_ts(demo_path)
             if ts is None:
-                return False  # date inconnue + filtre actif → on exclut
+                return False  # unknown date + active filter → exclude
             if ts_from is not None and ts < ts_from:
                 return False
             if ts_to is not None and ts > ts_to:
@@ -4925,6 +4993,27 @@ class App(tk.Tk):
                                         {"tick": int(tick), "type": "round", "weapon": ""})
                         except Exception:
                             pass
+
+                # ── Clutch events ─────────────────────────────────────────────
+                if cfg.get("events_clutch") and kc and vc:
+                    clutch_raw = self._query_clutch_events(
+                        cfg, conn, sids, dc, mkm, tc, kc, vc, wc, mkk, dtc, date_col)
+                    for dp, groups in clutch_raw.items():
+                        sizes = [g[0].get("clutch_size", "?") for g in groups if g]
+                        sizes_str = ", ".join(f"1v{s}" for s in sorted(sizes))
+                        self._alog(
+                            f"  🤝 CLUTCH [{Path(dp).name}]: "
+                            f"{len(groups)} clutch(es) — {sizes_str}",
+                            "info")
+                        results.setdefault(dp, [])
+                        existing_sigs = {(e["tick"], e.get("killer_sid")) for e in results[dp]}
+                        for group in groups:
+                            for kill in group:
+                                sig = (kill["tick"], kill.get("killer_sid"))
+                                if sig not in existing_sigs:
+                                    results[dp].append(kill)
+                                    existing_sigs.add(sig)
+
         finally:
             conn.close()
 
@@ -4962,11 +5051,317 @@ class App(tk.Tk):
                 merged.append(s)
         return merged
 
+    def _build_clutch_sequences(self, clutch_groups, tickrate, before_s, after_s):
+        """Build one sequence per clutch group.
+
+        Each group is a list of kill events belonging to the same clutch (same
+        player, same round). The sequence spans from the FIRST kill minus before_s
+        to the LAST kill plus after_s — unlike normal sequences which are built
+        per-kill and then merged, clutch sequences are intentionally contiguous
+        regardless of the gap between kills.
+
+        clip_mode="individual": fall back to standard per-kill sequences (merging
+        may still join close kills).
+        """
+        sequences = []
+        for kills in clutch_groups:
+            if not kills:
+                continue
+            kills_sorted = sorted(kills, key=lambda e: e["tick"])
+            first_tick = kills_sorted[0]["tick"]
+            last_tick  = kills_sorted[-1]["tick"]
+            start = max(0, first_tick - before_s * tickrate)
+            end   = last_tick + after_s * tickrate
+            sequences.append({
+                "start_tick": start,
+                "end_tick":   end,
+                "events":     kills_sorted,
+            })
+        return sequences
+
+    def _query_clutch_events(self, cfg, conn, sids, dc, mkm, tc, kc, vc, wc, mkk, dtc, date_col):
+        """Detect true clutch situations: the active player was the last alive on
+        their team and then killed ≥ min_opponents opponents in the same round.
+
+        A clutch is defined as:
+          1. At the tick of the player's first kill in the round, ALL teammates
+             are already dead (player is the sole survivor of their team).
+          2. The number of opponents still alive at that tick is ≥ min_opponents
+             and ≤ max_opponents.
+
+        Algorithm:
+          - Fetch ALL kills from every match the active player participated in
+            (needed to reconstruct who was alive on both sides at any tick).
+          - Reconstruct round brackets from the rounds table (or tick gaps).
+          - For each round where the player killed at least one opponent:
+              a. Determine the player's side from their kills in that round.
+              b. At the player's first kill tick in the round:
+                 - teammates_alive = teammates who hadn't died yet
+                 - if teammates_alive > 0 → not a clutch (player not alone)
+              c. Count opponents alive at that tick → clutch size.
+          - Apply min/max filter on clutch size.
+          - Optionally filter by round winner (require_win).
+
+        Returns {demo_path: [[kill_evt, …], …]} — one group per clutch.
+        """
+        min_opp = max(1, int(cfg.get("clutch_min_kills", 2)))   # "min kills" = min opponents
+        max_opp = max(min_opp, int(cfg.get("clutch_max_kills", 5)))
+        require_win = cfg.get("clutch_require_win", False)
+
+        results: dict = {}
+        sids_set = set(str(s) for s in sids)
+
+        try:
+            with conn.cursor() as cur:
+                if not tc or not kc or not vc or not dc or not mkk or not mkm:
+                    return {}
+
+                # Side/team columns
+                kside_col = self._find_col("kills", ["killer_team_name", "killer_side",
+                                                      "killer_team", "attacker_side"])
+                vside_col = self._find_col("kills", ["victim_team_name", "victim_side",
+                                                      "victim_team"])
+                rwin_col  = self._find_col("rounds", ["winner_name", "winner_side", "winner",
+                                                       "winning_side", "win_reason"])
+                rtc_col   = self._find_col("rounds", ["start_tick", "freeze_time_end_tick",
+                                                       "tick", "end_tick"])
+                retc_col  = self._find_col("rounds", ["end_tick", "official_end_tick"])
+                rmk_col   = self._find_col("rounds", ["match_checksum", "match_id", "checksum"])
+
+                # ── Step 1: find all match checksums the player participated in ──
+                sid_ph = ",".join(["%s"] * len(sids))
+                cur.execute(
+                    f'SELECT DISTINCT k."{mkk}" FROM kills k '
+                    f'WHERE k."{kc}" IN ({sid_ph}) OR k."{vc}" IN ({sid_ph})',
+                    list(sids) * 2)
+                match_chksums = [r[0] for r in cur.fetchall() if r[0]]
+                if not match_chksums:
+                    return {}
+
+                # ── Step 2: fetch ALL kills from those matches ────────────────
+                chk_ph = ",".join(["%s"] * len(match_chksums))
+                sel_ks = f',k."{kside_col}"' if kside_col else ""
+                sel_vs = f',k."{vside_col}"' if vside_col else ""
+                sel_wc = f',k."{wc}"'        if wc        else ""
+                sel_dt = f',k."{dtc}"'       if dtc       else ""
+                date_sel = f',m."{date_col}"' if date_col else ""
+
+                all_kills_sql = (
+                    f'SELECT m."{dc}",k."{tc}",m."{mkm}"{date_sel},'
+                    f'k."{kc}",k."{vc}"{sel_ks}{sel_vs}{sel_wc}{sel_dt} '
+                    f'FROM kills k JOIN matches m ON m."{mkm}"=k."{mkk}" '
+                    f'WHERE k."{mkk}" IN ({chk_ph}) '
+                    f'ORDER BY m."{dc}",k."{tc}"')
+                cur.execute(all_kills_sql, match_chksums)
+                all_rows = cur.fetchall()
+
+                # ── Step 3: fetch round brackets ─────────────────────────────
+                round_brackets: dict = {}  # {chk: [(start, end, winner), ...]}
+                if rtc_col and rmk_col:
+                    r_sel_ret  = f',r."{retc_col}"' if (retc_col and retc_col != rtc_col) else ""
+                    r_sel_rwin = f',r."{rwin_col}"' if rwin_col else ""
+                    r_sql = (f'SELECT r."{rmk_col}",r."{rtc_col}"{r_sel_ret}{r_sel_rwin} '
+                             f'FROM rounds r WHERE r."{rmk_col}" IN ({chk_ph}) '
+                             f'ORDER BY r."{rmk_col}",r."{rtc_col}"')
+                    try:
+                        cur.execute(r_sql, match_chksums)
+                        for rr in cur.fetchall():
+                            chk     = rr[0]
+                            r_start = int(rr[1] or 0)
+                            i = 2
+                            r_end = None
+                            if retc_col and retc_col != rtc_col:
+                                r_end = int(rr[i] or 0) if rr[i] else None
+                                i += 1
+                            r_win = rr[i] if rwin_col else None
+                            round_brackets.setdefault(chk, []).append([r_start, r_end, r_win])
+                    except Exception:
+                        pass
+                    for chk in round_brackets:
+                        brackets = round_brackets[chk]
+                        for i, b in enumerate(brackets):
+                            if b[1] is None:
+                                b[1] = brackets[i+1][0] - 1 if i+1 < len(brackets) else b[0] + 8000
+                    # Convert to tuples
+                    round_brackets = {c: [tuple(b) for b in bs]
+                                      for c, bs in round_brackets.items()}
+
+                def _round_idx_for(chk, tick):
+                    for i, (s, e, rw) in enumerate(round_brackets.get(chk, [])):
+                        if s <= tick <= e:
+                            return i, rw
+                    # Fallback: largest start ≤ tick
+                    best_i, best_rw = None, None
+                    for i, (s, e, rw) in enumerate(round_brackets.get(chk, [])):
+                        if s <= tick:
+                            best_i, best_rw = i, rw
+                    return best_i, best_rw
+
+                # ── Step 4: parse all kill rows into per-match/round structures ─
+                # Structure: {(dp, chk, round_idx): [kill_row_dict, ...]}
+                round_kills: dict = {}
+
+                # Column index mapping
+                # Fixed: 0=dp, 1=tick, 2=chk, (3=date?), then kc, vc, kside?, vside?, wc?, dtc?
+                base_off = 4 if date_col else 3
+                col_names = ["kc", "vc"]
+                if kside_col: col_names.append("ks")
+                if vside_col: col_names.append("vs")
+                if wc:        col_names.append("wc")
+                if dtc:       col_names.append("dt")
+
+                for row in all_rows:
+                    dp  = row[0]
+                    tick = row[1]
+                    chk  = row[2]
+                    if not dp or tick is None:
+                        continue
+                    ex = {}
+                    for ci, cn in enumerate(col_names):
+                        if base_off + ci < len(row):
+                            ex[cn] = row[base_off + ci]
+
+                    killer_sid = str(ex.get("kc", "") or "")
+                    victim_sid = str(ex.get("vc", "") or "")
+                    k_side     = str(ex.get("ks", "") or "").upper()
+                    v_side     = str(ex.get("vs", "") or "").upper()
+                    weapon_raw = ex.get("wc", "") or ""
+                    death_tick = ex.get("dt")
+
+                    if death_tick is not None and weapon_raw.lower() in DELAYED_EFFECT_WEAPONS:
+                        event_tick = int(death_tick)
+                    else:
+                        event_tick = int(tick)
+
+                    round_idx, round_winner = _round_idx_for(chk, event_tick)
+                    if round_idx is None:
+                        round_idx = event_tick // 8000  # coarse fallback
+
+                    key = (dp, chk, round_idx)
+                    round_kills.setdefault(key, []).append({
+                        "tick":        event_tick,
+                        "killer_sid":  killer_sid,
+                        "victim_sid":  victim_sid,
+                        "killer_side": k_side,
+                        "victim_side": v_side,
+                        "weapon":      weapon_raw,
+                        "round_winner": round_winner,
+                    })
+
+                    # Store demo date/checksum
+                    if date_col and dp not in self._demo_dates and len(row) > 3:
+                        if row[3] is not None:
+                            self._demo_dates[dp] = row[3]
+                    if dp not in self._demo_checksums and chk:
+                        self._demo_checksums[dp] = chk
+
+                # ── Step 5: clutch detection per round ───────────────────────
+                def _norm_side(s):
+                    s = (s or "").upper().replace("-", "_").replace(" ", "_")
+                    if s in ("CT", "COUNTER_TERRORIST", "COUNTER", "COUNTERTERRORIST"):
+                        return "CT"
+                    if s in ("T", "TERRORIST", "TERROR"):
+                        return "T"
+                    return s
+
+                group_id = 0
+                for (dp, chk, round_idx), kills_in_round in round_kills.items():
+                    kills_sorted = sorted(kills_in_round, key=lambda k: k["tick"])
+
+                    # Only process rounds where at least one active player made a kill
+                    player_kills = [k for k in kills_sorted if k["killer_sid"] in sids_set]
+                    if not player_kills:
+                        continue
+
+                    # Determine active player and their side for this round
+                    player_sid = player_kills[0]["killer_sid"]
+                    player_side = _norm_side(player_kills[0].get("killer_side", ""))
+                    if not player_side:
+                        # Infer from victim side: if victim_side is CT → player is T and vice versa
+                        vs = _norm_side(player_kills[0].get("victim_side", ""))
+                        player_side = "T" if vs == "CT" else ("CT" if vs == "T" else "")
+
+                    # All deaths in this round before the player's first kill tick
+                    first_kill_tick = player_kills[0]["tick"]
+
+                    # Teammates = players on same side who died as victims (excluding the player)
+                    # Opponents = players on opposing side
+                    def _is_teammate(kill):
+                        v_s = _norm_side(kill.get("victim_side", ""))
+                        if player_side and v_s:
+                            return v_s == player_side and kill["victim_sid"] != player_sid
+                        # No side data: can't determine — treat as unknown
+                        return False
+
+                    def _is_opponent_death(kill):
+                        v_s = _norm_side(kill.get("victim_side", ""))
+                        if player_side and v_s:
+                            return v_s != player_side
+                        return False
+
+                    # Teammates alive at first kill tick = teammates who haven't died yet
+                    teammates_dead_before = {k["victim_sid"] for k in kills_sorted
+                                              if k["tick"] < first_kill_tick and _is_teammate(k)}
+                    all_teammates = {k["victim_sid"] for k in kills_sorted if _is_teammate(k)}
+                    teammates_alive_at_clutch = all_teammates - teammates_dead_before
+
+                    # If any teammate was still alive at the first kill → not a clutch
+                    if teammates_alive_at_clutch:
+                        continue
+
+                    # If we have no side data at all → skip (can't verify)
+                    if player_side == "":
+                        continue
+
+                    # Opponents alive at first kill tick
+                    opponents_dead_before = {k["victim_sid"] for k in kills_sorted
+                                              if k["tick"] < first_kill_tick and _is_opponent_death(k)}
+                    all_opponents = {k["victim_sid"] for k in kills_sorted if _is_opponent_death(k)}
+                    opponents_alive = all_opponents - opponents_dead_before
+
+                    clutch_size = len(opponents_alive)
+                    if clutch_size < min_opp or clutch_size > max_opp:
+                        continue
+
+                    # require_win check
+                    if require_win:
+                        round_winner = player_kills[0].get("round_winner")
+                        winner_norm  = _norm_side(round_winner)
+                        if player_side and winner_norm:
+                            if player_side != winner_norm:
+                                continue  # lost the clutch round
+
+                    # Build clean kill events (only the player's kills in this round)
+                    clean_kills = []
+                    for k in player_kills:
+                        clean_kills.append({
+                            "tick":       k["tick"],
+                            "type":       "kill",
+                            "weapon":     k["weapon"],
+                            "killer_sid": k["killer_sid"],
+                            "victim_sid": k["victim_sid"],
+                            "clutch_group":  group_id,
+                            "clutch_size":   clutch_size,
+                        })
+                    results.setdefault(dp, []).append(clean_kills)
+                    self._alog(
+                        f"  🤝 1v{clutch_size} clutch "
+                        f"[{Path(dp).name}] tick={first_kill_tick} "
+                        f"({len(clean_kills)} kill{'s' if len(clean_kills)>1 else ''})",
+                        "info")
+                    group_id += 1
+
+        except Exception as e:
+            self._alog(f"  ⚠ Clutch query error: {e}", "warn")
+
+        return results
+
     def _build_run_cfg(self):
         cfg = self._collect_config()
         cfg["events_kills"]  = self.sel_events["Kills"].get()
         cfg["events_deaths"] = self.sel_events["Deaths"].get()
         cfg["events_rounds"] = self.sel_events["Rounds"].get()
+        cfg["events_clutch"] = self.v["clutch_enabled"].get()
         return cfg
 
     def _get_sids(self, cfg):
@@ -5171,7 +5566,7 @@ class App(tk.Tk):
             od = os.path.join(od, safe_folder_name(Path(demo_path).name))
             os.makedirs(od, exist_ok=True)
 
-        # --- HLAE extra options ---
+        # --- HLAE extra options (HLAE mode only) ---
         hlae_options = {}
         if recsys == "HLAE":
             fov = cfg.get("hlae_fov", 90)
@@ -5197,27 +5592,7 @@ class App(tk.Tk):
                 if dl_arg not in extra:
                     extra = (dl_arg + " " + extra).strip()
 
-            # CS2 physics commands — injected if different from defaults
-            phys_cmds = []
-            rg = cfg.get("phys_ragdoll_gravity", 600)
-            if int(rg) != 600:
-                phys_cmds.append(f"+cl_ragdoll_gravity {rg}")
-            rs = cfg.get("phys_ragdoll_scale", "1.0")
-            if float(rs) != 1.0:
-                phys_cmds.append(f"+ragdoll_gravity_scale {rs}")
-            sg = cfg.get("phys_sv_gravity", 800)
-            if int(sg) != 800:
-                phys_cmds.append(f"+sv_gravity {sg}")
-            if not cfg.get("phys_ragdoll_enable", True):
-                phys_cmds.append("+cl_ragdoll_physics_enable 0")
-            if not cfg.get("phys_blood", True):
-                phys_cmds.append("+violence_hblood 0")
-            if not cfg.get("phys_dynamic_lighting", True):
-                phys_cmds.append("+r_dynamic 0")
-            if phys_cmds:
-                extra = (" ".join(phys_cmds) + " " + extra).strip()
-
-            # CS2 window mode
+            # CS2 window mode (HLAE only — injected via extraArgs)
             wm = cfg.get("cs2_window_mode", "none")
             _WM_FLAGS = {
                 "fullscreen": "-fullscreen",
@@ -5230,6 +5605,37 @@ class App(tk.Tk):
 
             if extra:
                 hlae_options["extraArgs"] = extra
+
+        # --- CS2 EFFECTS — injected in both HLAE and CS modes via extraArgs ---
+        # Physics console commands are appended to hlaeOptions.extraArgs (HLAE)
+        # or to a standalone csOptions.extraArgs equivalent when available.
+        # For now both modes use the same extraArgs mechanism; CSDM forwards them.
+        phys_cmds = []
+        rg = cfg.get("phys_ragdoll_gravity", 600)
+        if int(rg) != 600:
+            phys_cmds.append(f"+cl_ragdoll_gravity {rg}")
+        rs = cfg.get("phys_ragdoll_scale", "1.0")
+        if float(rs) != 1.0:
+            phys_cmds.append(f"+ragdoll_gravity_scale {rs}")
+        sg = cfg.get("phys_sv_gravity", 800)
+        if int(sg) != 800:
+            phys_cmds.append(f"+sv_gravity {sg}")
+        if not cfg.get("phys_ragdoll_enable", True):
+            phys_cmds.append("+cl_ragdoll_physics_enable 0")
+        if not cfg.get("phys_blood", True):
+            phys_cmds.append("+violence_hblood 0")
+        if not cfg.get("phys_dynamic_lighting", True):
+            phys_cmds.append("+r_dynamic 0")
+        if phys_cmds:
+            phys_str = " ".join(phys_cmds)
+            if recsys == "HLAE":
+                # Append to HLAE extraArgs already built above
+                cur_extra = hlae_options.get("extraArgs", "")
+                hlae_options["extraArgs"] = (phys_str + " " + cur_extra).strip()
+            else:
+                # CS mode: store for injection if CSDM gains csOptions support
+                # Currently logged as informational only
+                self._alog(f"  🎮 CS2 effects: {phys_str}", "dim")
 
         # Encoding preset — injected into outputParameters for CPU codecs only
         # GPU codecs (NVENC/AMF) ignore -preset from libx264/libx265
@@ -5299,7 +5705,7 @@ class App(tk.Tk):
                 return
 
             CS2_TITLES = ("Counter-Strike 2", "cs2", "CS2")
-            deadline = time.time() + 60  # timeout 60s pour trouver CS2
+            deadline = time.time() + 60  # 60s timeout to find CS2
 
             def _find_cs2():
                 found = []
@@ -5312,7 +5718,7 @@ class App(tk.Tk):
                 win32gui.EnumWindows(_cb, None)
                 return found
 
-            # Phase 1 : attendre CS2 (polling rapide 100ms)
+            # Phase 1: wait for CS2 (fast polling 100ms)
             first_seen = None
             while time.time() < deadline and self._running:
                 hwnds = _find_cs2()
@@ -5366,8 +5772,8 @@ class App(tk.Tk):
         if not self.player_search.get_steam_ids():
             messagebox.showerror("", "Check at least one registered account.")
             return
-        if not any(v.get() for v in self.sel_events.values()):
-            messagebox.showerror("", "Select at least one event.")
+        if not any(v.get() for v in self.sel_events.values()) and not self.v["clutch_enabled"].get():
+            messagebox.showerror("", "Select at least one event or enable Clutch.")
             return
         ensure_csdm_dirs()
         cfg = self._build_run_cfg()
@@ -5547,8 +5953,9 @@ class App(tk.Tk):
         nts_str = "  🚫🎲 Exclude"      if cfg.get("kill_mod_no_trois_shot") else ""
         tt_str  = "  🎯🎲 TROIS TAP"   if cfg.get("kill_mod_trois_tap")     else ""
         ot_str  = "  🎯 ONE TAP"        if cfg.get("kill_mod_one_tap")       else ""
+        cl_str  = "  🤝 CLUTCH"         if cfg.get("events_clutch")          else ""
         self._log(f"Order: {'Chronological' if order == 'chrono' else 'Random'} | "
-                  f"{len(evts)} demo(s), {te} events{hs_str}{tk_str}{ts_str}{nts_str}{tt_str}{ot_str}", "ok")
+                  f"{len(evts)} demo(s), {te} events{hs_str}{tk_str}{ts_str}{nts_str}{tt_str}{ot_str}{cl_str}", "ok")
         _out = (cfg.get("output_dir_clips") or cfg.get("output_dir") or "").strip()
         if _out:
             self._log(f"Output: {_out}", "dim")
@@ -5561,7 +5968,24 @@ class App(tk.Tk):
         sorted_demos = sorted(evts.keys(), key=self._demo_sort_key)
         demo_dates = {}
         for dp in sorted_demos:
-            seqs = self._build_sequences(evts[dp], tickrate, before_s, after_s)
+            # Clutch full-round sequences
+            if (cfg.get("events_clutch") and
+                    cfg.get("clutch_clip_mode", "full") == "full"):
+                clutch_groups = {}
+                for evt in evts[dp]:
+                    gid = evt.get("clutch_group")
+                    if gid is not None:
+                        clutch_groups.setdefault(gid, []).append(evt)
+                non_clutch = [e for e in evts[dp] if e.get("clutch_group") is None]
+                seqs = []
+                if non_clutch:
+                    seqs = self._build_sequences(non_clutch, tickrate, before_s, after_s)
+                if clutch_groups:
+                    seqs += self._build_clutch_sequences(
+                        list(clutch_groups.values()), tickrate, before_s, after_s)
+                seqs.sort(key=lambda s: s["start_tick"])
+            else:
+                seqs = self._build_sequences(evts[dp], tickrate, before_s, after_s)
             nb_clips += len(seqs)
             for s in seqs:
                 total_ticks += s["end_tick"] - s["start_tick"]
@@ -5991,7 +6415,29 @@ class App(tk.Tk):
                 skip += 1
                 continue
 
-            seqs = self._build_sequences(events, cfg["tickrate"], self._effective_before(cfg), cfg["after"])
+            # Clutch clip_mode="full": rebuild sequences spanning whole clutch groups
+            if (cfg.get("events_clutch") and
+                    cfg.get("clutch_clip_mode", "full") == "full"):
+                clutch_groups = {}
+                for evt in events:
+                    gid = evt.get("clutch_group")
+                    if gid is not None:
+                        clutch_groups.setdefault(gid, []).append(evt)
+                non_clutch = [e for e in events if e.get("clutch_group") is None]
+                seqs = []
+                if non_clutch:
+                    seqs = self._build_sequences(
+                        non_clutch, cfg["tickrate"],
+                        self._effective_before(cfg), cfg["after"])
+                if clutch_groups:
+                    seqs += self._build_clutch_sequences(
+                        list(clutch_groups.values()), cfg["tickrate"],
+                        self._effective_before(cfg), cfg["after"])
+                seqs.sort(key=lambda s: s["start_tick"])
+            else:
+                seqs = self._build_sequences(
+                    events, cfg["tickrate"],
+                    self._effective_before(cfg), cfg["after"])
             if not seqs:
                 continue
             dn = Path(dp).name

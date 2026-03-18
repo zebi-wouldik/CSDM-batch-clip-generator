@@ -5,6 +5,86 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v86]
+### Fixed
+- **`DEFAULT_CONFIG` clutch comment was stale** — still read `"multi-kill sequences in a single round"` (description from the original wrong implementation). Updated to `"player is last alive on team, kills remaining opponents"`.
+- **Recording system tooltip was inaccurate** — still said physics/effects are "NOT injected by this tool in CS mode". Updated to reflect v83 behaviour: CS2 Effects are injected in HLAE mode; in CS mode they are not yet supported due to the absence of `extraArgs` in the CS JSON schema.
+
+### Notes
+- Clutch detection logic has been correct since v82: the algorithm fetches all kills per match, checks that all teammates died before the player's first kill tick in the round, counts opponents still alive at that moment, and compares against min/max. The tooltip and labels ("Min 1v:" / "Max 1v:") already described this correctly — only the config comment was stale.
+
+---
+
+## [v85]
+### Changed
+- **Clutch detection completely rewritten** — now detects *real* clutch situations instead of simple multi-kills per round:
+
+  **Old behaviour (wrong)**: grouped kills by the same player in the same round where they made ≥ N kills. A player making 3 kills while 4 teammates were still alive was counted as a "clutch."
+
+  **New behaviour (correct)**: a clutch is defined as:
+  1. At the tick of the player's first kill in the round, **all teammates are already dead** (player is the sole survivor of their team).
+  2. The number of opponents still alive at that exact tick ≥ `clutch_min_kills` and ≤ `clutch_max_kills`.
+
+  **Algorithm change**: `_query_clutch_events` now fetches **all kills from all matches** the player participated in (not just their own kills), reconstructs per-round who was alive on each side at every tick, and verifies the last-alive condition before accepting a clutch.
+
+  **Requires**: `killer_side` / `victim_side` columns in the kills table. Without side data, clutches cannot be verified and nothing is captured (rather than capturing incorrect data).
+
+  **Logs**: each detected clutch now logs the clutch size explicitly: `🤝 1v3 clutch [demo.dem] tick=12345 (3 kills)`.
+
+- **UI labels corrected**:
+  - "Min kills" → "Min 1v" / "Max 1v" — reflects that the number is opponents alive at clutch start, not a kill count.
+  - Combo now includes `1` as an option (1v1 clutch).
+  - Tooltip fully rewritten to accurately describe detection logic, side-data requirement, and Win only behaviour.
+
+### Fixed
+- `require_win` was previously only applied if both side *and* winner were found; the side inference from victim_side now provides a reliable fallback when `killer_side` column is absent.
+- Clutch log in `_query_events` now shows `1v2, 1v3…` notation instead of raw kill counts.
+
+---
+
+## [v84]
+### Fixed
+- **`clutch_require_win` was never actually filtering** — the entire body of the `if require_win:` block was a `pass` (TODO stub). Implemented properly:
+  - The clutch kill query now also fetches `killer_side` / `killer_team_name` / `attacker_side` from the kills table.
+  - Both killer side and round winner values are normalised to `"CT"` or `"T"` from all known CSDM schema variants (`COUNTER_TERRORIST`, `Counter-Terrorist`, `counter_terrorist` → `"CT"`; `TERRORIST`, `Terrorist` → `"T"`).
+  - If killer side and winner both known and don't match → clutch skipped.
+  - If either is absent (old schema / missing column) → clutch included rather than silently dropped.
+  - `_killer_side` added to the `_internal` fields stripped from clean kill dicts before storage.
+- **3 remaining French comments translated**:
+  - `# date inconnue + filtre actif → on exclut` → `# unknown date + active filter → exclude`
+  - `# timeout 60s pour trouver CS2` → `# 60s timeout to find CS2`
+  - `# Phase 1 : attendre CS2 (polling rapide 100ms)` → `# Phase 1: wait for CS2 (fast polling 100ms)`
+
+---
+
+## [v83]
+### Fixed
+- **CS2 EFFECTS not injected in CS recording mode**: the physics console commands (`cl_ragdoll_gravity`, `ragdoll_gravity_scale`, `sv_gravity`, `cl_ragdoll_physics_enable`, `violence_hblood`, `r_dynamic`) were still inside the `if recsys == "HLAE":` block in `_build_json`, meaning they had no effect when System = CS. They are now built unconditionally. In HLAE mode they are appended to `hlaeOptions.extraArgs` as before. In CS mode they are logged for informational purposes (CSDM CS mode does not currently expose an `extraArgs` equivalent — will be wired when CSDM adds that field).
+
+---
+
+## [v82]
+### Added
+- **🤝 CLUTCH mode** — new capture type in the Capture tab:
+  - Grouped kills: one clutch = all kills by the same player in the same round where they achieved ≥ `clutch_min_kills` kills.
+  - Round detection uses the `rounds` table tick brackets when available; falls back to coarse 2-minute windows otherwise.
+  - **Min kills** (2–5) and **Max kills** (2–5) sliders — e.g. Min=2 Max=3 captures only 1v2 and 1v3.
+  - **Full round** clip mode: one continuous sequence from first kill − BEFORE to last kill + AFTER.
+  - **Per kill** clip mode: standard individual sequences (normal merging applies).
+  - **Win only** option: restricts to rounds with a recorded winner (requires `winner`/`winner_side` in the rounds table).
+  - Deduplicated against regular Kill events — enabling Kills + Clutch simultaneously never produces duplicates.
+  - `_query_clutch_events(...)` — full DB query with round brackets, tick assignment, and group filtering.
+  - `_build_clutch_sequences(groups, ...)` — builds one contiguous sequence per clutch group.
+  - `_on_clutch_toggle()` — shows/hides clutch options row.
+  - `events_clutch` added to `_build_run_cfg`.
+
+### Changed
+- **Video tab — HLAE/CS2 sections properly separated**:
+  - **⚡ HLAE OPTIONS** (hidden in CS mode): FOV, slow-motion, AFX stream, No spectator UI, Fix scope FOV, Auto Workshop download, window mode, Minimize on launch, extra HLAE args.
+  - **🎮 CS2 EFFECTS** (always visible): window mode, Minimize on launch, `cl_ragdoll_gravity`, `ragdoll_gravity_scale`, `sv_gravity`, ragdoll physics, blood on walls, dynamic lighting. Section title and description make it clear these work in both modes.
+
+---
+
 ## [v81]
 ### Fixed
 - **Inaccurate CS mode tooltip** — the claims added in v78/v80 were still partially wrong:
