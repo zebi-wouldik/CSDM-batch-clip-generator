@@ -5,6 +5,49 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v93]
+### Changed — UI cleanup & modifier reorganisation
+
+**Clutch — Custom range removed:** `clutch_custom_enabled`, `clutch_custom_min`, `clutch_custom_max` removed entirely. The 1v1–1v5 checkboxes are sufficient; the custom range was redundant. Config keys, UI row, `_on_clutch_custom_toggle`, and `_clutch_allowed_sizes` logic all cleaned up accordingly.
+
+**Perspective moved:** now sits above the modifier list (between the HS/TK options and Mods), instead of below the clutch block.
+
+**Blind Fire moved into Mods row:** `😵 Blind Fire` is now part of the `Mods (OR)` inline row alongside Smoke, Wallbang, etc. The separate `ab_row` block is gone.
+
+**BOURREAU → BULLY:** label renamed in UI and comments.
+
+**Tooltips simplified:** verbose multi-line technical descriptions reduced to 1–2 user-facing lines across all modifiers.
+
+**`demoparser2` badge centralised:** `dp2_badge(parent)` helper introduced — creates the blue label and attaches the tooltip in one call. Replaces the repeated `tk.Label(... "demoparser2")` + `add_tip(...)` pattern used in every dp2-powered modifier row.
+
+---
+
+## [v92]
+### Added — 9 new kill modifiers
+
+**DB-only (no demoparser2):**
+- **🚀 Entry Frag** — first kill of the round (earliest tick). Identifies space-makers. Uses kills table + round grouping.
+- **🃏 Ace** — player eliminates all 5 opponents in one round. Detected by counting distinct victim SIDs per round.
+- **⚡ Multi-Kill** — ≥N kills in one round within T seconds. Configurable N (2–5) and window (seconds). Triple = 3, Quadra = 4.
+- **💀 Bourreau** — kills the same victim for the Nth time in the match. Only the Nth+ kill is kept. Configurable repeat threshold.
+- **💰 Eco Frag** — pistol kill against a full-buy opponent (rifle/LMG/auto-sniper). Uses `victim_weapon` column if present; falls back to including all pistol kills if column absent.
+- **😵 Blind Fire** — player was blinded (flashed) at shot time. Uses `attacker_blind`/`is_blind` column.
+
+**demoparser2-powered:**
+- **🏎 Ferrari Peek** — kill while moving above a velocity threshold (default 280 u/s). Velocity is already in the `fire_detail` cache from the existing `weapon_fire` parse — no new parse needed.
+- **↩ Flick** — large view-angle change in the ~0.5s before the kill. Configurable minimum degrees (default 50°). Uses `view_angle_Y` from a new `player_death` parse added to `_dp2_parse_demo`.
+- **🛡 Sauveur** — player kills an enemy who was actively hurting a teammate within ~2s before the kill. Uses `player_hurt` events from a new parse added to `_dp2_parse_demo`.
+
+### Changed
+- **`_dp2_parse_demo`** extended: now also parses `player_death` (view angles) and `player_hurt` (damage events) in the same demo parse pass. Both stored in `_dp2_cache` as `view_angles` and `hurt_index`. Cached for the session — no re-parse on batch.
+- **`kill_mod_assisted_flash` UI label** corrected: "Flashed" → "Victim flashed" (the *victim* was blinded). Previously ambiguous.
+- **`kill_mod_attacker_blind`** added as a separate modifier for when the *killer* was blinded. Previously `is_blind`/`attacker_blind` was incorrectly merged into `assisted_flash`.
+- **`_apply_db_postfilters()`** new method: runs Entry Frag, Ace, Multi-Kill, Bourreau, Eco-Frag as post-query filters on the already-fetched results dict. Called at the end of `_query_events` — no extra DB round-trip, no SQL complexity added to the main query.
+- `_show_preview` summary line extended with all new modifier badges.
+- New `int` config keys: `kill_mod_multi_kill_n`, `kill_mod_multi_kill_s`, `kill_mod_bourreau_n`, `kill_mod_high_vel_thr`, `kill_mod_flick_deg`.
+
+---
+
 ## [v91]
 ### Fixed
 - **`_effective_before` perspective leak**: `victim_pre_s` was added to `before` regardless of perspective mode because `victim_pre_s=2` is stored in config and persisted across sessions. A saved config with `perspective=both` would inflate clip duration even after switching back to `POV Killer`. Added `max(0, ...)` guard and clarified docstring: only `perspective == "both"` triggers the addition.

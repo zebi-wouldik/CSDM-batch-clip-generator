@@ -1,4 +1,4 @@
-# CSDM Batch Clips Generator — v91
+# CSDM Batch Clips Generator — v93
 
 Connects to your CSDM PostgreSQL database and batch-records CS2 highlight clips via the CSDM CLI.
 
@@ -37,15 +37,31 @@ Demos are pre-parsed in parallel before the batch. The cache persists for the se
 
 | Modifier | Keeps |
 |---|---|
-| **TROIS SHOT** | Lucky kills: bloom above threshold, unscoped, or moving at shot time |
+| **TROIS SHOT** | Lucky kills on precision weapons (bloom, unscoped, or moving at shot time) |
 | **Exclude** | Inverse — precise kills only |
-| **ONE TAP** | One shot fired in a ±2s window around the kill, headshot |
+| **ONE TAP** | Single headshot with no other shot within ±2s |
 | **TROIS TAP** | TROIS SHOT ∩ ONE TAP |
-| **Spray Transfer** | ≥2 kills in one continuous burst (auto weapons: AK, M4, SMGs, M249, Negev, CZ75) |
+| **Spray Transfer** | ≥2 kills in one continuous burst (auto weapons only) |
+| **Ferrari Peek** | Kill while moving above a speed threshold |
+| **Flick** | Large view-angle change in the ~0.5s before the kill |
+| **Sauveur** | Kill an enemy who was actively damaging a teammate |
 
 Modifiers stack (AND logic). TROIS SHOT + ONE TAP checked simultaneously auto-converts to TROIS TAP.
 
-**TROIS SHOT threshold note**: for AWP/SSG08, a scoped shot with `accuracy_penalty > 0.010` is also caught — this covers firing before the scope sway settles, which CS2 treats as imprecise regardless of whether the player is aiming.
+---
+
+## Kill modifiers (DB only)
+
+No demoparser2 required — runs directly on the CSDM kills table.
+
+| Modifier | Keeps |
+|---|---|
+| **Entry Frag** | First kill of the round |
+| **Ace** | Rounds where the player eliminated all 5 opponents |
+| **Multi-Kill** | N or more kills in one round within a time window |
+| **BULLY** | Kill the same opponent for the Nth time in the match |
+| **Eco Frag** | Pistol kill against a full-buy opponent |
+| **Blind Fire** | Player was blinded at shot time |
 
 ---
 
@@ -53,8 +69,8 @@ Modifiers stack (AND logic). TROIS SHOT + ONE TAP checked simultaneously auto-co
 
 Detects rounds where the player was the last alive on their team and killed the remaining opponents.
 
-- **Min 1v / Max 1v**: filter by number of opponents faced
-- **Full clutch**: one clip from the first kill to the last (+ before/after padding) — not the whole round
+- **1v1–1v5**: filter by number of opponents faced (none checked = all included)
+- **Full clutch**: one clip from the first kill to the last (+ before/after padding)
 - **Per kill**: standard individual clips
 
 ---
