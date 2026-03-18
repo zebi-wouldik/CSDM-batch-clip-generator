@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v86"""
+"""CSDM Batch Clips Generator v90"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v86"
+APP_VERSION = "v90"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -120,11 +120,37 @@ CSDM_TO_DP2_WEAPON = {
     "ssg08":          "weapon_ssg08",
     "ssg-08":         "weapon_ssg08",
 }
-# CSDM display names eligible (all variants, lowercase) for UI filter
-TROIS_SHOT_ELIGIBLE_LOWER = set(CSDM_TO_DP2_WEAPON.keys())
-
 # Tick window for demoparser2 shot matching (~1 second at CS2 64 tick/s)
 DP2_TICK_WINDOW = 128
+
+# ── SPRAY TRANSFER ────────────────────────────────────────────────────────
+# Automatic weapons eligible for spray transfer detection.
+# A spray transfer = player kills ≥2 victims in one continuous burst
+# (no trigger release — no gap > SPRAY_MAX_GAP ticks between weapon_fire events).
+# Excluded: snipers (AWP, SSG08), auto-snipers (SCAR-20, G3SG1), shotguns, pistols.
+# CZ75-Auto is a pistol but fires automatically — included.
+SPRAY_TRANSFER_WEAPONS: set = {
+    # Rifles (fully automatic)
+    "ak47", "m4a1", "m4a1_silencer", "galilar", "famas", "sg556", "aug",
+    "ak-47", "m4a4", "m4a1-s", "galil ar", "sg 553",
+    # SMGs
+    "mac10", "mp9", "mp7", "mp5sd", "ump45", "p90", "bizon",
+    "mac-10", "mp5-sd", "ump-45", "pp-bizon",
+    # Heavy auto
+    "m249", "negev",
+    # CZ75 (only full-auto pistol)
+    "cz75a", "cz75-auto",
+}
+# Lowercase version for fast lookup
+SPRAY_TRANSFER_WEAPONS_LOWER: set = {w.lower() for w in SPRAY_TRANSFER_WEAPONS}
+# demoparser2 weapon_fire suffix → display name (for logging)
+# CS2 RPM reference values (approximate) used to compute max gap between shots:
+#   AK-47: 600 rpm → ~6.4 ticks/shot at 64tick
+#   M4A4:  666 rpm → ~5.8 ticks/shot
+#   M249:  750 rpm → ~5.1 ticks/shot
+# We allow 3× the cycle time as tolerance for spray transfer detection.
+# At 64 tick: 3 × (64*60 / RPM_min) = 3 × (3840/600) ≈ 19 ticks max gap.
+SPRAY_MAX_GAP_TICKS = 22  # ~0.34s at 64tick — generous to handle peeks/lag
 
 # Base definitions (height) available in structured selector
 DEFINITIONS = [
@@ -294,6 +320,8 @@ DEFAULT_CONFIG = {
     "kill_mod_trois_tap": False,
     # ONE TAP modifier (v66) — isolated single shot headshot, no shot within ±2s
     "kill_mod_one_tap": False,
+    # SPRAY TRANSFER modifier (v87) — ≥2 kills in one continuous burst (auto weapons only)
+    "kill_mod_spray_transfer": False,
     # Clutch mode (v82) — player is last alive on team, kills remaining opponents
     "clutch_enabled":     False,
     "clutch_min_kills":   2,       # minimum clutch size = opponents alive when player became last alive (1v2+)
@@ -340,7 +368,7 @@ PRESET_KEYS = {
                "kill_mod_through_smoke", "kill_mod_no_scope", "kill_mod_wall_bang",
                "kill_mod_airborne", "kill_mod_assisted_flash", "kill_mod_collateral",
                "kill_mod_trois_shot", "kill_mod_no_trois_shot", "kill_mod_trois_tap",
-               "kill_mod_one_tap",
+               "kill_mod_one_tap", "kill_mod_spray_transfer",
                "clutch_enabled", "clutch_min_kills", "clutch_max_kills",
                "clutch_require_win", "clutch_clip_mode",
                "clip_order", "show_xray"],
@@ -849,18 +877,28 @@ class PlayerSearchWidget(tk.Frame):
     def _update_active_lbl(self):
         n = len(self._active_sids)
         if n == 0:
-            self._active_lbl.config(
-                text="⚠  No active account — check a player above.",
-                fg=RED)
+            text = "⚠  No active account — check a player above."
+            fg   = RED
         elif n == 1:
-            sid = next(iter(self._active_sids))
+            sid  = next(iter(self._active_sids))
             name = self._active_names.get(sid, sid)
-            self._active_lbl.config(
-                text=f"Actif : {name}  ({sid})", fg=GREEN)
+            text = f"Active: {name}  ({sid})"
+            fg   = GREEN
         else:
             names = ", ".join(self._active_names.get(s, s) for s in sorted(self._active_sids))
-            self._active_lbl.config(
-                text=f"{n} active: {names}", fg=GREEN)
+            text  = f"{n} active: {names}"
+            fg    = GREEN
+
+        self._active_lbl.config(text=text, fg=fg)
+
+        # Mirror the exact same text to the header label
+        try:
+            app = self.winfo_toplevel()
+            app._hdr_player_lbl.config(
+                text=text if n > 0 else "",
+                fg=fg)
+        except Exception:
+            pass
 
     def _toggle_saved(self, p):
         sid = p["steam_id"]
@@ -1161,6 +1199,10 @@ class App(tk.Tk):
         self._tags_schema = {}
         self._demo_checksums = {}  # {demo_path: checksum} — populated by _query_events
         self._demo_dates     = {}  # {demo_path: date_val} — populated by _query_events
+        self._ts_cache       = {}  # {demo_path: int|None} — cached _get_demo_ts results
+        self._col_cache      = {}  # {(table, tuple(candidates)): col} — cached _find_col results
+        self._db_conn        = None  # persistent psycopg2 connection — reused across calls
+        self._dp2_verbose    = False  # per-kill dp2 filter logging (debug only — expensive)
         self._tag_search_results = {}
 
         self.v = {}
@@ -1186,7 +1228,7 @@ class App(tk.Tk):
                       "kill_mod_through_smoke", "kill_mod_no_scope", "kill_mod_wall_bang",
                       "kill_mod_airborne", "kill_mod_assisted_flash", "kill_mod_collateral",
                       "kill_mod_trois_shot", "kill_mod_no_trois_shot", "kill_mod_trois_tap",
-                      "kill_mod_one_tap",
+                      "kill_mod_one_tap", "kill_mod_spray_transfer",
                       "assemble_after", "delete_after_assemble",
                       "phys_ragdoll_enable", "phys_blood", "phys_dynamic_lighting",
                       "cs2_minimize",
@@ -1273,12 +1315,11 @@ class App(tk.Tk):
             self.after(500, self._connect_and_load)
 
     def _on_player_change(self, name, sid):
+        """Called when the DB search list selection changes.
+        Delegate to the player widget's _update_active_lbl so the header
+        always shows the same text as the active label in the Capture tab."""
         try:
-            if name and sid:
-                short = name[:22] + ("…" if len(name) > 22 else "")
-                self._hdr_player_lbl.config(text=f"● {short}", fg=ORANGE)
-            else:
-                self._hdr_player_lbl.config(text="", fg=MUTED)
+            self.player_search._update_active_lbl()
         except Exception:
             pass
 
@@ -1376,17 +1417,38 @@ class App(tk.Tk):
 
 
     def _pg(self):
-        return psycopg2.connect(host=self.v["pg_host"].get(), port=int(self.v["pg_port"].get()),
-                                user=self.v["pg_user"].get(), password=self.v["pg_pass"].get(),
-                                dbname=self.v["pg_db"].get(), connect_timeout=5)
+        """Return a live psycopg2 connection, reusing the existing one when possible.
+        Creates a new connection on first call or if the existing one is closed/broken.
+        The _connect_and_load thread always opens its own connection (thread safety).
+        """
+        if self._db_conn is not None:
+            try:
+                # Quick liveness check — closed attribute is False when open
+                if not self._db_conn.closed:
+                    return self._db_conn
+            except Exception:
+                pass
+        self._db_conn = psycopg2.connect(
+            host=self.v["pg_host"].get(), port=int(self.v["pg_port"].get()),
+            user=self.v["pg_user"].get(), password=self.v["pg_pass"].get(),
+            dbname=self.v["pg_db"].get(), connect_timeout=5)
+        return self._db_conn
+
+    def _pg_fresh(self):
+        """Always create a new connection (used by background threads that must
+        not share the main-thread connection)."""
+        return psycopg2.connect(
+            host=self.v["pg_host"].get(), port=int(self.v["pg_port"].get()),
+            user=self.v["pg_user"].get(), password=self.v["pg_pass"].get(),
+            dbname=self.v["pg_db"].get(), connect_timeout=5)
 
     def _connect_and_load(self):
-        self.db_status.set("Connexion...")
+        self.db_status.set("Connecting...")
         self.db_status_lbl.config(fg=YELLOW)
 
         def task():
             try:
-                conn = self._pg()
+                conn = self._pg_fresh()
                 with conn.cursor() as cur:
                     schema = {}
                     col_types = {}
@@ -1544,6 +1606,8 @@ class App(tk.Tk):
         self._tags_schema   = tags_schema
         self._demo_checksums = {}
         self._demo_dates     = {}
+        self._ts_cache       = {}
+        self._col_cache      = {}
 
         # Warn (log only) if the date column was not detected
         if not dc:
@@ -1683,7 +1747,7 @@ class App(tk.Tk):
             else:
                 return None
         try:
-            conn = self._pg()
+            conn = self._pg_fresh()
             with conn.cursor() as cur:
                 new_id = _generate_id_for_type(ts.get("id_col_type", "bigint"))
                 cols_sql = f'"{ts["id_col"]}","{ts["name_col"]}"'
@@ -1708,7 +1772,7 @@ class App(tk.Tk):
         if not ts.get("id_col"):
             return False, "Unknown schema"
         try:
-            conn = self._pg()
+            conn = self._pg_fresh()
             with conn.cursor() as cur:
                 jt = ts.get("junction_table")
                 jt_tag = ts.get("jt_tag_col")
@@ -1753,7 +1817,7 @@ class App(tk.Tk):
         basename = os.path.basename(demo_path)
 
         try:
-            conn = self._pg()
+            conn = self._pg_fresh()
             with conn.cursor() as cur:
                 for sp in candidates:
                     cur.execute(
@@ -1804,7 +1868,7 @@ class App(tk.Tk):
             return False, f"Checksum not found for {os.path.basename(demo_path)}"
 
         try:
-            conn = self._pg()
+            conn = self._pg_fresh()
             with conn.cursor() as cur:
                 cur.execute(
                     f'SELECT 1 FROM "{jt}" WHERE "{jt_match}"=%s AND "{jt_tag}"=%s LIMIT 1',
@@ -1845,7 +1909,7 @@ class App(tk.Tk):
             mkm = self._find_col("matches", ["checksum", "id", "match_id"])
             if dc and mkm:
                 try:
-                    conn = self._pg()
+                    conn = self._pg_fresh()
                     with conn.cursor() as cur:
                         name = os.path.basename(demo_path)
                         cur.execute(f'SELECT "{mkm}" FROM matches WHERE "{dc}" LIKE %s LIMIT 1',
@@ -1861,7 +1925,7 @@ class App(tk.Tk):
             return False, f"Checksum not found for {os.path.basename(demo_path)}"
 
         try:
-            conn = self._pg()
+            conn = self._pg_fresh()
             with conn.cursor() as cur:
                 cur.execute(
                     f'DELETE FROM "{jt}" WHERE "{jt_match}"=%s AND "{jt_tag}"=%s',
@@ -2323,12 +2387,11 @@ class App(tk.Tk):
         _ts_lbl = mlabel(trois_row, "🎲 TROIS SHOT:")
         _ts_lbl.pack(side="left")
         add_tip(_ts_lbl,
-                "Lucky kills on single/semi-auto precision weapons.\n"
+                "Lucky kills on precision weapons (Deagle, R8, AWP, SCAR-20, G3SG1, SSG 08).\n"
                 "Detection via demoparser2 (requires pip install demoparser2).\n\n"
-                "Eligible weapons: Deagle, R8, AWP, SCAR-20, G3SG1, SSG 08\n"
-                "Detection by bloom (accuracy_penalty), scope and velocity\n"
-                "at the exact shot tick in the demo.\n\n"
-                "⚠ Enable → automatically locks ineligible weapons.")
+                "Detects shots where bloom (accuracy_penalty), scope or velocity\n"
+                "indicate a lucky hit rather than a precise aimed shot.\n\n"
+                "The weapon filter below is independent — select any weapons you want.")
         _ts_cb = hchk(trois_row, "Enable", self.v["kill_mod_trois_shot"],
                       command=self._on_trois_shot_toggle)
         _ts_cb.pack(side="left", padx=(4, 0))
@@ -2353,11 +2416,10 @@ class App(tk.Tk):
                 "TROIS SHOT + ONE TAP: lucky AND isolated single-shot headshot.\n"
                 "Combined conditions:\n"
                 "  • Mandatory headshot\n"
-                "  • Eligible TROIS SHOT weapon (Deagle, R8, AWP, SCAR-20, G3SG1, SSG 08)\n"
-                "  • Bloom / scope / velocity (TROIS SHOT)\n"
+                "  • Bloom / scope / velocity qualifying as lucky (TROIS SHOT)\n"
                 "  • No shot in the 2s BEFORE and AFTER (ONE TAP)\n"
                 "Detection via demoparser2.\n\n"
-                "⚠ Enable → forces 'HS only' + locks ineligible weapons.")
+                "⚠ Enable → forces 'HS only' (locked).")
         _tt_cb = hchk(tt_row, "Enable", self.v["kill_mod_trois_tap"],
                       command=self._on_trois_tap_toggle)
         _tt_cb.pack(side="left", padx=(4, 0))
@@ -2387,26 +2449,43 @@ class App(tk.Tk):
         _ot_badge.pack(side="left", padx=(8, 0))
         add_tip(_ot_badge, "Requires: pip install demoparser2")
 
-        # ── CLUTCH (v78) ───────────────────────────────────────────────────────
+        # ── SPRAY TRANSFER (v87) ─────────────────────────────────────────────
+        st_row = tk.Frame(sec, bg=BG2)
+        st_row.pack(fill="x", pady=(4, 0))
+        _st_lbl = mlabel(st_row, "🔫 SPRAY TRANSFER:")
+        _st_lbl.pack(side="left")
+        add_tip(_st_lbl,
+                "Kills that are part of a continuous spray — player hits ≥2 enemies\n"
+                "without releasing the trigger between shots.\n\n"
+                "Only automatic weapons: SMGs, full-auto Rifles (AK-47, M4A4/M4A1-S,\n"
+                "Galil AR, FAMAS, SG 553, AUG), M249, Negev, CZ75-Auto.\n"
+                "Excluded: AWP, SSG 08, SCAR-20, G3SG1, shotguns, other pistols.\n\n"
+                "Detection: gap between consecutive weapon_fire events must stay\n"
+                f"≤ {SPRAY_MAX_GAP_TICKS} ticks (~{SPRAY_MAX_GAP_TICKS/64:.2f}s) across all kills in the burst.\n"
+                "Requires: pip install demoparser2")
+        _st_cb = hchk(st_row, "Enable", self.v["kill_mod_spray_transfer"])
+        _st_cb.pack(side="left", padx=(4, 0))
+        _st_badge = tk.Label(st_row, text="demoparser2",
+                             font=FONT_DESC, fg=BLUE, bg=BG2)
+        _st_badge.pack(side="left", padx=(8, 0))
+        add_tip(_st_badge, "Requires: pip install demoparser2")
+
+        # ── CLUTCH (v82) ───────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
         clutch_hdr = tk.Frame(sec, bg=BG2)
         clutch_hdr.pack(fill="x")
         _cl_lbl = mlabel(clutch_hdr, "🤝 CLUTCH:")
         _cl_lbl.pack(side="left")
         add_tip(_cl_lbl,
-                "Capture clutch situations — the player is the last alive on their team\n"
-                "and kills the remaining opponents to win the round alone.\n\n"
-                "Detection: at the tick of the player's first kill in the round,\n"
-                "all teammates must already be dead (player is sole survivor).\n"
-                "The clutch size = number of opponents still alive at that moment.\n\n"
-                "Min / Max: filter by clutch size (e.g. Min=2 = 1v2+, Max=5 = up to ace).\n\n"
-                "Clip mode:\n"
-                "  Full    = one continuous clip from first to last kill in the round\n"
-                "  Per kill = one clip per kill (standard before/after seconds)\n\n"
-                "Win only: only keep clutches where the player's team won the round.\n\n"
-                "⚠ Requires killer_side / victim_side columns in the kills table.\n"
-                "  Without side data, clutches cannot be detected and nothing is captured.\n\n"
-                "Clutch can be combined with Kills / Deaths / Rounds simultaneously.")
+                "Player is the last alive on their team and kills the remaining opponents.\n\n"
+                "Detection: at the player's first kill tick in the round, all teammates\n"
+                "must already be dead. Clutch size = opponents alive at that moment.\n\n"
+                "Min / Max 1v: filter by size (1v2+, 1v3 only, etc.).\n"
+                "Full round = one clip from first to last kill of the clutch.\n"
+                "Per kill = one clip per kill (standard BEFORE/AFTER seconds).\n"
+                "Win only = only clutches the player's team won.\n\n"
+                "⚠ Requires team/side columns in the kills table.\n"
+                "  Can be combined with Kills / Deaths / Rounds.")
         _cl_cb = hchk(clutch_hdr, "Enable", self.v["clutch_enabled"],
                       command=self._on_clutch_toggle)
         _cl_cb.pack(side="left", padx=(4, 0))
@@ -2530,9 +2609,10 @@ class App(tk.Tk):
         for lbl, val in [("Chrono","chrono"),("Random 🎲","random")]:
             hradio(rg, lbl, self.v["clip_order"], val).pack(side="left", padx=(4, 0))
 
-        sec = Sec(p, "DATE FILTER")
+        sec = Sec(p, "DATE RANGE & DEMO SELECTION")
         sec.pack(fill="x", pady=(0, 6))
 
+        # ── Date range row ────────────────────────────────────────────────────
         dr1 = tk.Frame(sec, bg=BG2)
         dr1.pack(fill="x")
         mlabel(dr1, "From:").pack(side="left")
@@ -2563,7 +2643,8 @@ class App(tk.Tk):
         tk.Button(dr1, text="Clear all", font=FONT_DESC, bg=BG3, fg=MUTED,
                   relief="flat", bd=0, cursor="hand2", highlightthickness=0,
                   activebackground=BORDER, activeforeground=MUTED,
-                  command=lambda: [self.v["date_from"].set(""), self.v["date_to"].set("")]
+                  command=lambda: [self.v["date_from"].set(""), self.v["date_to"].set(""),
+                                   self._demo_picker_clear()]
                   ).pack(side="left", padx=(4, 0), ipady=4, ipadx=5)
 
         qr = tk.Frame(sec, bg=BG2)
@@ -2576,6 +2657,79 @@ class App(tk.Tk):
                       highlightthickness=0,
                       command=lambda k=key: self._set_date_range(k)).pack(
                 side="left", padx=(4, 0), ipady=2, ipadx=4)
+
+        # ── Demo picker ───────────────────────────────────────────────────────
+        picker_hdr = tk.Frame(sec, bg=BG2)
+        picker_hdr.pack(fill="x", pady=(10, 0))
+        mlabel(picker_hdr, "Demo selection:").pack(side="left")
+        add_tip(picker_hdr.winfo_children()[-1],
+                "After Preview, demos in the date range are shown here.\n"
+                "Uncheck any demo to exclude it from the batch.\n"
+                "Enable 'Manual mode' to see all demos from the DB\n"
+                "and add/remove them individually.")
+        self._picker_manual_var = tk.BooleanVar(value=False)
+        _pm_cb = hchk(picker_hdr, "Manual mode", self._picker_manual_var,
+                      command=self._on_picker_mode_change)
+        _pm_cb.pack(side="left", padx=(12, 0))
+        add_tip(_pm_cb,
+                "Off: shows only demos found by the date range (after Preview).\n"
+                "On: loads all demos from DB so you can pick or exclude individually.")
+        self._picker_count_lbl = tk.Label(picker_hdr, text="", font=FONT_DESC,
+                                          fg=MUTED, bg=BG2)
+        self._picker_count_lbl.pack(side="right")
+
+        # Treeview: columns = checkbox-state (not real col) + date + name
+        tree_frame = tk.Frame(sec, bg=BG2)
+        tree_frame.pack(fill="x", pady=(4, 0))
+        style = ttk.Style()
+        style.configure("DemoPicker.Treeview",
+                        background=BG3, fieldbackground=BG3,
+                        foreground=TEXT, rowheight=18,
+                        font=FONT_SM)
+        style.configure("DemoPicker.Treeview.Heading",
+                        background=BG2, foreground=MUTED,
+                        font=FONT_DESC, relief="flat")
+        style.map("DemoPicker.Treeview",
+                  background=[("selected", BORDER)],
+                  foreground=[("selected", ORANGE)])
+        self._demo_tree = ttk.Treeview(
+            tree_frame, style="DemoPicker.Treeview",
+            columns=("sel", "date", "name"), show="headings", height=7,
+            selectmode="extended")
+        self._demo_tree.heading("sel",  text="✓",         anchor="center")
+        self._demo_tree.heading("date", text="Date",       anchor="w")
+        self._demo_tree.heading("name", text="Demo",       anchor="w")
+        self._demo_tree.column("sel",  width=24, minwidth=24, stretch=False, anchor="center")
+        self._demo_tree.column("date", width=120, minwidth=100, stretch=False)
+        self._demo_tree.column("name", width=340, minwidth=200, stretch=True)
+        _tree_sb = ttk.Scrollbar(tree_frame, orient="vertical",
+                                 command=self._demo_tree.yview)
+        self._demo_tree.configure(yscrollcommand=_tree_sb.set)
+        self._demo_tree.pack(side="left", fill="x", expand=True)
+        _tree_sb.pack(side="right", fill="y")
+        self._demo_tree.bind("<Button-1>", self._on_demo_tree_click)
+
+        # Per-row toggle buttons row
+        pick_btns = tk.Frame(sec, bg=BG2)
+        pick_btns.pack(fill="x", pady=(4, 0))
+        tk.Button(pick_btns, text="✓ Check all", font=FONT_DESC, bg=BG3, fg=GREEN,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activeforeground=GREEN, activebackground=BG3,
+                  command=lambda: self._demo_picker_set_all(True)
+                  ).pack(side="left", padx=(0, 6))
+        tk.Button(pick_btns, text="✕ Uncheck all", font=FONT_DESC, bg=BG3, fg=RED,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activeforeground=RED, activebackground=BG3,
+                  command=lambda: self._demo_picker_set_all(False)
+                  ).pack(side="left")
+        tk.Button(pick_btns, text="↕ Toggle selected", font=FONT_DESC, bg=BG3, fg=MUTED,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activeforeground=ORANGE, activebackground=BG3,
+                  command=self._demo_picker_toggle_selected
+                  ).pack(side="left", padx=(6, 0))
+
+        # Internal state: {demo_path: bool} — True = included
+        self._demo_picker_state: dict = {}
 
         self._sec_w = Sec(p, "WEAPON FILTER  (empty = all)")
         self._sec_w.pack(fill="x", pady=(0, 6))
@@ -2630,6 +2784,207 @@ class App(tk.Tk):
             start = today - timedelta(days=key)
             self.v["date_from"].set(start.strftime("%d-%m-%Y"))
             self.v["date_to"].set(today_str)
+
+    # ── Demo picker helpers ─────────────────────────────────────────────────
+    def _demo_picker_fmt_name(self, demo_path):
+        """Shorten long demo filenames for display: keep last ~40 chars, prefix …"""
+        name = Path(demo_path).name
+        if len(name) > 44:
+            return "…" + name[-43:]
+        return name
+
+    def _demo_picker_fmt_date(self, demo_path):
+        """Return dd-mm-yyyy hh:mm for a demo path."""
+        ts = self._get_demo_ts(demo_path)
+        if ts is not None:
+            try:
+                return datetime.fromtimestamp(ts).strftime("%d-%m-%Y %H:%M")
+            except Exception:
+                pass
+        raw = self._demo_dates.get(demo_path)
+        if raw is None:
+            return "??-??-???? ??:??"
+        try:
+            if hasattr(raw, "strftime"):
+                return raw.strftime("%d-%m-%Y %H:%M")
+            if isinstance(raw, (int, float)):
+                t = int(raw)
+                if t > 4_000_000_000:
+                    t //= 1000
+                return datetime.fromtimestamp(t).strftime("%d-%m-%Y %H:%M")
+            s = str(raw).strip()
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+                try:
+                    return datetime.strptime(s[:len(fmt)], fmt).strftime("%d-%m-%Y %H:%M")
+                except ValueError:
+                    continue
+        except Exception:
+            pass
+        return "??-??-???? ??:??"
+
+    def _demo_picker_populate(self, demo_paths, keep_existing=False):
+        """Populate the demo picker treeview with the given paths.
+
+        demo_paths: list of demo file paths to show.
+        keep_existing: if True, preserve checked state for paths already present.
+        After Preview, called with just the range-filtered demos.
+        In Manual mode, called with all demos from DB.
+        """
+        # Preserve existing state for known paths if requested
+        prev_state = dict(self._demo_picker_state) if keep_existing else {}
+
+        self._demo_picker_state = {}
+        try:
+            self._demo_tree.delete(*self._demo_tree.get_children())
+        except Exception:
+            return
+
+        sorted_paths = sorted(demo_paths, key=self._demo_sort_key)
+        for dp in sorted_paths:
+            checked = prev_state.get(dp, True)
+            self._demo_picker_state[dp] = checked
+            sym = "✓" if checked else "✕"
+            date_str = self._demo_picker_fmt_date(dp)
+            name_str = self._demo_picker_fmt_name(dp)
+            tag = "ok" if checked else "off"
+            iid = self._demo_tree.insert("", "end",
+                values=(sym, date_str, name_str),
+                tags=(tag,), iid=dp)
+
+        self._demo_tree.tag_configure("ok",  foreground=TEXT)
+        self._demo_tree.tag_configure("off", foreground=MUTED)
+
+        n_on  = sum(1 for v in self._demo_picker_state.values() if v)
+        n_tot = len(self._demo_picker_state)
+        try:
+            self._picker_count_lbl.config(
+                text=f"{n_on}/{n_tot} selected",
+                fg=ORANGE if n_on < n_tot else MUTED)
+        except Exception:
+            pass
+
+    def _demo_picker_clear(self):
+        """Clear the picker when dates are cleared."""
+        self._demo_picker_state = {}
+        try:
+            self._demo_tree.delete(*self._demo_tree.get_children())
+            self._picker_count_lbl.config(text="")
+        except Exception:
+            pass
+
+    def _on_demo_tree_click(self, event):
+        """Toggle checked state when user clicks the ✓ column."""
+        region = self._demo_tree.identify_region(event.x, event.y)
+        col    = self._demo_tree.identify_column(event.x)
+        iid    = self._demo_tree.identify_row(event.y)
+        # Toggle on click in the sel column (#1) or anywhere on row
+        if not iid:
+            return
+        if col == "#1" or region == "cell":
+            dp = iid  # iid == demo_path
+            cur = self._demo_picker_state.get(dp, True)
+            new = not cur
+            self._demo_picker_state[dp] = new
+            sym = "✓" if new else "✕"
+            tag = "ok" if new else "off"
+            self._demo_tree.item(iid, values=(sym,
+                self._demo_tree.item(iid, "values")[1],
+                self._demo_tree.item(iid, "values")[2]), tags=(tag,))
+            n_on  = sum(1 for v in self._demo_picker_state.values() if v)
+            n_tot = len(self._demo_picker_state)
+            try:
+                self._picker_count_lbl.config(
+                    text=f"{n_on}/{n_tot} selected",
+                    fg=ORANGE if n_on < n_tot else MUTED)
+            except Exception:
+                pass
+
+    def _demo_picker_set_all(self, value):
+        for dp in list(self._demo_picker_state.keys()):
+            self._demo_picker_state[dp] = value
+            iid = dp
+            try:
+                sym = "✓" if value else "✕"
+                tag = "ok" if value else "off"
+                old_vals = self._demo_tree.item(iid, "values")
+                self._demo_tree.item(iid, values=(sym, old_vals[1], old_vals[2]), tags=(tag,))
+            except Exception:
+                pass
+        n_on  = sum(1 for v in self._demo_picker_state.values() if v)
+        n_tot = len(self._demo_picker_state)
+        try:
+            self._picker_count_lbl.config(
+                text=f"{n_on}/{n_tot} selected",
+                fg=ORANGE if n_on < n_tot else MUTED)
+        except Exception:
+            pass
+
+    def _demo_picker_toggle_selected(self):
+        sel = self._demo_tree.selection()
+        for iid in sel:
+            dp = iid
+            cur = self._demo_picker_state.get(dp, True)
+            new = not cur
+            self._demo_picker_state[dp] = new
+            sym = "✓" if new else "✕"
+            tag = "ok" if new else "off"
+            old_vals = self._demo_tree.item(iid, "values")
+            self._demo_tree.item(iid, values=(sym, old_vals[1], old_vals[2]), tags=(tag,))
+        n_on  = sum(1 for v in self._demo_picker_state.values() if v)
+        n_tot = len(self._demo_picker_state)
+        try:
+            self._picker_count_lbl.config(
+                text=f"{n_on}/{n_tot} selected",
+                fg=ORANGE if n_on < n_tot else MUTED)
+        except Exception:
+            pass
+
+    def _on_picker_mode_change(self, *_):
+        """Switch between range-only and manual (all demos) mode."""
+        manual = self._picker_manual_var.get()
+        if not manual:
+            # Back to range mode — preserve current list
+            return
+        # Manual mode: load all demos from DB
+        def _bg():
+            try:
+                conn = self._pg_fresh()
+                dc   = self._find_col("matches", ["demo_path", "demo_file_path",
+                                                    "demo_filepath", "share_code"])
+                mkm  = self._find_col("matches", ["checksum", "id", "match_id"])
+                date_col = self._date_col
+                if not dc:
+                    return
+                with conn.cursor() as cur:
+                    if date_col:
+                        cur.execute(f'SELECT "{dc}","{mkm}","{date_col}" FROM matches '
+                                    f'ORDER BY "{date_col}" DESC')
+                    else:
+                        cur.execute(f'SELECT "{dc}","{mkm}" FROM matches')
+                    rows = cur.fetchall()
+                conn.close()
+                all_paths = []
+                for row in rows:
+                    dp = row[0]
+                    if not dp:
+                        continue
+                    chk = row[1]
+                    if chk and dp not in self._demo_checksums:
+                        self._demo_checksums[dp] = chk
+                    if date_col and len(row) > 2 and row[2] and dp not in self._demo_dates:
+                        self._demo_dates[dp] = row[2]
+                    all_paths.append(dp)
+                self.after(0, lambda: self._demo_picker_populate(all_paths, keep_existing=True))
+            except Exception as e:
+                self._alog(f"  ⚠ Demo picker (manual mode): {e}", "warn")
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _demo_picker_get_active(self):
+        """Return list of demo paths that are checked in the picker.
+        If picker is empty (no preview run yet), returns None (= no filter)."""
+        if not self._demo_picker_state:
+            return None
+        return [dp for dp, ok in self._demo_picker_state.items() if ok]
 
     # ── TAB VIDEO ──
     def _tab_video(self, parent):
@@ -3119,35 +3474,19 @@ class App(tk.Tk):
 
     # ── TROIS SHOT (v62) ──────────────────────────────────────────────────
     def _on_trois_shot_toggle(self, *_):
-        """Toggle TROIS SHOT. Locks ineligible weapons.
+        """Toggle TROIS SHOT. Mutually exclusive with Exclude and TROIS TAP.
         If both TROIS SHOT + ONE TAP are now checked → auto-enable TROIS TAP."""
         active = self.v["kill_mod_trois_shot"].get()
-        # Mutually exclusive with Exclude (no_trois_shot)
         if active and self.v["kill_mod_no_trois_shot"].get():
             self.v["kill_mod_no_trois_shot"].set(False)
-        # Mutually exclusive with TROIS TAP
         if active and self.v["kill_mod_trois_tap"].get():
             self.v["kill_mod_trois_tap"].set(False)
             self._disengage_trois_tap()
-        # Auto TROIS TAP: if both TROIS SHOT + ONE TAP active → engage TROIS TAP
         if active and self.v["kill_mod_one_tap"].get():
             self.v["kill_mod_trois_shot"].set(False)
             self.v["kill_mod_one_tap"].set(False)
             self.v["kill_mod_trois_tap"].set(True)
             self._engage_trois_tap()
-            return
-        if not hasattr(self, "sel_weapons"):
-            return
-        for w, var in self.sel_weapons.items():
-            if active and w.lower().strip() not in TROIS_SHOT_ELIGIBLE_LOWER:
-                var.set(False)
-        if hasattr(self, "_cat_vars"):
-            for cat in self._cat_vars:
-                self._update_cat_var(cat)
-        try:
-            self._refresh_weapons_lock(active)
-        except Exception:
-            pass
 
     def _on_no_trois_shot_toggle(self, *_):
         """Toggle Exclude (inverse TROIS SHOT).
@@ -3156,10 +3495,6 @@ class App(tk.Tk):
         if active:
             if self.v["kill_mod_trois_shot"].get():
                 self.v["kill_mod_trois_shot"].set(False)
-                try:
-                    self._refresh_weapons_lock(False)
-                except Exception:
-                    pass
             if self.v["kill_mod_trois_tap"].get():
                 self.v["kill_mod_trois_tap"].set(False)
                 self._disengage_trois_tap()
@@ -3212,31 +3547,15 @@ class App(tk.Tk):
             pass
 
     def _engage_trois_tap(self):
-        """Apply all side-effects of TROIS TAP becoming active."""
+        """Apply side-effects of TROIS TAP becoming active (HS lock only)."""
         try:
             self.v["headshots_only"].set(True)
             self._hs_cb.config(state="disabled")
         except Exception:
             pass
-        if not hasattr(self, "sel_weapons"):
-            return
-        for w, var in self.sel_weapons.items():
-            if w.lower().strip() not in TROIS_SHOT_ELIGIBLE_LOWER:
-                var.set(False)
-        if hasattr(self, "_cat_vars"):
-            for cat in self._cat_vars:
-                self._update_cat_var(cat)
-        try:
-            self._refresh_weapons_lock(True)
-        except Exception:
-            pass
 
     def _disengage_trois_tap(self):
-        """Undo side-effects of TROIS TAP (unlock weapons, release HS lock)."""
-        try:
-            self._refresh_weapons_lock(False)
-        except Exception:
-            pass
+        """Undo side-effects of TROIS TAP (release HS lock)."""
         try:
             if not self.v["kill_mod_one_tap"].get():
                 self._hs_cb.config(state="normal")
@@ -3244,32 +3563,17 @@ class App(tk.Tk):
             pass
 
 
-    def _refresh_weapons_lock(self, locked):
-        """Grey out ineligible weapon checkboxes when locked=True."""
-        if not hasattr(self, "_wg_frame") or self._wg_frame is None:
-            return
-        for widget in self._wg_frame.winfo_descendants():
-            if isinstance(widget, tk.Checkbutton):
-                txt = widget.cget("text").strip().lower()
-                eligible = txt in TROIS_SHOT_ELIGIBLE_LOWER
-                if locked and not eligible:
-                    widget.config(state="disabled", fg=BORDER)
-                else:
-                    widget.config(state="normal",
-                                  fg=MUTED if not self.sel_weapons.get(
-                                      widget.cget("text").strip(),
-                                      tk.BooleanVar(value=False)).get() else TEXT)
-
     def _trois_shot_filter(self, demo_path, events, cfg):
         """Keep only lucky kills (TROIS SHOT filter).
 
         Reads weapon_fire data from _dp2_cache (populated by _dp2_parse_demo).
-        If the demo is not yet cached, triggers a synchronous parse as fallback.
+        Works on any weapon that has a threshold defined in TROIS_SHOT_THRESHOLDS
+        (via CSDM_TO_DP2_WEAPON). Kills with weapons that have no threshold are
+        passed through unchanged (no weapon restriction enforced in UI anymore).
         """
         if not os.path.isfile(demo_path):
             return events
 
-        # Ensure parsed — no-op if already cached
         if demo_path not in self._dp2_cache:
             self._dp2_parse_demo(demo_path)
 
@@ -3280,7 +3584,7 @@ class App(tk.Tk):
         def _is_lucky(kill_tick, killer_sid, weapon_raw):
             w_key = CSDM_TO_DP2_WEAPON.get(weapon_raw.lower().strip())
             if w_key is None:
-                return False
+                return False  # no threshold for this weapon — never lucky
             thresholds = TROIS_SHOT_THRESHOLDS[w_key]
             wp_suffix  = w_key[7:] if w_key.startswith("weapon_") else w_key
 
@@ -3316,10 +3620,11 @@ class App(tk.Tk):
             else:
                 result = acc > thresholds["acc"]
 
-            self._alog(
-                f"  🎲 [{weapon_raw}] acc={acc:.4f}(threshold={thresholds['acc']}) "
-                f"scoped={scoped} vel={vel:.0f} → {'✓ TROIS SHOT' if result else '✗ precise'}",
-                "info" if result else "dim")
+            if self._dp2_verbose:
+                self._alog(
+                    f"  🎲 [{weapon_raw}] acc={acc:.4f}(threshold={thresholds['acc']}) "
+                    f"scoped={scoped} vel={vel:.0f} → {'✓ TROIS SHOT' if result else '✗ precise'}",
+                    "info" if result else "dim")
             return result
 
         filtered = []
@@ -3330,7 +3635,8 @@ class App(tk.Tk):
             weapon_raw = evt.get("weapon", "")
             killer_sid = str(evt.get("killer_sid", ""))
             kill_tick  = int(evt.get("tick", 0))
-            if weapon_raw.lower().strip() not in TROIS_SHOT_ELIGIBLE_LOWER:
+            # Weapons with no threshold are skipped (not included)
+            if CSDM_TO_DP2_WEAPON.get(weapon_raw.lower().strip()) is None:
                 continue
             if _is_lucky(kill_tick, killer_sid, weapon_raw):
                 filtered.append(evt)
@@ -3463,7 +3769,7 @@ class App(tk.Tk):
 
     def _no_trois_shot_filter(self, demo_path, events, cfg):
         """Keep only precise kills — inverse of TROIS SHOT.
-        Eligible weapons that are NOT lucky are kept, plus all non-eligible weapon kills.
+        Kills on weapons with no threshold are passed through (can't be lucky).
         """
         lucky_evts = self._trois_shot_filter(demo_path, events, cfg)
         lucky_sig = {
@@ -3535,10 +3841,11 @@ class App(tk.Tk):
             kill_tick   = int(evt.get("tick", 0))
             weapon_raw  = evt.get("weapon", "")
             isolated = _is_isolated(kill_tick, killer_sid, weapon_raw)
-            self._alog(
-                f"  🎯 [{weapon_raw}] [tick={kill_tick}] sid={killer_sid} → "
-                f"{'✓ isolated' if isolated else '✗ not isolated'}",
-                "info" if isolated else "dim")
+            if self._dp2_verbose:
+                self._alog(
+                    f"  🎯 [{weapon_raw}] [tick={kill_tick}] sid={killer_sid} → "
+                    f"{'✓ isolated' if isolated else '✗ not isolated'}",
+                    "info" if isolated else "dim")
             if isolated:
                 filtered.append(evt)
 
@@ -3546,10 +3853,101 @@ class App(tk.Tk):
 
     def _trois_tap_filter(self, demo_path, events, cfg):
         """TROIS TAP = TROIS SHOT AND ONE TAP combined.
-        Keeps only lucky kills (eligible precision weapons) that are also isolated single shots.
+        Keeps only lucky kills that are also isolated single shots.
         """
         lucky_events = self._trois_shot_filter(demo_path, events, cfg)
         return self._one_tap_filter(demo_path, lucky_events, cfg)
+
+    def _spray_transfer_filter(self, demo_path, events, cfg):
+        """Keep only kills that are part of a spray transfer.
+
+        A spray transfer = the player kills ≥2 opponents in a single continuous
+        burst with an automatic weapon (no trigger release between kills).
+        Detection: at each kill tick, look back in weapon_fire for a shot within
+        SPRAY_MAX_GAP_TICKS. Then walk backward through shots to find the burst
+        start. A burst that spans ≥2 victims qualifies.
+
+        Only automatic weapons are eligible (SPRAY_TRANSFER_WEAPONS_LOWER).
+        Snipers, auto-snipers, shotguns, non-CZ pistols are excluded.
+        """
+        if not os.path.isfile(demo_path):
+            return events
+
+        if demo_path not in self._dp2_cache:
+            self._dp2_parse_demo(demo_path)
+
+        with self._dp2_cache_lock:
+            data = self._dp2_cache.get(demo_path, {})
+        fire_ticks = data.get("fire_ticks", {})
+
+        # Group kills by (killer_sid, weapon_suffix) to check bursts
+        kill_groups: dict = {}
+        for evt in events:
+            if evt.get("type") != "kill":
+                continue
+            weapon_raw = evt.get("weapon", "")
+            if weapon_raw.lower().strip() not in SPRAY_TRANSFER_WEAPONS_LOWER:
+                continue
+            sid   = str(evt.get("killer_sid", ""))
+            wpn_s = weapon_raw.lower().strip()
+            kill_groups.setdefault((sid, wpn_s), []).append(int(evt.get("tick", 0)))
+
+        spray_kill_sigs: set = set()
+
+        for (sid, wpn_s), kill_ticks_list in kill_groups.items():
+            if len(kill_ticks_list) < 2:
+                continue
+            shots = fire_ticks.get((sid, wpn_s), [])
+            if not shots:
+                continue
+
+            kill_ticks_sorted = sorted(kill_ticks_list)
+
+            # Walk shots once to segment into bursts, then classify kills per burst.
+            # A burst ends when the gap between consecutive shots > SPRAY_MAX_GAP_TICKS.
+            burst_ranges: list = []    # [(burst_start_tick, burst_end_tick), ...]
+            b_start = shots[0]
+            for j in range(1, len(shots)):
+                if shots[j] - shots[j - 1] > SPRAY_MAX_GAP_TICKS:
+                    burst_ranges.append((b_start, shots[j - 1]))
+                    b_start = shots[j]
+            burst_ranges.append((b_start, shots[-1]))
+
+            # For each burst, find which kills fall inside it (±SPRAY_MAX_GAP_TICKS grace)
+            ki = 0  # pointer into kill_ticks_sorted (both are sorted)
+            for b_start, b_end in burst_ranges:
+                window_end = b_end + SPRAY_MAX_GAP_TICKS
+                burst_kills = []
+                # Advance ki to first kill in this burst
+                while ki < len(kill_ticks_sorted) and kill_ticks_sorted[ki] < b_start:
+                    ki += 1
+                j = ki
+                while j < len(kill_ticks_sorted) and kill_ticks_sorted[j] <= window_end:
+                    burst_kills.append(kill_ticks_sorted[j])
+                    j += 1
+                if len(burst_kills) >= 2:
+                    for bkt in burst_kills:
+                        spray_kill_sigs.add((bkt, sid))
+                    if self._dp2_verbose:
+                        self._alog(
+                            f"  🔫 SPRAY TRANSFER [{wpn_s}] sid={sid} "
+                            f"burst={b_start}→{b_end} kills={len(burst_kills)}", "info")
+
+        filtered = []
+        for evt in events:
+            if evt.get("type") != "kill":
+                filtered.append(evt)
+                continue
+            sig = (int(evt.get("tick", 0)), str(evt.get("killer_sid", "")))
+            if sig in spray_kill_sigs:
+                filtered.append(evt)
+
+        return filtered
+
+    def _apply_spray_transfer_to_events(self, evts, cfg):
+        return self._apply_filter_to_events(
+            evts, cfg, "kill_mod_spray_transfer",
+            self._spray_transfer_filter, "🔫 SPRAY → spray transfer")
 
     def _apply_filter_to_events(self, evts, cfg, cfg_key, filter_fn, label):
         """Apply a per-demo filter function to all demos in evts.
@@ -3787,7 +4185,7 @@ class App(tk.Tk):
 
         def task():
             try:
-                conn = self._pg()
+                conn = self._pg_fresh()
                 with conn.cursor() as cur:
                     ph = ",".join(["%s"] * len(active_ids))
                     cur.execute(
@@ -3798,7 +4196,7 @@ class App(tk.Tk):
                     rows = cur.fetchall()
                 conn.close()
             except Exception as e:
-                self.after(0, lambda err=e: (self._alog(f"Tags erreur: {err}", "err"),
+                self.after(0, lambda err=e: (self._alog(f"Tags error: {err}", "err"),
                                          self._tag_search_status.config(text="Error", fg=RED)))
                 return
 
@@ -3925,7 +4323,7 @@ class App(tk.Tk):
         def task():
             # 1. Fetch checksums already tagged with the selected tags
             try:
-                conn = self._pg()
+                conn = self._pg_fresh()
                 with conn.cursor() as cur:
                     ph = ",".join(["%s"] * len(active_ids))
                     cur.execute(
@@ -4008,7 +4406,7 @@ class App(tk.Tk):
 
         def task():
             try:
-                conn = self._pg()
+                conn = self._pg_fresh()
                 with conn.cursor() as cur:
                     ph = ",".join(["%s"] * len(active_ids))
                     cur.execute(
@@ -4140,7 +4538,7 @@ class App(tk.Tk):
         def task():
             # 1. Checksums tagged in DB
             try:
-                conn = self._pg()
+                conn = self._pg_fresh()
                 with conn.cursor() as cur:
                     ph = ",".join(["%s"] * len(active_ids))
                     cur.execute(
@@ -4547,7 +4945,7 @@ class App(tk.Tk):
             data = info_path.read_bytes()
             i = 0
             while i < len(data):
-                # Lire le tag (varint)
+                # Read tag varint
                 tag = 0
                 shift = 0
                 while i < len(data):
@@ -4567,7 +4965,7 @@ class App(tk.Tk):
                         if not (b & 0x80):
                             break
                     if field_num == 2 and val > 1_000_000_000:
-                        # matchtime : unix timestamp > 2001 → vraisemblable
+                        # matchtime: Unix timestamp post-2001 → valid match date
                         return val
                 elif wire_type == 2: # length-delimited
                     length = 0; shift = 0
@@ -4599,12 +4997,15 @@ class App(tk.Tk):
         return None
 
     def _get_demo_ts(self, demo_path):
-        """Return the canonical demo timestamp (same source for display AND filter).
+        """Return the canonical demo timestamp. Cached after the first call.
         Priority: 1) .info file  2) .dem mtime  (None if unavailable)."""
+        if demo_path in self._ts_cache:
+            return self._ts_cache[demo_path]
         ts = self._read_demo_date_from_info(demo_path)
-        if ts is not None:
-            return ts
-        return self._ts_from_demo_path(demo_path)
+        if ts is None:
+            ts = self._ts_from_demo_path(demo_path)
+        self._ts_cache[demo_path] = ts
+        return ts
 
     def _format_demo_date(self, demo_path):
         ts = self._get_demo_ts(demo_path)
@@ -4637,22 +5038,31 @@ class App(tk.Tk):
         return "??-??-????"
 
     def _demo_sort_key(self, demo_path):
+        """Cached sort key — avoids repeated strptime on the same raw date value."""
+        # _ts_cache covers _get_demo_ts (covers .info and mtime).
+        # For DB raw dates, normalise once and store back as int in _demo_dates.
         ts = self._get_demo_ts(demo_path)
         if ts is not None:
             return (0, ts)
         raw = self._demo_dates.get(demo_path)
         if raw is None:
             return (1, 0)
+        # Already normalised on a previous call?
+        if isinstance(raw, (int, float)):
+            t = int(raw)
+            t = t // 1000 if t > 4_000_000_000 else t
+            return (0, t)
         try:
             if hasattr(raw, "timestamp"):
-                return (0, int(raw.timestamp()))
-            if isinstance(raw, (int, float)):
-                t = int(raw)
-                return (0, t // 1000 if t > 4_000_000_000 else t)
+                t = int(raw.timestamp())
+                self._demo_dates[demo_path] = t  # normalise in-place
+                return (0, t)
             s = str(raw).strip()
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
                 try:
-                    return (0, int(datetime.strptime(s[:len(fmt)], fmt).timestamp()))
+                    t = int(datetime.strptime(s[:len(fmt)], fmt).timestamp())
+                    self._demo_dates[demo_path] = t  # normalise in-place
+                    return (0, t)
                 except ValueError:
                     continue
         except Exception:
@@ -4701,11 +5111,17 @@ class App(tk.Tk):
         return w if w else p
 
     def _find_col(self, table, candidates):
+        key = (table, tuple(candidates))
+        if key in self._col_cache:
+            return self._col_cache[key]
         cols = self._db_schema.get(table, [])
+        result = None
         for c in candidates:
             if c in cols:
-                return c
-        return None
+                result = c
+                break
+        self._col_cache[key] = result
+        return result
 
     def _query_events(self, cfg):
         sids = self._get_sids(cfg)
@@ -5015,7 +5431,7 @@ class App(tk.Tk):
                                     existing_sigs.add(sig)
 
         finally:
-            conn.close()
+            pass  # persistent connection — kept open for reuse
 
         # Applied here rather than SQL because the DB column often contains
         # the import date and not the actual match date.
@@ -5036,11 +5452,14 @@ class App(tk.Tk):
         return before
 
     def _build_sequences(self, events, tickrate, before_s, after_s):
+        """Build merged clip sequences from a list of events.
+        Events must be sorted by tick (guaranteed by SQL ORDER BY in _query_events).
+        """
         if not events:
             return []
         bt, at = before_s * tickrate, after_s * tickrate
         raw = [{"start_tick": max(0, e["tick"] - bt), "end_tick": e["tick"] + at, "events": [e]}
-               for e in sorted(events, key=lambda x: x["tick"])]
+               for e in events]
         merged = [raw[0]]
         for s in raw[1:]:
             p = merged[-1]
@@ -5827,7 +6246,8 @@ class App(tk.Tk):
         needs_dp2 = (cfg.get("kill_mod_trois_shot") or
                      cfg.get("kill_mod_no_trois_shot") or
                      cfg.get("kill_mod_one_tap") or
-                     cfg.get("kill_mod_trois_tap"))
+                     cfg.get("kill_mod_trois_tap") or
+                     cfg.get("kill_mod_spray_transfer"))
         if not needs_dp2:
             return
 
@@ -5889,16 +6309,22 @@ class App(tk.Tk):
         self._summary_lbl.config(text="  Computing…", fg=YELLOW)
 
         def task():
+            t0_total = time.time()
             try:
+                t0 = time.time()
                 evts = self._query_events(cfg)
+                t_query = time.time() - t0
             except Exception as e:
                 self._alog(f"Error: {e}", "err")
                 return
             # ── Signature-based DP2 pre-parse (cache preserved if same demo set) ──
+            t0 = time.time()
             self._preparse_dp2(cfg, list(evts.keys()))
+            t_preparse = time.time() - t0
             # ─────────────────────────────────────────────────────────────────
             # Apply demoparser2 modifiers before preview.
             # trois_tap is exclusive; trois_shot + no_trois_shot + one_tap are cumulative (AND).
+            t0 = time.time()
             if cfg.get("kill_mod_trois_tap"):
                 self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
                 evts = self._apply_trois_tap_to_events(evts, cfg)
@@ -5912,12 +6338,26 @@ class App(tk.Tk):
                 if cfg.get("kill_mod_one_tap"):
                     self._alog("  🎯 ONE TAP — analyzing demos…", "info")
                     evts = self._apply_one_tap_to_events(evts, cfg)
-            self.after(0, lambda evts=evts, cfg=cfg: self._show_preview(evts, cfg))
+                if cfg.get("kill_mod_spray_transfer"):
+                    self._alog("  🔫 SPRAY TRANSFER — analyzing demos…", "info")
+                    evts = self._apply_spray_transfer_to_events(evts, cfg)
+            t_filters = time.time() - t0
+            t_total = time.time() - t0_total
+            timings = {
+                "query":    t_query,
+                "preparse": t_preparse,
+                "filters":  t_filters,
+                "total":    t_total,
+            }
+            self.after(0, lambda evts=evts, cfg=cfg, tm=timings:
+                       self._show_preview(evts, cfg, tm))
 
         threading.Thread(target=task, daemon=True).start()
 
-    def _show_preview(self, evts, cfg):
-        """Display preview results. Must be called on the main thread."""
+    def _show_preview(self, evts, cfg, timings=None):
+        """Display preview results. Must be called on the main thread.
+        timings: optional dict with keys query/preparse/filters/total/seqbuild (seconds).
+        """
         if not evts:
             self._log("No events.", "warn")
             self._summary_lbl.config(text="  No clips found.", fg=MUTED)
@@ -5937,10 +6377,10 @@ class App(tk.Tk):
             for w in _weapons:
                 c = _weapon_category(w)
                 _cat_counts[c] = _cat_counts.get(c, 0) + 1
-            _wstr = "  |  Armes: " + ", ".join(
+            _wstr = "  |  Weapons: " + ", ".join(
                 f"{WEAPON_ICONS.get(c,'')} {c}({n})" for c, n in sorted(_cat_counts.items()))
         else:
-            _wstr = "  |  Armes: toutes"
+            _wstr = "  |  Weapons: all"
         self._log(f"TrueView: {'ON' if cfg.get('true_view') else 'OFF'} | "
                   f"Perspective: {PERSP_LABELS.get(cfg.get('perspective','killer'), cfg.get('perspective','killer'))}"
                   f"{_wstr}", "info")
@@ -5953,9 +6393,10 @@ class App(tk.Tk):
         nts_str = "  🚫🎲 Exclude"      if cfg.get("kill_mod_no_trois_shot") else ""
         tt_str  = "  🎯🎲 TROIS TAP"   if cfg.get("kill_mod_trois_tap")     else ""
         ot_str  = "  🎯 ONE TAP"        if cfg.get("kill_mod_one_tap")       else ""
+        sp_str  = "  🔫 SPRAY"          if cfg.get("kill_mod_spray_transfer") else ""
         cl_str  = "  🤝 CLUTCH"         if cfg.get("events_clutch")          else ""
         self._log(f"Order: {'Chronological' if order == 'chrono' else 'Random'} | "
-                  f"{len(evts)} demo(s), {te} events{hs_str}{tk_str}{ts_str}{nts_str}{tt_str}{ot_str}{cl_str}", "ok")
+                  f"{len(evts)} demo(s), {te} events{hs_str}{tk_str}{ts_str}{nts_str}{tt_str}{ot_str}{sp_str}{cl_str}", "ok")
         _out = (cfg.get("output_dir_clips") or cfg.get("output_dir") or "").strip()
         if _out:
             self._log(f"Output: {_out}", "dim")
@@ -5966,7 +6407,10 @@ class App(tk.Tk):
         nb_clips  = 0
         total_ticks = 0
         sorted_demos = sorted(evts.keys(), key=self._demo_sort_key)
+        # Populate demo picker with the range-filtered demo list
+        self._demo_picker_populate(sorted_demos, keep_existing=False)
         demo_dates = {}
+        t0_seqbuild = time.time()
         for dp in sorted_demos:
             # Clutch full-round sequences
             if (cfg.get("events_clutch") and
@@ -6005,6 +6449,20 @@ class App(tk.Tk):
         total_sec = total_ticks / tickrate if tickrate else 0
         avg_sec   = total_sec / nb_clips if nb_clips else 0
         nb_demos  = len(evts)
+        t_seqbuild = time.time() - t0_seqbuild
+
+        # ── Timing summary ─────────────────────────────────────────────────
+        if timings is not None:
+            timings["seqbuild"] = t_seqbuild
+            _parts = [f"DB {timings['query']*1000:.0f}ms"]
+            if timings["preparse"] > 0.05:
+                _parts.append(f"dp2-parse {timings['preparse']:.2f}s")
+            if timings["filters"] > 0.01:
+                _parts.append(f"filters {timings['filters']*1000:.0f}ms")
+            _parts.append(f"seq-build {t_seqbuild*1000:.0f}ms")
+            _parts.append(f"total {timings['total'] + t_seqbuild:.2f}s")
+            self._log(f"  ⏱ {' | '.join(_parts)}", "dim")
+
         summary_txt = self._fmt_summary(nb_demos, nb_clips, total_sec, avg_sec)
         self._log(f"\n{'─'*56}", "dim")
         self._log(f"  ▶ {nb_clips} clips  |  total duration {self._hms(total_sec)}"
@@ -6031,7 +6489,7 @@ class App(tk.Tk):
             p = Path.home() / ".csdm" / "ffmpeg" / "ffmpeg.exe"
             ffmpeg = str(p) if p.exists() else None
         if not ffmpeg:
-            self._alog("  Assemblage: FFmpeg introuvable.", "err")
+            self._alog("  Assembly: FFmpeg not found.", "err")
             return
 
         # Collect all video files from produced directories
@@ -6174,6 +6632,8 @@ class App(tk.Tk):
              "🚫🎲 Exclude",    "precise",    "0 EXCLUDE"),
             ("kill_mod_one_tap",       self._one_tap_filter,
              "🎯 ONE TAP",      "one tap",    "0 ONE TAP"),
+            ("kill_mod_spray_transfer", self._spray_transfer_filter,
+             "🔫 SPRAY",        "spray transfer", "0 SPRAY"),
         ]
 
         if cfg.get("kill_mod_trois_tap"):
@@ -6256,12 +6716,14 @@ class App(tk.Tk):
         if _df or _dt:
             self._alog(f"Date filter: {_df or '∞'}  →  {_dt or '∞'}", "info" if self._date_col else "warn")
         self._alog("Querying DB...", "info")
+        t0_query = time.time()
         try:
             all_events = self._query_events(cfg)
         except Exception as e:
             self._alog(f"Error: {e}", "err")
             self.after(0, self._reset_btns)
             return
+        t_query = time.time() - t0_query
         if not all_events:
             self._alog("No events.", "warn")
             self.after(0, lambda: self._summary_lbl.config(text="  No clips found.", fg=MUTED))
@@ -6272,10 +6734,20 @@ class App(tk.Tk):
         _nd, _nc, _ts, _as = self._calc_summary(all_events, cfg)
         _stxt = self._fmt_summary(_nd, _nc, _ts, _as)
         self.after(0, lambda t=_stxt: self._summary_lbl.config(text=t + "  [running…]", fg=YELLOW))
-        self._alog(f"OK: {len(all_events)} demo(s), {te} events", "ok")
+        self._alog(f"OK: {len(all_events)} demo(s), {te} events  ⏱ DB {t_query*1000:.0f}ms", "ok")
         self._alog("-" * 56, "dim")
 
         order = cfg.get("clip_order", "chrono")
+        # Apply demo picker filter — only keep demos checked in the picker
+        _picker_active = self._demo_picker_get_active()
+        if _picker_active is not None:
+            _picker_set = set(_picker_active)
+            _before = len(all_events)
+            all_events = {dp: evts for dp, evts in all_events.items()
+                          if dp in _picker_set}
+            _removed = _before - len(all_events)
+            if _removed:
+                self._alog(f"  ⚙ Demo picker: {_removed} demo(s) excluded by manual selection", "dim")
         if order == "random":
             items = list(all_events.items())
             random.shuffle(items)
@@ -6307,7 +6779,7 @@ class App(tk.Tk):
                                                    "file_path", "path"])
             if jt and jt_tag and jt_match and tag_id and mkm and dc:
                 try:
-                    conn = self._pg()
+                    conn = self._pg_fresh()
                     with conn.cursor() as cur:
                         # Fetch all checksums already associated with this tag
                         cur.execute(
@@ -6381,6 +6853,9 @@ class App(tk.Tk):
                                 if cfg.get("kill_mod_one_tap"):
                                     self._alog("  🎯 ONE TAP — analyzing demos…", "info")
                                     _fe = self._apply_one_tap_to_events(_fe, cfg)
+                                if cfg.get("kill_mod_spray_transfer"):
+                                    self._alog("  🔫 SPRAY TRANSFER — analyzing demos…", "info")
+                                    _fe = self._apply_spray_transfer_to_events(_fe, cfg)
                             self.after(0, lambda: self._show_preview(_fe, cfg))
                         threading.Thread(target=_bg, daemon=True).start()
                     self.after(0, _redo)
@@ -6409,13 +6884,16 @@ class App(tk.Tk):
                 continue
 
             # ── demoparser2 kill modifiers ─────────────────────────────────────
+            t0_dp2 = time.time()
             events = self._apply_dp2_modifiers(dp, events, cfg)
+            t_dp2 = time.time() - t0_dp2
             if events is None:
                 summary.append((Path(dp).name, "SKIP", 0, 0, "0 kills after filter"))
                 skip += 1
                 continue
 
             # Clutch clip_mode="full": rebuild sequences spanning whole clutch groups
+            t0_seq = time.time()
             if (cfg.get("events_clutch") and
                     cfg.get("clutch_clip_mode", "full") == "full"):
                 clutch_groups = {}
@@ -6438,6 +6916,7 @@ class App(tk.Tk):
                 seqs = self._build_sequences(
                     events, cfg["tickrate"],
                     self._effective_before(cfg), cfg["after"])
+            t_seq = time.time() - t0_seq
             if not seqs:
                 continue
             dn = Path(dp).name
@@ -6445,9 +6924,17 @@ class App(tk.Tk):
             date_str = self._format_demo_date(dp)
             self.after(0, lambda lbl=f"{i}/{len(demo_list)}":
                        self.progress_lbl.config(text=lbl))
-            self.after(0, lambda n=dn, ns=len(seqs), ne=len(events), idx=i, ds=date_str:
+            _timing_str = ""
+            if t_dp2 > 0.01 or t_seq > 0.001:
+                _parts = []
+                if t_dp2 > 0.01:
+                    _parts.append(f"dp2 {t_dp2*1000:.0f}ms")
+                if t_seq > 0.001:
+                    _parts.append(f"seq {t_seq*1000:.1f}ms")
+                _timing_str = f"  ⏱ {' '.join(_parts)}"
+            self.after(0, lambda n=dn, ns=len(seqs), ne=len(events), idx=i, ds=date_str, ts=_timing_str:
                        self._log(
-                           f"\n[{idx}/{len(demo_list)}]  {ds}  {n}  ({ne} events → {ns} seq)", "blue"))
+                           f"\n[{idx}/{len(demo_list)}]  {ds}  {n}  ({ne} events → {ns} seq){ts}", "blue"))
             if not os.path.isfile(ad):
                 self._alog(f"  SKIP: {ad}", "warn")
                 summary.append((dn, "SKIP", 0, 0, "Not found"))

@@ -5,6 +5,95 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v90]
+### Changed
+- **Header active player label** now mirrors the exact text from the Capture tab's active-accounts label (`_active_lbl`) in real time. Previously `_hdr_player_lbl` was updated by `_on_player_change` only — which only fired on DB-list selection and showed a truncated single-player shortname. The header now always shows the same string as the tab (e.g. `3 active: PLURTH WURTH, MAMMOUTH, TROIS SHOT TROIS`).
+- `_update_active_lbl` (in `PlayerSearchWidget`) now also calls `app._hdr_player_lbl.config(...)` with the same text and colour via `winfo_toplevel()`.
+- `_on_player_change` simplified: delegates to `player_search._update_active_lbl()` instead of computing its own truncated label — removes a divergence between the two display points.
+- Fixed French string: `"Actif : {name}"` → `"Active: {name}"`.
+
+---
+
+## [v89]
+### Performance
+All optimisations are transparent — no behaviour change.
+
+- **`_ts_cache`**: `_get_demo_ts()` now caches the result of reading `.info` files and calling `stat()` on the first call per demo path. With 127 demos and 3–5 calls per Preview (sort key, date filter, format date, picker), this reduces disk reads from ~400–600 to 127.
+
+- **`_col_cache`**: `_find_col(table, candidates)` results are memoised in `self._col_cache`. The DB schema never changes between calls, so the 12+ repeated list scans per `_query_events()` call are replaced by a single dict lookup.
+
+- **Persistent DB connection** (`_pg()` / `_pg_fresh()`): `self._pg()` now returns a cached `psycopg2` connection, creating a new one only on the first call or if the connection was closed/broken. Background threads (load, tag searches, demo picker manual mode) use `_pg_fresh()` to avoid sharing the main-thread connection. Saves ~12 TCP handshakes per session.
+
+- **`_query_events` `finally` block**: no longer calls `conn.close()` on the persistent connection (replaced by `pass`).
+
+- **`_build_sequences` sort removed**: `sorted(events, key=…)` was called on every demo's event list. Since `_query_events` already issues `ORDER BY m."dc",k."tc"`, events arrive pre-sorted. The O(n log n) sort is now O(n).
+
+- **`_demo_sort_key` normalises in-place**: raw date values from `_demo_dates` are normalised to `int` timestamps on the first parse and written back. Subsequent calls for the same demo skip the `strptime` / `timestamp()` conversion entirely.
+
+- **`_dp2_verbose = False`**: per-kill log lines inside `_trois_shot_filter`, `_one_tap_filter`, and `_spray_transfer_filter` are suppressed by default. Each `_alog()` call dispatches a `self.after(0, lambda…)` to the Tk event queue — with 200 kills × 2 active filters this was flooding the queue with 400+ idle callbacks on every Preview. Set `self._dp2_verbose = True` in the constructor to re-enable for debugging.
+
+- **`_spray_transfer_filter` rewritten** (single-pass burst segmentation): the old algorithm walked shots backward and forward for each kill tick — O(kills × shots) with two nested closure functions redefined per loop iteration. The new algorithm segments `shots` into bursts in a single O(shots) pass, then assigns kills to bursts in a single O(kills + bursts) sweep. Also fixed a latent bug: the forward walk used `shots[i-1]` as the reference for gap detection, which could reference a shot from before the kill tick rather than the previous shot in the forward scan.
+
+### Fixed
+- Last 3 French strings in UI/logs: `"Connexion..."` → `"Connecting..."`, `"Tags erreur:"` → `"Tags error:"`, `"Assemblage: FFmpeg introuvable."` → `"Assembly: FFmpeg not found."`.
+- `_ts_cache` and `_col_cache` cleared in `_on_load_ok` so reconnecting to a different DB doesn't serve stale column lookups or demo dates.
+- `_db_conn = None` added to `__init__`; `_dp2_verbose = False` added to `__init__`.
+
+---
+
+## [v88]
+### Performance
+- **`_ts_cache`** — `_get_demo_ts()` now caches results in `self._ts_cache`. On a 127-demo Preview, the `.info` file read + `stat()` fallback was called 3–5× per demo (sort key, date filter, display, picker). Now called once per demo per session. Cleared on DB reconnect.
+- **`_col_cache`** — `_find_col()` now memoizes results in `self._col_cache` keyed by `(table, tuple(candidates))`. The DB schema does not change between runs; repeated list scans are eliminated. Cleared on DB reconnect.
+- **Persistent DB connection** — `_pg()` reuses `self._db_conn` (liveness-checked before reuse) instead of opening a new psycopg2 TCP connection on every call (~14 connections per session → 1). Background threads (load, tags, picker, clutch) call `_pg_fresh()` to avoid sharing the main-thread connection. `_query_events` no longer closes the persistent connection in its `finally` block.
+- **`_build_sequences` sort removed** — kills arrive pre-sorted by `ORDER BY m."dc",k."tc"` in SQL. The `sorted(..., key=lambda x: x["tick"])` call is now skipped (O(n log n) → O(n) per demo).
+- **`_demo_sort_key` date normalisation** — raw datetime/string values from `_demo_dates` are parsed with `strptime` only once and written back as `int` timestamps, avoiding repeated parsing of the same value on subsequent sort calls.
+- **Per-kill filter logging suppressed** — `_dp2_verbose = False` flag added. The 3 per-kill `_alog()` calls inside `_trois_shot_filter`, `_one_tap_filter`, and `_spray_transfer_filter` are now no-ops by default. Each `_alog()` call queues a `self.after(0, lambda…)` dispatch to the Tk main thread — on 200 kills × 2 active filters this produced ~400 Tk queue events per Preview just for debug lines. Flag can be set to `True` in code for diagnosis.
+- **`_spray_transfer_filter` rewritten** — replaced O(kills²) nested walk (per-kill: `_find_burst_start` backward scan + forward scan) with a single O(shots) pass that segments all shots into bursts upfront, then a single O(kills) pass to assign kills to bursts. Also fixes a latent bug: the previous forward walk used `shots[i-1]` when `i == pos_end` which could reference a shot before the kill tick rather than the previous shot in the forward sequence.
+
+### Fixed
+- Last 3 French strings: `"Connexion..."` → `"Connecting..."`, `"Tags erreur:"` → `"Tags error:"`, `"Assemblage: FFmpeg introuvable."` → `"Assembly: FFmpeg not found."`
+
+---
+
+## [v87]
+### Added
+- **🔫 SPRAY TRANSFER** modifier — new filter in the Capture tab (demoparser2 required):
+  - Captures kills that are part of a continuous automatic-weapon burst: the player kills ≥2 opponents without releasing the trigger between shots.
+  - Detection: gap between consecutive `weapon_fire` events for the same player+weapon must stay ≤ `SPRAY_MAX_GAP_TICKS` (22 ticks ≈ 0.34s at 64 tick/s) across all kills in the burst.
+  - Eligible weapons: all full-auto rifles (AK-47, M4A4, M4A1-S, Galil AR, FAMAS, SG 553, AUG), all SMGs (MAC-10, MP9, MP7, MP5-SD, UMP-45, P90, PP-Bizon), M249, Negev, CZ75-Auto.
+  - Explicitly excluded: AWP, SSG 08, SCAR-20, G3SG1 (snipers/auto-snipers), all shotguns, all other pistols.
+  - New constants: `SPRAY_TRANSFER_WEAPONS_LOWER`, `SPRAY_MAX_GAP_TICKS = 22`.
+  - New method: `_spray_transfer_filter()` + `_apply_spray_transfer_to_events()`.
+  - Wired into `_preparse_dp2`, `_apply_dp2_modifiers`, `_dry_run`, `_redo`, `_show_preview` summary.
+
+- **Demo picker** — the DATE FILTER section becomes DATE RANGE & DEMO SELECTION:
+  - After every Preview, the list of found demos populates a `ttk.Treeview` (7 rows visible, scrollable) with columns: ✓ (checked state), `dd-mm-yyyy hh:mm` date, demo name (truncated to last 43 chars with `…` prefix for long names like `match730_…668.dem`).
+  - Click any row or the ✓ column to toggle inclusion. Check all / Uncheck all / Toggle selected buttons.
+  - **Manual mode** checkbox: loads all demos from the DB, allowing full individual selection regardless of date range. Preserves existing checked state when switching.
+  - Picker filter applied in `_worker`: demos unchecked in the picker are excluded from the batch. If picker is empty (no preview yet), no filter applied.
+  - Clear all button also clears the picker.
+  - New methods: `_demo_picker_populate()`, `_demo_picker_clear()`, `_on_demo_tree_click()`, `_demo_picker_set_all()`, `_demo_picker_toggle_selected()`, `_on_picker_mode_change()`, `_demo_picker_get_active()`, `_demo_picker_fmt_name()`, `_demo_picker_fmt_date()`.
+
+### Changed
+- **TROIS SHOT — weapon lock removed entirely**:
+  - `TROIS_SHOT_ELIGIBLE_LOWER` constant deleted.
+  - `_refresh_weapons_lock()` method deleted.
+  - Weapon deselection blocks removed from `_on_trois_shot_toggle()`, `_engage_trois_tap()`.
+  - `_trois_shot_filter()` no longer skips kills on "ineligible" weapons — it tries to evaluate any weapon against `CSDM_TO_DP2_WEAPON`; weapons with no threshold are simply not kept (no weapon filter side-effect in the UI).
+  - Tooltips on TROIS SHOT and TROIS TAP updated: "locks ineligible weapons" removed.
+  - `_no_trois_shot_filter` and `_trois_tap_filter` docstrings updated.
+
+- **Clutch tooltip simplified**: removed technical detail about column names. New concise version fits one hover panel.
+- **Preview log**: "Armes: toutes" / "Armes: …" → "Weapons: all" / "Weapons: …" (last French strings in UI log).
+
+### Fixed
+- Last call to `_refresh_weapons_lock(False)` in `_on_no_trois_shot_toggle` removed.
+- `_on_picker_mode_change`: removed erroneous `self.v["clutch_enabled"]` guard.
+- `sp_str` now correctly included in the preview summary log line.
+
+---
+
 ## [v86]
 ### Fixed
 - **`DEFAULT_CONFIG` clutch comment was stale** — still read `"multi-kill sequences in a single round"` (description from the original wrong implementation). Updated to `"player is last alive on team, kills remaining opponents"`.
