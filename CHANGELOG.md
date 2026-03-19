@@ -5,6 +5,58 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v96]
+### Fixed & Changed
+
+**Demo picker — double-toggle on first click fixed:** `_on_demo_tree_click` now returns `"break"` to absorb the native Treeview selection event, which was toggling the row state a second time immediately after the first click.
+
+**Clutch options placement fixed:** `_clutch_opts_row` was pack()-ed unconditionally at build time, causing it to appear below all subsequently added widgets. It is now created without packing — `_on_clutch_toggle` controls visibility entirely.
+
+**Player list — sort by name or date:** the DB query now fetches each player's last match date (`MAX(match_date)` via a LEFT JOIN on matches). Two sort buttons added to the DB search widget: **Name ↑↓** and **Date ↑↓** (newest first by default). Clicking the active sort button reverses order. The sort persists across search queries.
+
+**Ferrari Peek — One-shot option:** new `kill_mod_hv_one_shot` bool (default `True`). When checked, condition 1 (no prior fire within ~0.75s) is enforced. Uncheck to allow spray finishers as long as the approach and resume conditions still hold. Added as a checkbox next to Enable in the UI.
+
+---
+
+## [v95]
+### Changed — Ferrari Peek: logic refactor
+
+**Old filter:** velocity at shot time ≥ threshold (player was moving fast when they shot).
+
+**New filter — one-shot moving peek:** three conditions, all required:
+
+1. **Isolated shot** — no other fire from the player in the ~0.75s (48 ticks) before the kill shot. Proves it's a one-shot kill, not a spray where the victim died on the last bullet.
+2. **Was moving before** — either a prior shot in the 3s approach window had velocity ≥ threshold, or the kill shot itself was at velocity ≥ threshold (no counter-strafe). Counter-strafe is not required ("ou non").
+3. **Resumes movement after** — at least one fire from the player within 2s after the kill has velocity ≥ 80 u/s. If no post-kill fire is found the check is skipped (graceful degradation).
+
+**`kill_mod_high_vel_thr`** repurposed as minimum *approach* speed (default 100 u/s, down from 30 u/s "max at shot"). UI label changed from "Max vel at shot:" → "Min approach:". Tooltip rewritten with the three conditions and a CS2 speed reference table.
+
+---
+
+## [v94]
+### Changed — Stop/Kill refactor, event toggles, UI fixes, naming
+
+**Stop/Kill refactor:**
+- **⏸ STOP** now immediately kills the current CSDM process (instead of waiting for the demo to finish), marks the demo as failed, then stops the batch. No next demo is started.
+- **⛔ KILL** kills CSDM + sends `taskkill /F /IM cs2.exe` to terminate CS2 immediately. Assembly is skipped.
+- Both actions trigger a **tag rollback**: any demo tagged during the interrupted batch has its tag removed from the DB (`DELETE FROM checksum_tags`). A rollback summary is logged.
+
+**Events row — styled toggle buttons:**
+- "Kills" and "Deaths" checkboxes replaced by styled toggle buttons: **KILLS** and **DEATHS BY**. Green when active, muted when off. "Rounds" gets the same treatment.
+- "Deaths" label renamed to **DEATHS BY** to clarify it captures the player dying (from the killer's POV).
+
+**CS mode warning improved:** now explicitly warns that CS2 plays the demo from tick 0 to reach each target tick, making batch recording extremely slow. HLAE is strongly recommended.
+
+**Perspective moved to bottom of section:** the Perspective row and Switch delay slider now appear at the very end of the EVENTS & CAMERA section, after Clutch — no longer interrupting the modifier flow.
+
+**SAUVEUR → SAVIOR:** UI label and log strings updated. Config key `kill_mod_sauveur` unchanged.
+
+**Ferrari Peek default threshold: 280 → 230 u/s:** corrected to reflect actual CS2 max run speeds (knife/C4 = 250, AK-47 = 215, pistols ≈ 240). 230 u/s sits above max rifle speed and captures real aggressive peeks. Tooltip updated with accurate values.
+
+**Spray Transfer tooltip:** now explicitly mentions CZ75-Auto as the only full-auto pistol included.
+
+---
+
 ## [v93]
 ### Changed — UI cleanup & modifier reorganisation
 

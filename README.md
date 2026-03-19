@@ -49,7 +49,13 @@ Capture tab  →  select player(s) + filters  →  F6 Preview  →  F5 Run
 
 - **Preview** shows clip count, total duration, and a per-demo breakdown — uncheck any demo to exclude it
 - **Manual mode** lets you pick any demo from the full database regardless of date range
-- **Auto-tag** tags processed demos in CSDM when the batch completes
+- **Auto-tag** tags processed demos in CSDM when the batch completes. Tags are **rolled back automatically** if the batch is stopped or killed mid-run.
+
+---
+
+## ⚠ CS recording mode
+
+In **CS** mode, CS2 replays the demo from tick 0 to reach each target tick — a clip near the end of a 40-minute match takes ~40 minutes to record. **HLAE is strongly recommended** for any batch work.
 
 ---
 
@@ -66,9 +72,9 @@ Capture tab  →  select player(s) + filters  →  F6 Preview  →  F5 Run
 | 🎯 **ONE TAP** | Isolated headshot with no other shot fired within ±2s |
 | 🎯🎲 **TROIS TAP** | TROIS SHOT + ONE TAP simultaneously |
 | 🔫 **Spray Transfer** | ≥2 kills in one continuous burst, no trigger release (auto weapons only) |
-| 🏎 **Ferrari Peek** | Kill while moving above a configurable speed threshold |
+| 🏎 **Ferrari Peek** | Moving peek that kills on a single shot then immediately resumes — one-shot condition optional |
 | ↩ **Flick** | Large view-angle change in the ~0.5s before the kill |
-| 🛡 **Sauveur** | Kill an enemy who was actively damaging a teammate |
+| 🛡 **Savior** | Kill an enemy who was actively damaging a teammate |
 
 > Modifiers stack with AND logic. Enabling TROIS SHOT + ONE TAP simultaneously auto-converts to TROIS TAP.
 

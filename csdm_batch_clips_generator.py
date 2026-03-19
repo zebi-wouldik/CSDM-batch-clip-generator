@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v93"""
+"""CSDM Batch Clips Generator v96"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v93"
+APP_VERSION = "v96"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -333,8 +333,9 @@ DEFAULT_CONFIG = {
     "kill_mod_eco_frag":       False,  # pistol kill vs full-buy opponent
     "kill_mod_attacker_blind": False,  # killer was blinded at shot time (attacker_blind)
     # dp2-based modifiers (v91)
-    "kill_mod_high_velocity":  False,  # killer velocity > threshold (ferrari peek)
-    "kill_mod_high_vel_thr":   280,    # velocity threshold in u/s (CS2 run=250, peek≈300+)
+    "kill_mod_high_velocity":  False,  # ferrari peek — one-shot + moving before + resumes after
+    "kill_mod_hv_one_shot":    True,   # require isolated shot (no prior fire within ~0.75s)
+    "kill_mod_high_vel_thr":   100,    # min approach speed (u/s) — walk=130, run=250
     "kill_mod_flick":          False,  # large view-angle change just before the kill
     "kill_mod_flick_deg":      50,     # minimum angle delta in degrees to qualify
     "kill_mod_sauveur":        False,  # killed an enemy who was hurting a teammate
@@ -393,7 +394,7 @@ PRESET_KEYS = {
                "kill_mod_multi_kill_n", "kill_mod_multi_kill_s",
                "kill_mod_bourreau", "kill_mod_bourreau_n",
                "kill_mod_eco_frag", "kill_mod_attacker_blind",
-               "kill_mod_high_velocity", "kill_mod_high_vel_thr",
+               "kill_mod_high_velocity", "kill_mod_hv_one_shot", "kill_mod_high_vel_thr",
                "kill_mod_flick", "kill_mod_flick_deg", "kill_mod_sauveur",
                "clutch_enabled", "clutch_1v1", "clutch_1v2", "clutch_1v3",
                "clutch_1v4", "clutch_1v5",
@@ -770,8 +771,10 @@ class PlayerSearchWidget(tk.Frame):
 
     def __init__(self, parent, on_change=None, **kw):
         super().__init__(parent, bg=BG2, **kw)
-        self._all_players   = []          # [(label, sid, name), …] — base BDD
+        self._all_players   = []          # [(label, sid, name, last_seen), …] — base DB
         self._filtered      = []
+        self._sort_key      = "name"      # "name" | "date"
+        self._sort_rev      = False
         self._lb_sid        = ""
         self._lb_name       = ""
         self._lb_label      = ""
@@ -830,6 +833,24 @@ class PlayerSearchWidget(tk.Frame):
         self._search_entry.bind("<KeyRelease>", self._on_search_key)
         self._count_lbl = tk.Label(sr, text="", font=FONT_DESC, bg=BG2, fg=MUTED)
         self._count_lbl.pack(side="right", padx=(6, 0))
+
+        # Sort buttons
+        sort_row = tk.Frame(self, bg=BG2)
+        sort_row.pack(fill="x", pady=(3, 0))
+        mlabel(sort_row, "Sort:").pack(side="left")
+        self._sort_name_btn = tk.Button(
+            sort_row, text="Name ↑", font=FONT_DESC, bg=BG3, fg=ORANGE,
+            relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+            activebackground=BORDER, activeforeground=ORANGE,
+            command=lambda: self._set_sort("name"))
+        self._sort_name_btn.pack(side="left", padx=(4, 0), ipady=2, ipadx=4)
+        self._sort_date_btn = tk.Button(
+            sort_row, text="Date", font=FONT_DESC, bg=BG3, fg=MUTED,
+            relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+            activebackground=BORDER, activeforeground=ORANGE,
+            command=lambda: self._set_sort("date"))
+        self._sort_date_btn.pack(side="left", padx=(4, 0), ipady=2, ipadx=4)
+        add_tip(self._sort_date_btn, "Sort by last match date (most recent first).")
 
         lf = tk.Frame(self, bg=BG2)
         lf.pack(fill="both", expand=True, pady=(4, 0))
@@ -1001,6 +1022,7 @@ class PlayerSearchWidget(tk.Frame):
         self._refresh(q)
 
     def set_players(self, data, restore_steam_id=""):
+        # data: [(label, sid, name, last_seen), ...] — last_seen may be None
         self._all_players = data
         self._refresh("")
         self._count_lbl.config(text=f"{len(data)} players")
@@ -1013,32 +1035,85 @@ class PlayerSearchWidget(tk.Frame):
                     self._refresh_saved_display()
                     return
 
+    def _set_sort(self, key):
+        if self._sort_key == key:
+            self._sort_rev = not self._sort_rev
+        else:
+            self._sort_key = key
+            self._sort_rev = (key == "date")  # date defaults to newest first
+        self._update_sort_buttons()
+        q = "" if self._is_placeholder() else self._search_entry.get()
+        self._refresh(q)
+
+    def _update_sort_buttons(self):
+        arrow = "↓" if self._sort_rev else "↑"
+        try:
+            self._sort_name_btn.config(
+                text=f"Name {arrow if self._sort_key == 'name' else ''}".strip(),
+                fg=ORANGE if self._sort_key == "name" else MUTED)
+            self._sort_date_btn.config(
+                text=f"Date {arrow if self._sort_key == 'date' else ''}".strip(),
+                fg=ORANGE if self._sort_key == "date" else MUTED)
+        except Exception:
+            pass
+
     def _refresh(self, query=""):
         q = query.strip().lower()
         self._lb.delete(0, "end")
         self._filtered = []
-        for label, sid, name in self._all_players:
-            if not q or q in label.lower() or q in sid.lower():
-                self._lb.insert("end", label)
-                self._filtered.append((label, sid, name))
+
+        def _last_seen(entry):
+            last = entry[3] if len(entry) > 3 else None
+            if last is None:
+                return 0
+            try:
+                if hasattr(last, "timestamp"):
+                    return last.timestamp()
+                if isinstance(last, (int, float)):
+                    v = int(last)
+                    return v / 1000 if v > 4_000_000_000 else v
+                s = str(last).strip()
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+                    try:
+                        return datetime.strptime(s[:len(fmt)], fmt).timestamp()
+                    except ValueError:
+                        continue
+            except Exception:
+                pass
+            return 0
+
+        candidates = [
+            e for e in self._all_players
+            if not q or q in e[0].lower() or q in e[1].lower()
+        ]
+
+        if self._sort_key == "date":
+            candidates.sort(key=_last_seen, reverse=self._sort_rev)
+        else:
+            candidates.sort(key=lambda e: e[2].lower(), reverse=self._sort_rev)
+
+        for entry in candidates:
+            self._lb.insert("end", entry[0])
+            self._filtered.append(entry)
 
     def _on_lb_select(self, *_):
         sel = self._lb.curselection()
         if not sel or sel[0] >= len(self._filtered):
             return
-        label, sid, name = self._filtered[sel[0]]
+        entry = self._filtered[sel[0]]
+        label, sid, name = entry[0], entry[1], entry[2]
         self._lb_label, self._lb_sid, self._lb_name = label, sid, name
         self._lb_sel_lbl.config(
             text=f"Selected: {name}  ({sid})  ← ★ to register",
             fg=YELLOW)
 
     def _select_by_label(self, label):
-        for i, (l, sid, name) in enumerate(self._filtered):
-            if l == label:
+        for i, entry in enumerate(self._filtered):
+            if entry[0] == label:
                 self._lb.selection_clear(0, "end")
                 self._lb.selection_set(i)
                 self._lb.see(i)
-                self._lb_label, self._lb_sid, self._lb_name = label, sid, name
+                self._lb_label, self._lb_sid, self._lb_name = entry[0], entry[1], entry[2]
                 break
 
     def get_steam_ids(self):
@@ -1265,7 +1340,7 @@ class App(tk.Tk):
                       "kill_mod_one_tap", "kill_mod_spray_transfer",
                       "kill_mod_entry_frag", "kill_mod_ace", "kill_mod_multi_kill",
                       "kill_mod_bourreau", "kill_mod_eco_frag", "kill_mod_attacker_blind",
-                      "kill_mod_high_velocity", "kill_mod_flick", "kill_mod_sauveur",
+                      "kill_mod_high_velocity", "kill_mod_hv_one_shot", "kill_mod_flick", "kill_mod_sauveur",
                       "assemble_after", "delete_after_assemble",
                       "phys_ragdoll_enable", "phys_blood", "phys_dynamic_lighting",
                       "cs2_minimize",
@@ -1309,6 +1384,8 @@ class App(tk.Tk):
             self.sel_weapons[w] = tk.BooleanVar(value=True)
         self._running = False
         self._stop_after_current = False
+        self._kill_triggered = False
+        self._tagged_this_batch = []   # [(demo_path, tag_name)] — for rollback on kill
         self._proc = None
         self._dp2_cache      = {}                  # {demo_path: {"fire_detail": …, "fire_ticks": …}}
         self._dp2_cache_lock = threading.Lock()    # protects _dp2_cache during parallel pre-parse
@@ -1503,11 +1580,46 @@ class App(tk.Tk):
                             schema[t] = cols
                             col_types[t] = types
 
-                    cur.execute(
-                        "SELECT DISTINCT p.name, p.steam_id FROM players p "
-                        "WHERE p.name IS NOT NULL AND p.steam_id IS NOT NULL "
-                        "AND p.name!='' AND p.steam_id!='' ORDER BY p.name")
-                    rows = cur.fetchall()
+                    # Fetch players with their last-seen match date for sorting
+                    _m_cols_check = schema.get("matches", [])
+                    _date_col_for_players = next(
+                        (c for c in _m_cols_check
+                         if col_types.get("matches", {}).get(c, "").lower()
+                         in {"date","timestamp","timestamp with time zone",
+                             "timestamp without time zone","timestamptz","bigint","integer","int","int4","int8"}
+                         and "analyze" not in c.lower()),
+                        None)
+                    _pmk_col = next(
+                        (c for c in schema.get("players", [])
+                         if c.lower() in ("match_checksum","match_id","checksum")),
+                        None)
+                    _mmk_col = next(
+                        (c for c in schema.get("matches", [])
+                         if c.lower() in ("checksum","id","match_id")),
+                        None)
+                    if _date_col_for_players and _pmk_col and _mmk_col:
+                        try:
+                            cur.execute(
+                                f'SELECT DISTINCT p.name, p.steam_id, '
+                                f'MAX(m."{_date_col_for_players}") as last_seen '
+                                f'FROM players p '
+                                f'LEFT JOIN matches m ON m."{_mmk_col}" = p."{_pmk_col}" '
+                                f'WHERE p.name IS NOT NULL AND p.steam_id IS NOT NULL '
+                                f"AND p.name!='' AND p.steam_id!='' "
+                                f'GROUP BY p.name, p.steam_id ORDER BY p.name')
+                            rows = [(r[0], r[1], r[2]) for r in cur.fetchall()]
+                        except Exception:
+                            cur.execute(
+                                "SELECT DISTINCT p.name, p.steam_id FROM players p "
+                                "WHERE p.name IS NOT NULL AND p.steam_id IS NOT NULL "
+                                "AND p.name!='' AND p.steam_id!='' ORDER BY p.name")
+                            rows = [(r[0], r[1], None) for r in cur.fetchall()]
+                    else:
+                        cur.execute(
+                            "SELECT DISTINCT p.name, p.steam_id FROM players p "
+                            "WHERE p.name IS NOT NULL AND p.steam_id IS NOT NULL "
+                            "AND p.name!='' AND p.steam_id!='' ORDER BY p.name")
+                        rows = [(r[0], r[1], None) for r in cur.fetchall()]
 
                     _m_types = col_types.get("matches", {})
                     _m_cols  = schema.get("matches", [])
@@ -1625,8 +1737,8 @@ class App(tk.Tk):
                                      r[2] if len(r) > 2 and color_col else ""))
 
                 conn.close()
-                players = [(f"{n}  ({s})", s, n) for n, s in rows]
-                names = {s: n for n, s in rows}
+                players = [(f"{n}  ({s})", s, n, d) for n, s, d in rows]
+                names = {s: n for n, s, *_ in rows}
                 self.after(0, lambda: self._on_load_ok(players, dc, dc_type, weapons, schema,
                                                         col_types, names, tags_data, tags_schema_info))
             except Exception as e:
@@ -2378,9 +2490,37 @@ class App(tk.Tk):
         ev_row = tk.Frame(sec, bg=BG2)
         ev_row.pack(fill="x")
         mlabel(ev_row, "Capture:").pack(side="left")
-        for e in EVENTS:
-            self._chk(ev_row, e, self.sel_events[e]).pack(side="left", padx=(10, 0))
-        desc_label(ev_row, "  Deaths = active players' deaths").pack(side="left", padx=(10, 0))
+
+        def _make_event_toggle(parent, label, var, tip):
+            """Styled toggle button for event types."""
+            btn = tk.Button(parent, text=f"  {label}  ", font=("Consolas", 9, "bold"),
+                            relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                            padx=6, pady=3)
+            def _refresh(*_):
+                on = var.get()
+                btn.config(bg=ORANGE if on else BG3, fg="white" if on else MUTED,
+                           activebackground=ORANGE2 if on else BORDER,
+                           activeforeground="white")
+            def _toggle():
+                var.set(not var.get())
+                _refresh()
+            btn.config(command=_toggle)
+            var.trace_add("write", _refresh)
+            _refresh()
+            add_tip(btn, tip)
+            return btn
+
+        _make_event_toggle(ev_row, "KILLS",
+                           self.sel_events["Kills"],
+                           "Capture kills made by the player.").pack(side="left", padx=(10, 0))
+        _make_event_toggle(ev_row, "DEATHS BY",
+                           self.sel_events["Deaths"],
+                           "Capture deaths — clips show the player dying, from the killer's perspective.").pack(side="left", padx=(4, 0))
+        _make_event_toggle(ev_row, "ROUNDS",
+                           self.sel_events["Rounds"],
+                           "One clip per round the player participated in, starting at round start tick.\n"
+                           "Clips every round regardless of kills — useful for full-round montages.\n"
+                           "Requires a 'rounds' table in the CSDM database.").pack(side="left", padx=(4, 0))
 
         opt_row = tk.Frame(sec, bg=BG2)
         opt_row.pack(fill="x", pady=(4, 0))
@@ -2392,47 +2532,13 @@ class App(tk.Tk):
         add_tip(_sui_cb, "Include world / fall / suicide deaths in clips.")
         mlabel(opt_row, "   TK:").pack(side="left", padx=(8, 0))
         for lbl, val, tip in [
-            ("Include","include","All kills, including teamkills"),
-            ("Exclude","exclude","Exclude teamkill frags"),
-            ("Only","only","Only kills on teammates"),
+            ("Include", "include", "All kills, including teamkills"),
+            ("Exclude", "exclude", "Exclude teamkill frags"),
+            ("Only",    "only",    "Only kills on teammates"),
         ]:
             _rb = hradio(opt_row, lbl, self.v["teamkills_mode"], val)
             _rb.pack(side="left", padx=(4, 0))
             add_tip(_rb, tip)
-
-        # ── PERSPECTIVE ───────────────────────────────────────────────────────
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
-        persp_row = tk.Frame(sec, bg=BG2)
-        persp_row.pack(fill="x")
-        mlabel(persp_row, "Perspective:").pack(side="left")
-        for lbl, val, tip in [
-            ("POV Killer", "killer", "Camera on the killer throughout the clip"),
-            ("POV Victim", "victim", "Camera on the victim throughout the clip"),
-            ("Both",       "both",   "Starts on the killer, then switches to the victim before the kill"),
-        ]:
-            _rb = hradio(persp_row, lbl, self.v["perspective"], val,
-                         command=self._on_perspective_change)
-            _rb.pack(side="left", padx=(4, 0))
-            add_tip(_rb, tip)
-
-        # Switch delay slider — visible only in victim/both mode
-        self._victim_pre_row = tk.Frame(sec, bg=BG2)
-        self._victim_pre_row.pack(fill="x", pady=(4, 0))
-        _vp_lbl = mlabel(self._victim_pre_row, "Switch delay (s):")
-        _vp_lbl.pack(side="left")
-        add_tip(_vp_lbl,
-                "Seconds before the kill tick at which the camera switches from killer to victim.\n"
-                "0 = switch exactly at the kill. Capped at BEFORE seconds.")
-        _vp_val_lbl = tk.Label(self._victim_pre_row, text=f"{self.v['victim_pre_s'].get()}s",
-                               font=FONT_SM, fg=ORANGE, bg=BG2)
-        _vp_val_lbl.pack(side="right")
-        tk.Scale(self._victim_pre_row, from_=0, to=10, variable=self.v["victim_pre_s"],
-                 orient="horizontal", bg=BG2, fg=TEXT, troughcolor=BG3,
-                 activebackground=ORANGE, highlightthickness=0, bd=0,
-                 showvalue=False, cursor="hand2",
-                 command=lambda v: _vp_val_lbl.config(text=f"{int(float(v))}s")
-                 ).pack(side="left", fill="x", expand=True, pady=(2, 0))
-        self.after(50, self._on_perspective_change)
 
         # ── MODS ──────────────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
@@ -2461,9 +2567,13 @@ class App(tk.Tk):
         _ts_lbl = mlabel(trois_row, "🎲 TROIS SHOT:")
         _ts_lbl.pack(side="left")
         add_tip(_ts_lbl,
-                "Lucky kills on precision weapons (Deagle, R8, AWP, SCAR-20, G3SG1, SSG 08).\n"
-                "Detects shots where bloom, scope or velocity indicate a lucky hit.\n"
-                "Enable = keep only lucky kills. Exclude = keep only precise kills.\n"
+                "Lucky kills on precision weapons — detected via demoparser2.\n\n"
+                "Per-weapon logic:\n"
+                "  Deagle / R8   bloom > 0.015 (not a stationary aimed shot)\n"
+                "  AWP / SSG 08  unscoped at shot time\n"
+                "  SCAR-20 / G3SG1  unscoped OR bloom > 0.010 OR moving\n\n"
+                "Enable = keep only lucky kills.\n"
+                "Exclude = keep only precise kills on these weapons.\n"
                 "⚠ Enable and Exclude are mutually exclusive.")
         _ts_cb = hchk(trois_row, "Enable", self.v["kill_mod_trois_shot"],
                       command=self._on_trois_shot_toggle)
@@ -2509,7 +2619,8 @@ class App(tk.Tk):
         _st_lbl.pack(side="left")
         add_tip(_st_lbl,
                 "≥2 enemies killed in one continuous spray (no trigger release).\n"
-                "Auto weapons only: rifles, SMGs, M249, Negev, CZ75-Auto.\n"
+                "Auto weapons only: rifles (AK-47, M4A4/M4A1-S, Galil AR, FAMAS, SG 553, AUG),\n"
+                "SMGs, M249, Negev, and CZ75-Auto (the only full-auto pistol).\n"
                 "Excluded: AWP, SSG 08, SCAR-20, G3SG1, shotguns, other pistols.")
         _st_cb = hchk(st_row, "Enable", self.v["kill_mod_spray_transfer"])
         _st_cb.pack(side="left", padx=(4, 0))
@@ -2521,10 +2632,21 @@ class App(tk.Tk):
         _hv_lbl = mlabel(hv_row, "🏎 FERRARI PEEK:")
         _hv_lbl.pack(side="left")
         add_tip(_hv_lbl,
-                "Kill while moving above the speed threshold.\n"
-                "CS2: walk ≈ 130 u/s, run ≈ 250 u/s. Default: 280 u/s.")
+                "One-shot kill on a moving peek — player was running before, shoots once, leaves immediately after.\n\n"
+                "Three conditions (all required):\n"
+                "  1. Isolated shot — no prior fire within ~0.75s (one-shot kill, not a spray finisher)\n"
+                "  2. Moving before — approach speed ≥ threshold in the 3s before the shot,\n"
+                "     OR the shot was fired while still running (counter-strafe not required)\n"
+                "  3. Resumes movement — at least one shot after the kill within 2s was moving\n"
+                "     (skipped if no post-kill fire found)\n\n"
+                "CS2 run speeds: knife 250 · pistols 240 · Deagle 230 · AK-47 215 · AWP 200 u/s\n"
+                "Default 100 u/s — catches any active peek above walking speed.")
         hchk(hv_row, "Enable", self.v["kill_mod_high_velocity"]).pack(side="left", padx=(4, 0))
-        mlabel(hv_row, "  Min speed:").pack(side="left", padx=(8, 0))
+        _os_cb = hchk(hv_row, "One-shot", self.v["kill_mod_hv_one_shot"])
+        _os_cb.pack(side="left", padx=(8, 0))
+        add_tip(_os_cb, "Require no prior fire within ~0.75s before the kill.\n"
+                        "Uncheck to allow spray finishers as long as the approach and resume conditions hold.")
+        mlabel(hv_row, "  Min approach:").pack(side="left", padx=(8, 0))
         sentry(hv_row, self.v["kill_mod_high_vel_thr"], width=5).pack(side="left", padx=(4, 0), ipady=4)
         mlabel(hv_row, "u/s").pack(side="left", padx=(2, 0))
         dp2_badge(hv_row).pack(side="left", padx=(8, 0))
@@ -2543,10 +2665,10 @@ class App(tk.Tk):
         mlabel(fl_row, "°").pack(side="left", padx=(2, 0))
         dp2_badge(fl_row).pack(side="left", padx=(8, 0))
 
-        # ── SAUVEUR ───────────────────────────────────────────────────────────
+        # ── SAVIOR ───────────────────────────────────────────────────────────
         sv_row = tk.Frame(sec, bg=BG2)
         sv_row.pack(fill="x", pady=(4, 0))
-        _sv_lbl = mlabel(sv_row, "🛡 SAUVEUR:")
+        _sv_lbl = mlabel(sv_row, "🛡 SAVIOR:")
         _sv_lbl.pack(side="left")
         add_tip(_sv_lbl,
                 "Kill an enemy who was actively damaging a teammate in the ~2s prior.\n"
@@ -2627,7 +2749,7 @@ class App(tk.Tk):
         _cl_cb.pack(side="left", padx=(4, 0))
 
         self._clutch_opts_row = tk.Frame(sec, bg=BG2)
-        self._clutch_opts_row.pack(fill="x", pady=(4, 0))
+        # Do NOT pack here — _on_clutch_toggle controls visibility
 
         # 1vX checkboxes
         _sizes_row = tk.Frame(self._clutch_opts_row, bg=BG2)
@@ -2655,6 +2777,40 @@ class App(tk.Tk):
         add_tip(_req_win, "Only capture clutches where the player's team won the round.")
 
         self.after(50, self._on_clutch_toggle)
+
+        # ── PERSPECTIVE ───────────────────────────────────────────────────────
+        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
+        persp_row = tk.Frame(sec, bg=BG2)
+        persp_row.pack(fill="x")
+        mlabel(persp_row, "Perspective:").pack(side="left")
+        for lbl, val, tip in [
+            ("POV Killer", "killer", "Camera on the killer throughout the clip"),
+            ("POV Victim", "victim", "Camera on the victim throughout the clip"),
+            ("Both",       "both",   "Starts on the killer, then switches to the victim before the kill"),
+        ]:
+            _rb = hradio(persp_row, lbl, self.v["perspective"], val,
+                         command=self._on_perspective_change)
+            _rb.pack(side="left", padx=(4, 0))
+            add_tip(_rb, tip)
+
+        # Switch delay slider — visible only in both mode
+        self._victim_pre_row = tk.Frame(sec, bg=BG2)
+        self._victim_pre_row.pack(fill="x", pady=(4, 0))
+        _vp_lbl = mlabel(self._victim_pre_row, "Switch delay (s):")
+        _vp_lbl.pack(side="left")
+        add_tip(_vp_lbl,
+                "Seconds before the kill tick at which the camera switches from killer to victim.\n"
+                "0 = switch exactly at the kill. Capped at BEFORE seconds.")
+        _vp_val_lbl = tk.Label(self._victim_pre_row, text=f"{self.v['victim_pre_s'].get()}s",
+                               font=FONT_SM, fg=ORANGE, bg=BG2)
+        _vp_val_lbl.pack(side="right")
+        tk.Scale(self._victim_pre_row, from_=0, to=10, variable=self.v["victim_pre_s"],
+                 orient="horizontal", bg=BG2, fg=TEXT, troughcolor=BG3,
+                 activebackground=ORANGE, highlightthickness=0, bd=0,
+                 showvalue=False, cursor="hand2",
+                 command=lambda v: _vp_val_lbl.config(text=f"{int(float(v))}s")
+                 ).pack(side="left", fill="x", expand=True, pady=(2, 0))
+        self.after(50, self._on_perspective_change)
 
         sec = Sec(p, "TIMING & ROBUSTNESS")
         sec.pack(fill="x", pady=(0, 6))
@@ -2968,31 +3124,30 @@ class App(tk.Tk):
             pass
 
     def _on_demo_tree_click(self, event):
-        """Toggle checked state when user clicks the ✓ column."""
+        """Toggle checked state on click. Return 'break' to suppress native selection
+        highlight which would otherwise fight with our tag-based coloring."""
         region = self._demo_tree.identify_region(event.x, event.y)
-        col    = self._demo_tree.identify_column(event.x)
         iid    = self._demo_tree.identify_row(event.y)
-        # Toggle on click in the sel column (#1) or anywhere on row
-        if not iid:
-            return
-        if col == "#1" or region == "cell":
-            dp = iid  # iid == demo_path
-            cur = self._demo_picker_state.get(dp, True)
-            new = not cur
-            self._demo_picker_state[dp] = new
-            sym = "✓" if new else "✕"
-            tag = "ok" if new else "off"
-            self._demo_tree.item(iid, values=(sym,
-                self._demo_tree.item(iid, "values")[1],
-                self._demo_tree.item(iid, "values")[2]), tags=(tag,))
-            n_on  = sum(1 for v in self._demo_picker_state.values() if v)
-            n_tot = len(self._demo_picker_state)
-            try:
-                self._picker_count_lbl.config(
-                    text=f"{n_on}/{n_tot} selected",
-                    fg=ORANGE if n_on < n_tot else MUTED)
-            except Exception:
-                pass
+        if not iid or region not in ("cell", "tree"):
+            return "break"
+        dp = iid  # iid == demo_path
+        cur = self._demo_picker_state.get(dp, True)
+        new = not cur
+        self._demo_picker_state[dp] = new
+        sym = "✓" if new else "✕"
+        tag = "ok" if new else "off"
+        vals = self._demo_tree.item(iid, "values")
+        self._demo_tree.item(iid, values=(sym, vals[1], vals[2]), tags=(tag,))
+        self._demo_tree.selection_remove(iid)  # no native highlight
+        n_on  = sum(1 for v in self._demo_picker_state.values() if v)
+        n_tot = len(self._demo_picker_state)
+        try:
+            self._picker_count_lbl.config(
+                text=f"{n_on}/{n_tot} selected",
+                fg=ORANGE if n_on < n_tot else MUTED)
+        except Exception:
+            pass
+        return "break"
 
     def _demo_picker_set_all(self, value):
         for dp in list(self._demo_picker_state.keys()):
@@ -3902,7 +4057,7 @@ class App(tk.Tk):
         except Exception:
             pass  # view_angles stays empty — flick filter degrades gracefully
 
-        # ── player_hurt parse — for Sauveur filter ────────────────────────
+        # ── player_hurt parse — for Savior filter ────────────────────────
         # Indexes: {victim_sid: [(tick, attacker_sid), ...]} sorted by tick
         # Used to check if a teammate was being hurt just before the player's kill
         hurt_index: dict = {}  # {victim_sid: [(tick, attacker_sid), ...]}
@@ -4120,14 +4275,31 @@ class App(tk.Tk):
             evts, cfg, "kill_mod_spray_transfer",
             self._spray_transfer_filter, "🔫 SPRAY → spray transfer")
 
-    # ── dp2 filters: High Velocity, Flick, Sauveur ───────────────────────
+    # ── dp2 filters: High Velocity, Flick, Savior ───────────────────────
 
     def _high_velocity_filter(self, demo_path, events, cfg):
-        """Keep kills where the player's velocity at shot time exceeds the threshold.
+        """Ferrari Peek — one-shot kill on a moving peek, player resumes movement after.
 
-        Uses fire_detail cache (velocity already stored). Threshold is configurable
-        (default 280 u/s — above CS2 run speed 250, targets aggressive peeks).
-        Nickname: 'ferrari peek'.
+        A kill qualifies if ALL three conditions hold:
+
+          1. ISOLATED SHOT: no weapon_fire from the player in the PRE_WINDOW ticks before
+             the kill shot — proves it's the first (and only) shot of the encounter, not a
+             spray where the victim happened to die on the last bullet.
+
+          2. MOVING BEFORE: the player was moving during the approach —
+             - any weapon_fire by this player in [kill_tick - APPROACH_WINDOW, kill_tick - PRE_WINDOW]
+               had velocity >= approach_thr (they peeked while running), OR
+             - the kill shot itself had velocity >= approach_thr (no counter-strafe at all).
+             Counter-strafe is not required — the player may have stopped perfectly or shot
+             while still moving.
+
+          3. RESUMES AFTER: at least one weapon_fire from this player in the RESUME_WINDOW
+             ticks after the kill has velocity >= RESUME_THR (immediately starts moving again /
+             peeking further). Degrades gracefully — if no post-kill fire is found in the
+             window the check is skipped (player may have retreated without firing).
+
+        kill_mod_high_vel_thr: minimum speed (u/s) during the approach to qualify.
+        Default 100 u/s — above walking speed (130 walk, but reduced near corners).
         """
         if not os.path.isfile(demo_path):
             return events
@@ -4136,28 +4308,86 @@ class App(tk.Tk):
         with self._dp2_cache_lock:
             data = self._dp2_cache.get(demo_path, {})
         fire_index = data.get("fire_detail", {})
-        threshold  = max(1.0, float(cfg.get("kill_mod_high_vel_thr", 280)))
+
+        approach_thr  = max(1.0, float(cfg.get("kill_mod_high_vel_thr", 100)))
+        require_one_shot = cfg.get("kill_mod_hv_one_shot", True)
+        RESUME_THR    = 80.0   # u/s — minimum speed to count as "moving after"
+        PRE_WINDOW    = 48     # ticks — no prior shot allowed before kill (~0.75s)
+        APPROACH_WIN  = 192    # ticks — window to check for pre-kill movement (~3s)
+        RESUME_WIN    = 128    # ticks — window to detect post-kill movement (~2s)
+        SHOT_WINDOW   = 24     # ticks — window around kill to match kill shot
 
         filtered = []
         for evt in events:
             if evt.get("type") != "kill":
-                filtered.append(evt); continue
+                filtered.append(evt)
+                continue
+
             kill_tick  = int(evt.get("tick", 0))
             killer_sid = str(evt.get("killer_sid", ""))
-            weapon_raw = (evt.get("weapon") or "").lower().strip()
-            w_key  = CSDM_TO_DP2_WEAPON.get(weapon_raw) or f"weapon_{weapon_raw}"
-            wpn_s  = w_key[7:] if w_key.startswith("weapon_") else weapon_raw
-            entries = fire_index.get((killer_sid, wpn_s)) or fire_index.get((killer_sid, weapon_raw), [])
-            if not entries:
-                # Try any weapon for this player near the tick
-                entries = next(
-                    (v for (sid, _), v in fire_index.items() if sid == killer_sid), [])
-            best_vel = 0.0
-            for ftick, acc, scoped, vel in entries:
-                if abs(kill_tick - ftick) < DP2_TICK_WINDOW:
-                    best_vel = max(best_vel, vel)
-            if best_vel >= threshold:
+
+            # Collect all weapon_fire entries for this player (all weapons)
+            all_entries: list = []
+            for (sid, _wpn), entries in fire_index.items():
+                if sid == killer_sid:
+                    all_entries.extend(entries)
+            all_entries.sort(key=lambda r: r[0])
+
+            if not all_entries:
+                # No fire data — pass through (cannot evaluate)
                 filtered.append(evt)
+                continue
+
+            # ── Find the kill shot ─────────────────────────────────────────
+            shot_entry = None
+            for ftick, acc, scoped, vel in all_entries:
+                if abs(kill_tick - ftick) <= SHOT_WINDOW:
+                    if shot_entry is None or abs(kill_tick - ftick) < abs(kill_tick - shot_entry[0]):
+                        shot_entry = (ftick, acc, scoped, vel)
+
+            if shot_entry is None:
+                # No matching shot found — pass through
+                filtered.append(evt)
+                continue
+
+            shot_tick = shot_entry[0]
+            shot_vel  = shot_entry[3]
+
+            # ── Condition 1: isolated shot (one-shot kill) — optional ─────
+            if require_one_shot:
+                prior_shot = any(
+                    (shot_tick - PRE_WINDOW) <= ftick < shot_tick
+                    for ftick, *_ in all_entries
+                )
+                if prior_shot:
+                    continue
+
+            # ── Condition 2: was moving before (on the peek) ──────────────
+            approach_start = shot_tick - APPROACH_WIN
+            approach_end   = shot_tick - PRE_WINDOW
+            approach_shots = [
+                vel for ftick, _acc, _sc, vel in all_entries
+                if approach_start <= ftick < approach_end
+            ]
+            was_moving_before = (
+                (approach_shots and max(approach_shots) >= approach_thr)
+                or shot_vel >= approach_thr  # shot while running (no CS)
+            )
+            if not was_moving_before:
+                continue
+
+            # ── Condition 3: resumes movement after kill ───────────────────
+            resume_shots = [
+                vel for ftick, _acc, _sc, vel in all_entries
+                if kill_tick < ftick <= kill_tick + RESUME_WIN
+            ]
+            if resume_shots and max(resume_shots) < RESUME_THR:
+                # Fired again but stationary — not resuming a peek
+                continue
+            # No post-kill fire → skip check (degrade gracefully)
+
+            filtered.append(evt)
+
         return filtered
 
     def _flick_filter(self, demo_path, events, cfg):
@@ -4261,7 +4491,7 @@ class App(tk.Tk):
     def _apply_high_velocity_to_events(self, evts, cfg):
         return self._apply_filter_to_events(
             evts, cfg, "kill_mod_high_velocity",
-            self._high_velocity_filter, "🏎 HIGH VEL → ferrari peek")
+            self._high_velocity_filter, "🏎 FERRARI PEEK → counter-strafe")
 
     def _apply_flick_to_events(self, evts, cfg):
         return self._apply_filter_to_events(
@@ -4271,7 +4501,7 @@ class App(tk.Tk):
     def _apply_sauveur_to_events(self, evts, cfg):
         return self._apply_filter_to_events(
             evts, cfg, "kill_mod_sauveur",
-            self._sauveur_filter, "🛡 SAUVEUR")
+            self._sauveur_filter, "🛡 SAVIOR")
 
     def _apply_filter_to_events(self, evts, cfg, cfg_key, filter_fn, label):
         """Apply a per-demo filter function to all demos in evts.
@@ -6689,6 +6919,8 @@ class App(tk.Tk):
         cfg = self._build_run_cfg()
         self._running = True
         self._stop_after_current = False
+        self._kill_triggered = False
+        self._tagged_this_batch = []   # [(demo_path, tag_name), ...] — for rollback
         self.run_btn.config(state="disabled", bg=BG3, fg=MUTED)
         self.stop_btn.config(state="normal")
         self.kill_btn.config(state="normal")
@@ -6699,19 +6931,39 @@ class App(tk.Tk):
         threading.Thread(target=self._worker, args=(cfg,), daemon=True).start()
 
     def _stop_graceful(self):
+        """Stop after current demo: kill the running CSDM process immediately,
+        mark current demo as failed, then do not start the next one."""
         self._stop_after_current = True
-        self._alog("\n⏸ Graceful stop.", "warn")
-        self.stop_btn.config(state="disabled")
-
-    def _kill_now(self):
         self._running = False
-        self._stop_after_current = True
+        self._alog("\n⏸ Graceful stop — aborting current demo.", "warn")
+        self.stop_btn.config(state="disabled")
         if self._proc:
             try:
                 self._proc.kill()
             except Exception:
                 pass
-        self._alog("\n⛔ KILL", "err")
+
+    def _kill_now(self):
+        """Hard kill: stop everything immediately, kill CS2 process, skip assembly,
+        and revert tags applied during this batch."""
+        self._kill_triggered = True
+        self._running = False
+        self._stop_after_current = True
+        self._alog("\n⛔ KILL — aborting and killing CS2.", "err")
+        if self._proc:
+            try:
+                self._proc.kill()
+            except Exception:
+                pass
+        # Kill CS2 process (Windows only — silent no-op on others)
+        try:
+            subprocess.Popen(
+                ["taskkill", "/F", "/IM", "cs2.exe"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=0x08000000  # CREATE_NO_WINDOW
+            )
+        except Exception:
+            pass
         self.after(0, self._reset_btns)
 
     def _reset_btns(self):
@@ -6842,7 +7094,7 @@ class App(tk.Tk):
                     self._alog("  ↩ FLICK — analyzing demos…", "info")
                     evts = self._apply_flick_to_events(evts, cfg)
                 if cfg.get("kill_mod_sauveur"):
-                    self._alog("  🛡 SAUVEUR — analyzing demos…", "info")
+                    self._alog("  🛡 SAVIOR — analyzing demos…", "info")
                     evts = self._apply_sauveur_to_events(evts, cfg)
             t_filters = time.time() - t0
             t_total = time.time() - t0_total
@@ -6897,9 +7149,9 @@ class App(tk.Tk):
         tt_str  = "  🎯🎲 TROIS TAP"   if cfg.get("kill_mod_trois_tap")     else ""
         ot_str  = "  🎯 ONE TAP"        if cfg.get("kill_mod_one_tap")       else ""
         sp_str  = "  🔫 SPRAY"          if cfg.get("kill_mod_spray_transfer") else ""
-        hv_str  = "  🏎 FERRARI"         if cfg.get("kill_mod_high_velocity")  else ""
+        hv_str  = "  🏎 FERRARI PEEK"         if cfg.get("kill_mod_high_velocity")  else ""
         fl_str  = "  ↩ FLICK"            if cfg.get("kill_mod_flick")           else ""
-        sv_str  = "  🛡 SAUVEUR"         if cfg.get("kill_mod_sauveur")         else ""
+        sv_str  = "  🛡 SAVIOR"         if cfg.get("kill_mod_sauveur")         else ""
         ef_str  = "  🚀 ENTRY"           if cfg.get("kill_mod_entry_frag")      else ""
         ac_str  = "  🃏 ACE"             if cfg.get("kill_mod_ace")             else ""
         mk_str  = "  ⚡ MULTI"           if cfg.get("kill_mod_multi_kill")      else ""
@@ -7175,11 +7427,11 @@ class App(tk.Tk):
             ("kill_mod_spray_transfer", self._spray_transfer_filter,
              "🔫 SPRAY",        "spray transfer", "0 SPRAY"),
             ("kill_mod_high_velocity", self._high_velocity_filter,
-             "🏎 HIGH VEL",     "ferrari peek",   "0 HIGH VEL"),
+             "🏎 FERRARI PEEK", "counter-strafe", "0 FERRARI PEEK"),
             ("kill_mod_flick",         self._flick_filter,
              "↩ FLICK",         "flick",          "0 FLICK"),
             ("kill_mod_sauveur",       self._sauveur_filter,
-             "🛡 SAUVEUR",      "sauveur",        "0 SAUVEUR"),
+             "🛡 SAVIOR",      "savior",        "0 SAVIOR"),
         ]
 
         if cfg.get("kill_mod_trois_tap"):
@@ -7245,8 +7497,9 @@ class App(tk.Tk):
         self._alog(f"Encoder: {cfg['encoder']} | RecSys: {recsys}{hlae_info} | TrueView: {'ON' if tv else 'OFF'} | Perspective: {PERSP_LABELS.get(perspective, perspective)}{tag_str}", "info")
         if recsys == "CS":
             self._alog(
-                "  ℹ RecSys CS: HLAE options ignored. "
-                "CS2 uses startmovie to generate raw files.", "warn")
+                "  ⚠ RecSys CS: CS2 replays the demo from tick 0 to reach the target tick.\n"
+                "  Each clip will take as long as the full demo before the event.\n"
+                "  HLAE is strongly recommended for batch recording.", "warn")
         if cfg.get("headshots_only"):
             self._alog("🎯 Headshots only", "info")
         if not cfg.get("include_suicides", True):
@@ -7409,7 +7662,7 @@ class App(tk.Tk):
                                     self._alog("  ↩ FLICK — analyzing demos…", "info")
                                     _fe = self._apply_flick_to_events(_fe, cfg)
                                 if cfg.get("kill_mod_sauveur"):
-                                    self._alog("  🛡 SAUVEUR — analyzing demos…", "info")
+                                    self._alog("  🛡 SAVIOR — analyzing demos…", "info")
                                     _fe = self._apply_sauveur_to_events(_fe, cfg)
                             self.after(0, lambda: self._show_preview(_fe, cfg))
                         threading.Thread(target=_bg, daemon=True).start()
@@ -7577,13 +7830,13 @@ class App(tk.Tk):
                 ri = f" x{att}" if att > 1 else ""
                 tag_msg = ""
                 if tag_enabled:
-                    # Multi-tags: use _tags_active if available, else tag_name alone
                     _auto_names = self._get_active_tag_names() if self._get_active_tag_names() else ([tag_name] if tag_name else [])
                     _tag_ok_names, _tag_fail = [], ""
                     for _tn in _auto_names:
                         _tok, _terr = self._tag_demo(dp, _tn)
                         if _tok:
                             _tag_ok_names.append(_tn)
+                            self._tagged_this_batch.append((dp, _tn))
                         elif not _tag_fail:
                             _tag_fail = _terr
                     if _tag_ok_names:
@@ -7640,12 +7893,47 @@ class App(tk.Tk):
         _stxt_final = self._fmt_summary(_nd, _nc, _ts, _as) + f"  —  {fmt_duration(bd)}{_status}"
         self.after(0, lambda t=_stxt_final, c=_color: self._summary_lbl.config(text=t, fg=c))
 
-        if ok > 0 and cfg.get("assemble_after"):
+        if ok > 0 and cfg.get("assemble_after") and not self._kill_triggered:
             self._alog("\n⚙  Final assembly in progress...", "info")
             try:
                 self._assemble_clips(cfg, produced_dirs)
             except Exception as e:
                 self._alog(f"  Assembly error: {e}", "err")
+        elif self._kill_triggered and cfg.get("assemble_after"):
+            self._alog("\n⏭ Assembly skipped (batch killed).", "warn")
+
+        # ── Tag rollback on premature stop ────────────────────────────────────
+        _was_interrupted = self._kill_triggered or (self._stop_after_current and ok < len(demo_list))
+        if _was_interrupted and self._tagged_this_batch and tag_enabled:
+            self._alog(f"\n↩ Rolling back {len(self._tagged_this_batch)} tag(s)…", "warn")
+            _rolled_back, _rb_fail = 0, 0
+            for _dp, _tn in self._tagged_this_batch:
+                try:
+                    conn = self._pg()
+                    chk = self._demo_checksums.get(_dp)
+                    if not chk:
+                        _rb_fail += 1
+                        continue
+                    with conn.cursor() as cur:
+                        # Find tag id by name
+                        cur.execute("SELECT id FROM tags WHERE name = %s LIMIT 1", (_tn,))
+                        row = cur.fetchone()
+                        if not row:
+                            _rb_fail += 1
+                            continue
+                        tag_id = row[0]
+                        cur.execute(
+                            "DELETE FROM checksum_tags WHERE checksum = %s AND tag_id = %s",
+                            (chk, tag_id))
+                        conn.commit()
+                        _rolled_back += 1
+                except Exception as _e:
+                    _rb_fail += 1
+            msg = f"  ↩ Rolled back {_rolled_back} tag(s)"
+            if _rb_fail:
+                msg += f" ({_rb_fail} failed)"
+            self._alog(msg, "warn")
+        self._tagged_this_batch = []
 
         self.after(0, self._reset_btns)
 
