@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v122"""
+"""CSDM Batch Clips Generator v123"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v122"
+APP_VERSION = "v123"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -2982,7 +2982,9 @@ class App(tk.Tk):
         _nts_cb = hchk(trois_row, "Exclude", self.v["kill_mod_no_trois_shot"],
                        command=self._on_no_trois_shot_toggle)
         _nts_cb.pack(side="left", padx=(12, 0))
-        add_tip(_nts_cb, "Inverse of TROIS SHOT — keeps only precise kills on these weapons.")
+        add_tip(_nts_cb,
+                "Inverse of TROIS SHOT — removes lucky kills on these weapons.\n"
+                "When combined with other dp2 filters, it acts as an exclusion gate first.")
         dp2_badge(trois_row).pack(side="left", padx=(8, 0))
 
         # ── TROIS TAP ─────────────────────────────────────────────────────────
@@ -9122,9 +9124,19 @@ class App(tk.Tk):
             self._stamp_mf(events, "kill_mod_trois_tap")
             return events
 
+        if cfg.get("kill_mod_no_trois_shot"):
+            n_before = _count_kills(events)
+            events = self._no_trois_shot_filter(dp, events, cfg)
+            n_after = _count_kills(events)
+            self._alog(f"  🚫🎲 Exclude : {n_before} kills → {n_after} precise", "info")
+            if not events:
+                self._alog("  ⏭ SKIP: 0 precise kills after Exclude in this demo", "dim")
+                return None
+            self._stamp_mf(events, "kill_mod_no_trois_shot")
+
         active = [(k, getattr(self, fn), ll, rl, sl)
                   for k, fn, _afn, ll, rl, sl in self._DP2_FILTER_DEFS
-                  if cfg.get(k)]
+                  if cfg.get(k) and k != "kill_mod_no_trois_shot"]
         if not active:
             return events
 
@@ -9272,9 +9284,15 @@ class App(tk.Tk):
             self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
             return self._apply_trois_tap_to_events(evts, cfg)
 
+        if cfg.get("kill_mod_no_trois_shot"):
+            self._alog("  🚫🎲 Exclude — analyzing demos…", "info")
+            evts = self._apply_no_trois_shot_to_events(evts, cfg)
+            if not evts:
+                return {}
+
         active = [(k, getattr(self, afn), ll)
                   for k, _fn, afn, ll, _rl, _sl in self._DP2_FILTER_DEFS
-                  if cfg.get(k)]
+                  if cfg.get(k) and k != "kill_mod_no_trois_shot"]
         if not active:
             return evts
 

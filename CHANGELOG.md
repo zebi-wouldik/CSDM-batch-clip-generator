@@ -5,6 +5,19 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v123]
+### Fixed
+
+- **dp2 `🚫🎲 Exclude` logic in combined filter scenarios**:
+  `Exclude` now behaves as an exclusion gate (removes lucky kills first) before other dp2 matching logic, instead of acting like a broad OR-positive selector that could unexpectedly inflate results in `ANY` mode.
+- **Preview/run consistency**:
+  the same exclusion-first behavior now applies in both preview (`_apply_dp2_filters_to_events`) and batch worker (`_apply_dp2_modifiers`) paths.
+- **Tooltip clarity**:
+  Exclude tooltip now states that when combined with other dp2 filters it acts as an exclusion gate first.
+- **Version bump**: script version moved to `v123`.
+
+---
+
 ## [v122]
 ### Added
 
