@@ -108,14 +108,18 @@ Detects rounds where the player was the **last alive** on their team and killed 
 
 ## Recording systems
 
-Two systems available: **HLAE** and **CS** (native). The HLAE-specific panel hides automatically when CS mode is selected.
+Two systems available: **HLAE** (recommended) and **CS** (native). The HLAE-specific panel hides automatically when CS mode is selected.
 
 | | HLAE | CS |
 |---|:---:|:---:|
 | FOV override | ✅ | ❌ |
 | Slow motion | ✅ | ❌ |
 | AFX streams | ✅ | ❌ |
-| CS2 effects (physics, gravity, blood) | ✅ | ✅ |
+| Hide spectator UI | ✅ | ❌ |
+| CS2 effects (physics, gravity, blood) | ✅ | ❌ |
+| TrueView | ✅ | ✅ |
+
+> CS2 effects (ragdoll, gravity, blood) are injected via HLAE extraArgs. In CS mode, these settings have no effect — CS mode has no `extraArgs` equivalent.
 
 ---
 

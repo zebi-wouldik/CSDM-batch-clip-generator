@@ -5,16 +5,50 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v97]
-### Changed — Section restructure, Mods (OR) refonte
+## [v98]
+### Fixed & Changed
 
-**Sections renommées et réorganisées dans l'onglet Capture :**
-- `EVENTS & CAMERA` → **`CAPTURE`** — KILLS / DEATHS BY / ROUNDS + Perspective uniquement.
-- Nouvelle section **`KILL FILTERS`** — tous les filtres de kills regroupés.
+**Ferrari Peek — tightened logic + tooltip rewrite:**
+- `APPROACH_WIN` reduced from 192 ticks (3s) to 64 ticks (1s). A fast approach 3s before the shot followed by camping is not a ferrari peek — the movement window must be recent.
+- When `one-shot=True`, no prior shot exists in the pre-window (condition 1 eliminates them), so only the velocity at shot time matters. The wide window had no effect in that case.
+- Tooltip rewritten around the real concept: *kill faster than the opponent can react* — exposure window shorter than human reaction time (~150–250ms).
+- Internal docstring updated to document the actual behaviour of each condition.
+
+**README — Recording section corrected:**
+- `CS2 effects` marked ❌ for CS mode (was ✅, incorrect). The code only injects physics commands via `hlaeOptions.extraArgs` (HLAE). In CS mode they are logged but not forwarded to CSDM.
+
+---
+
+## [v97]
+### Changed — Section restructure, Mods (OR) redesign
+
+**Sections renamed and reorganised in the Capture tab:**
+- `EVENTS & CAMERA` → **`CAPTURE`** — KILLS / DEATHS BY / ROUNDS + Perspective only.
+- New section **`KILL FILTERS`** — all kill filters grouped together.
 - `TIMING & ROBUSTNESS` → **`TIMING`**
 - `DATE RANGE & DEMO SELECTION` → **`DEMO SELECTION`**
 
-**Mods (OR) refaits en style ligne-par-ligne** (comme les DB modifiers) : chaque mod a son propre label et sa checkbox Enable sur sa propre ligne. HS ONLY est intégré dans cette liste. Suicides et TK restent en haut de la section sur une ligne compacte séparée.
+**Mods (OR) redesigned as per-line layout** (matching DB modifiers style): each mod gets its own label and Enable checkbox on its own row. HS ONLY is now part of this list. Suicides and TK remain on a compact row at the top of the section.
+
+---
+
+## [v97 — Ferrari Peek logic refactor, CS2 Effects fix]
+### Changed
+
+**Ferrari Peek — detection logic revised:**
+The goal is "faster than the opponent can react" — minimal exposure window. The old logic checked 3 conditions: movement before (3s window), isolated shot, movement after. Condition 3 was noise (the player can retreat without firing again).
+
+New logic — two conditions only:
+1. **High velocity at shot time**: max speed in a ±0.5s window around the kill shot ≥ threshold. This directly measures "you were in their FOV for the shortest possible time".
+2. **Isolated shot** (optional, `kill_mod_hv_one_shot`): no prior shot within ~0.75s.
+
+Default threshold: **150 u/s** (above walking speed, clearly an active peek). UI label: "Min speed at shot:". Tooltip fully rewritten.
+
+**CS2 EFFECTS — corrections:**
+- UI section renamed to `"HLAE mode only"` (was "both HLAE and CS modes" — incorrect).
+- Section description corrected.
+- System selector tooltip corrected: CS2 effects listed explicitly as HLAE-only.
+- README: Recording systems table completed (Hide spectator UI + TrueView added), note clarified.
 
 ---
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v97"""
+"""CSDM Batch Clips Generator v98"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v97"
+APP_VERSION = "v98"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -695,7 +695,7 @@ class ColorPickerDialog(tk.Toplevel):
                  highlightbackground=BORDER, highlightcolor=ORANGE).pack(side="left", padx=(8, 0), ipady=4)
         br = tk.Frame(self, bg=BG2)
         br.pack(fill="x", padx=12, pady=(10, 12))
-        tk.Button(br, text="Picker systeme...", font=FONT_SM, bg=BG3, fg=BLUE, relief="flat",
+        tk.Button(br, text="System picker...", font=FONT_SM, bg=BG3, fg=BLUE, relief="flat",
                   bd=0, cursor="hand2", command=self._sys).pack(side="left")
         tk.Button(br, text="  OK  ", font=FONT_SM, bg=ORANGE, fg="white", relief="flat",
                   bd=0, cursor="hand2", activebackground=ORANGE2,
@@ -1377,7 +1377,7 @@ class App(tk.Tk):
             for _, rw, rh in ASPECT_RATIOS
         ) and any(h == _h0 for _, h in DEFINITIONS)
         self.v["res_custom"] = tk.BooleanVar(value=not _known)
-        self.db_status = tk.StringVar(value="Non connecte")
+        self.db_status = tk.StringVar(value="Not connected")
         self.sel_events = {e: tk.BooleanVar(value=(e in self.cfg.get("events", []))) for e in EVENTS}
         self.sel_weapons = {}
         for w in self.cfg.get("weapons", []):
@@ -1441,7 +1441,7 @@ class App(tk.Tk):
 
     def _preflight(self):
         for d in ensure_csdm_dirs():
-            self._log(f"[PRE] Cree: {d}", "ok")
+            self._log(f"[PRE] Created: {d}", "ok")
         ok, p = check_ffmpeg_available()
         self._log(f"[PRE] FFmpeg: {p}" if ok else "[PRE] FFmpeg NON TROUVE", "ok" if ok else "err")
         cli = self._resolve_cli(self.v["csdm_exe"].get())
@@ -1502,7 +1502,7 @@ class App(tk.Tk):
                             break
                 self.player_search._refresh_saved_display()
             elif k == "steam_id" and val and not cfg.get("steam_ids"):
-                # Compat ancienne config mono-joueur
+                # Compat legacy single-player config
                 for p in self.player_search._saved_players:
                     if p["steam_id"] == val:
                         self.player_search._active_sids.add(val)
@@ -2689,13 +2689,14 @@ class App(tk.Tk):
         _hv_lbl = mlabel(hv_row, "🏎 FERRARI PEEK:")
         _hv_lbl.pack(side="left")
         add_tip(_hv_lbl,
-                "One-shot kill on a moving peek — player was running before, shoots once, leaves immediately after.\n\n"
-                "Three conditions (all required):\n"
-                "  1. Isolated shot — no prior fire within ~0.75s (one-shot kill, not a spray finisher)\n"
-                "  2. Moving before — approach speed ≥ threshold in the 3s before the shot,\n"
-                "     OR the shot was fired while still running (counter-strafe not required)\n"
-                "  3. Resumes movement — at least one shot after the kill within 2s was moving\n"
-                "     (skipped if no post-kill fire found)\n\n"
+                "Kill faster than the opponent can react.\n\n"
+                "The player peeks at speed, fires once, and retreats immediately —\n"
+                "the entire exposure window is shorter than human reaction time (~150-250ms).\n\n"
+                "Three conditions:\n"
+                "  1. One-shot (optional) — no prior fire within ~0.75s before the kill\n"
+                "  2. Moving before — approach speed ≥ threshold within the last 1s before the shot,\n"
+                "     OR the kill shot itself was fired while still running\n"
+                "  3. Resumes after — fires again within 2s of the kill while moving\n\n"
                 "CS2 run speeds: knife 250 · pistols 240 · Deagle 230 · AK-47 215 · AWP 200 u/s\n"
                 "Default 100 u/s — catches any active peek above walking speed.")
 
@@ -4319,28 +4320,33 @@ class App(tk.Tk):
     # ── dp2 filters: High Velocity, Flick, Savior ───────────────────────
 
     def _high_velocity_filter(self, demo_path, events, cfg):
-        """Ferrari Peek — one-shot kill on a moving peek, player resumes movement after.
+        """Ferrari Peek — kill faster than the opponent can react.
 
-        A kill qualifies if ALL three conditions hold:
+        The player peeks an angle at speed, fires once, and immediately retreats —
+        the entire exposure window is shorter than human reaction time (~150-250ms).
 
-          1. ISOLATED SHOT: no weapon_fire from the player in the PRE_WINDOW ticks before
-             the kill shot — proves it's the first (and only) shot of the encounter, not a
-             spray where the victim happened to die on the last bullet.
+        A kill qualifies if ALL conditions hold:
 
-          2. MOVING BEFORE: the player was moving during the approach —
-             - any weapon_fire by this player in [kill_tick - APPROACH_WINDOW, kill_tick - PRE_WINDOW]
-               had velocity >= approach_thr (they peeked while running), OR
-             - the kill shot itself had velocity >= approach_thr (no counter-strafe at all).
-             Counter-strafe is not required — the player may have stopped perfectly or shot
-             while still moving.
+          1. ISOLATED SHOT (optional, kill_mod_hv_one_shot): no weapon_fire from
+             the player in PRE_WINDOW ticks before the kill shot. Ensures this is
+             the opening shot, not the last bullet of a spray.
 
-          3. RESUMES AFTER: at least one weapon_fire from this player in the RESUME_WINDOW
-             ticks after the kill has velocity >= RESUME_THR (immediately starts moving again /
-             peeking further). Degrades gracefully — if no post-kill fire is found in the
-             window the check is skipped (player may have retreated without firing).
+          2. MOVING BEFORE: the player was moving at speed during the peek approach.
+             Checked in two ways:
+             - The kill shot itself was fired at velocity >= approach_thr (still
+               running at shot time, or counter-strafe was very recent), OR
+             - A weapon_fire in the APPROACH_WIN before the shot had velocity >=
+               approach_thr (only relevant when one-shot is disabled, since condition
+               1 eliminates prior shots otherwise).
+             APPROACH_WIN is intentionally tight (1s) — a fast approach 3s ago
+             followed by camping is not a ferrari peek.
 
-        kill_mod_high_vel_thr: minimum speed (u/s) during the approach to qualify.
-        Default 100 u/s — above walking speed (130 walk, but reduced near corners).
+          3. RESUMES AFTER: at least one weapon_fire within RESUME_WIN after the
+             kill has velocity >= RESUME_THR — player immediately moves away.
+             Skipped gracefully if no post-kill fire is found.
+
+        kill_mod_high_vel_thr: minimum approach speed (u/s) to qualify.
+        Default 100 u/s — above walking speed, catches any active peek.
         """
         if not os.path.isfile(demo_path):
             return events
@@ -4350,11 +4356,11 @@ class App(tk.Tk):
             data = self._dp2_cache.get(demo_path, {})
         fire_index = data.get("fire_detail", {})
 
-        approach_thr  = max(1.0, float(cfg.get("kill_mod_high_vel_thr", 100)))
+        approach_thr     = max(1.0, float(cfg.get("kill_mod_high_vel_thr", 100)))
         require_one_shot = cfg.get("kill_mod_hv_one_shot", True)
         RESUME_THR    = 80.0   # u/s — minimum speed to count as "moving after"
         PRE_WINDOW    = 48     # ticks — no prior shot allowed before kill (~0.75s)
-        APPROACH_WIN  = 192    # ticks — window to check for pre-kill movement (~3s)
+        APPROACH_WIN  = 64     # ticks — recent movement window (~1s, intentionally tight)
         RESUME_WIN    = 128    # ticks — window to detect post-kill movement (~2s)
         SHOT_WINDOW   = 24     # ticks — window around kill to match kill shot
 
@@ -7421,7 +7427,7 @@ class App(tk.Tk):
                         deleted += 1
                     except Exception:
                         pass
-                # Supprimer les dossiers des clips (jamais la racine output)
+                # Remove clip folders (never the root output dir)
                 out_root = Path(os.path.abspath(cfg.get("output_dir", ""))).resolve()
                 removed_dirs = 0
                 for d in dirs_to_check:
