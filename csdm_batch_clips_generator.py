@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v104"""
+"""CSDM Batch Clips Generator v105"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v104"
+APP_VERSION = "v105"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -335,6 +335,12 @@ DEFAULT_CONFIG = {
     "headshots_only": False,
     "teamkills_mode": "include",
     "include_suicides": True,   # include suicides (weapon world/suicide/world_entity)
+    # Kill modifiers — logic mode per category
+    # "any" = OR (at least one must match)  |  "all" = AND (all checked must match)
+    "kill_mod_logic_mods": "any",   # Mods section (DB boolean columns)
+    "kill_mod_logic_dp2":  "any",   # demoparser2 modifiers
+    "kill_mod_logic_db":   "any",   # DB post-filter modifiers (entry, ace, multi, bully, eco)
+
     # Kill modifiers (OR logic: checked = must match; none checked = no filter)
     
     "kill_mod_through_smoke": False,   # kill through smoke
@@ -417,6 +423,7 @@ PRESET_KEYS = {
     "full": None,
     "player": ["steam_id", "player_name", "events", "weapons", "date_from", "date_to",
                "perspective", "victim_pre_s", "headshots_only", "include_suicides", "teamkills_mode",
+               "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
                "kill_mod_through_smoke", "kill_mod_no_scope", "kill_mod_wall_bang",
                "kill_mod_airborne", "kill_mod_assisted_flash", "kill_mod_collateral",
                "kill_mod_trois_shot", "kill_mod_no_trois_shot", "kill_mod_trois_tap",
@@ -1357,7 +1364,8 @@ class App(tk.Tk):
                      "output_dir_clips", "output_dir_concat", "output_dir_assembled",
                      "assemble_output", "video_preset", "teamkills_mode", "phys_ragdoll_scale",
                      "cs2_cfg_dir",
-                     "clutch_clip_mode"]
+                     "clutch_clip_mode",
+                     "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db"]
         int_keys = ["before", "after", "tickrate", "width", "height", "framerate", "crf", "audio_bitrate",
                      "death_notices_duration", "retry_count", "retry_delay", "delay_between_demos",
                      "hlae_fov", "hlae_slow_motion",
@@ -2651,9 +2659,17 @@ class App(tk.Tk):
             _rb.pack(side="left", padx=(4, 0))
             add_tip(_rb, tip)
 
-        # ── MODS (OR) ─────────────────────────────────────────────────────────
+        # ── MODS ──────────────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
-        mlabel(sec, "Mods (OR) — one must match, or none checked = all kills:").pack(anchor="w", pady=(0, 4))
+        _mods_hdr = tk.Frame(sec, bg=BG2)
+        _mods_hdr.pack(fill="x", pady=(0, 4))
+        mlabel(_mods_hdr, "Mods — none checked = all kills:").pack(side="left")
+        _logic_tip_mods = ("AT LEAST ONE (OR): a kill is kept if it matches any one of the checked mods.\n"
+                           "ALL AT ONCE (AND): a kill must match every checked mod simultaneously.")
+        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE")):
+            _rb = hradio(_mods_hdr, _ll, self.v["kill_mod_logic_mods"], _lv)
+            _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
+            add_tip(_rb, _logic_tip_mods)
 
         _MODS = [
             ("headshots_only",          "🎯 HS ONLY:",        None,
@@ -2690,7 +2706,16 @@ class App(tk.Tk):
 
         # ── demoparser2 modifiers ─────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
-        mlabel(sec, "demoparser2 modifiers:").pack(anchor="w", pady=(0, 4))
+        _dp2_hdr = tk.Frame(sec, bg=BG2)
+        _dp2_hdr.pack(fill="x", pady=(0, 4))
+        mlabel(_dp2_hdr, "demoparser2 modifiers:").pack(side="left")
+        _logic_tip_dp2 = ("AT LEAST ONE (OR): a kill is kept if it passes any one of the checked dp2 filters.\n"
+                          "ALL AT ONCE (AND): a kill must pass every checked dp2 filter simultaneously.\n"
+                          "Note: TROIS TAP is always exclusive and overrides this setting when active.")
+        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE")):
+            _rb = hradio(_dp2_hdr, _ll, self.v["kill_mod_logic_dp2"], _lv)
+            _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
+            add_tip(_rb, _logic_tip_dp2)
 
         # ── TROIS SHOT ────────────────────────────────────────────────────────
         trois_row = tk.Frame(sec, bg=BG2)
@@ -2824,7 +2849,15 @@ class App(tk.Tk):
 
         # ── DB modifiers ──────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
-        mlabel(sec, "DB modifiers — no demoparser2 needed:").pack(anchor="w", pady=(0, 4))
+        _db_hdr = tk.Frame(sec, bg=BG2)
+        _db_hdr.pack(fill="x", pady=(0, 4))
+        mlabel(_db_hdr, "DB modifiers — no demoparser2 needed:").pack(side="left")
+        _logic_tip_db = ("AT LEAST ONE (OR): a kill is kept if it matches any one of the checked DB modifiers.\n"
+                         "ALL AT ONCE (AND): a kill must satisfy every checked DB modifier simultaneously.")
+        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE")):
+            _rb = hradio(_db_hdr, _ll, self.v["kill_mod_logic_db"], _lv)
+            _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
+            add_tip(_rb, _logic_tip_db)
 
         # ── ENTRY FRAG ────────────────────────────────────────────────────────
         ef_row = tk.Frame(sec, bg=BG2)
@@ -6178,7 +6211,9 @@ class App(tk.Tk):
                                 f"Only the others are applied.",
                                 "warn")
                     if mod_clauses:
-                        modsql = " AND (" + " OR ".join(mod_clauses) + ")"
+                        _mods_logic = cfg.get("kill_mod_logic_mods", "any")
+                        _sql_join = " AND " if _mods_logic == "all" else " OR "
+                        modsql = " AND (" + _sql_join.join(mod_clauses) + ")"
 
                 date_col = self._date_col   # may be None → auto-detected below
                 if not date_col and self._db_schema.get("matches"):
@@ -6367,6 +6402,10 @@ class App(tk.Tk):
         Called after the main query and date filter — results is a dict
         {demo_path: [event_dict, ...]}. Returns a filtered copy.
 
+        Logic mode (cfg["kill_mod_logic_db"]):
+          "any" (default) — OR: a kill qualifies if it matches at least one active modifier.
+          "all"           — AND: a kill must match every active modifier simultaneously.
+
         If none of the relevant modifiers are active, returns results unchanged.
         """
         do_entry   = cfg.get("kill_mod_entry_frag", False)
@@ -6375,8 +6414,12 @@ class App(tk.Tk):
         do_bour    = cfg.get("kill_mod_bourreau", False)
         do_eco     = cfg.get("kill_mod_eco_frag", False)
 
-        if not any([do_entry, do_ace, do_multi, do_bour, do_eco]):
+        active_flags = [do_entry, do_ace, do_multi, do_bour, do_eco]
+        if not any(active_flags):
             return results
+
+        logic_and   = cfg.get("kill_mod_logic_db", "any") == "all"
+        n_active    = sum(1 for f in active_flags if f)
 
         multi_n = max(2, int(cfg.get("kill_mod_multi_kill_n", 3)))
         multi_s = max(1, int(cfg.get("kill_mod_multi_kill_s", 12)))
@@ -6430,34 +6473,39 @@ class App(tk.Tk):
                 rk = _round_key(e)
                 all_kills_by_round.setdefault(rk, []).append(e)
 
-            keep_sigs: set = set()  # (tick, killer_sid) pairs to keep
+            # Each active modifier collects its own sig set.
+            # OR mode  → union  all sets.
+            # AND mode → intersect all sets (a kill must appear in every set).
+            per_mod_sigs: list = []  # one set per active modifier
 
             # ── Entry Frag ────────────────────────────────────────────────
             if do_entry:
+                _sigs: set = set()
                 for rk, r_kills in all_kills_by_round.items():
                     first_tick = min(e["tick"] for e in r_kills)
-                    # Check if the player made the first kill of this round
                     for e in r_kills:
                         if e["tick"] == first_tick and str(e.get("killer_sid","")) in sids_set:
-                            keep_sigs.add((e["tick"], str(e.get("killer_sid",""))))
+                            _sigs.add((e["tick"], str(e.get("killer_sid",""))))
+                per_mod_sigs.append(_sigs)
 
             # ── Ace ────────────────────────────────────────────────────────
             if do_ace:
+                _sigs = set()
                 for rk, r_kills in round_groups.items():
-                    # Count distinct victims the player killed in this round
                     victims = {str(e.get("victim_sid","")) for e in r_kills}
-                    # Opponents per team in CS2 = 5; if all 5 killed → Ace
                     if len(victims) >= 5:
                         for e in r_kills:
-                            keep_sigs.add((e["tick"], str(e.get("killer_sid",""))))
+                            _sigs.add((e["tick"], str(e.get("killer_sid",""))))
+                per_mod_sigs.append(_sigs)
 
             # ── Multi-Kill (Triple / Quadra) ───────────────────────────────
             if do_multi:
-                max_ticks = multi_s * 64  # approximate; actual tickrate in cfg
+                max_ticks = multi_s * 64
                 try:
                     max_ticks = multi_s * int(cfg.get("tickrate", 64))
                 except Exception:
                     pass
+                _sigs = set()
                 for rk, r_kills in round_groups.items():
                     if len(r_kills) < multi_n:
                         continue
@@ -6465,11 +6513,11 @@ class App(tk.Tk):
                     span = r_sorted[-1]["tick"] - r_sorted[0]["tick"]
                     if span <= max_ticks:
                         for e in r_kills:
-                            keep_sigs.add((e["tick"], str(e.get("killer_sid",""))))
+                            _sigs.add((e["tick"], str(e.get("killer_sid",""))))
+                per_mod_sigs.append(_sigs)
 
             # ── BULLY ──────────────────────────────────────────────────────
             if do_bour:
-                # Count per (killer_sid, victim_sid) across ALL rounds of this demo
                 from collections import Counter
                 pair_count: Counter = Counter()
                 for e in kill_events:
@@ -6477,9 +6525,8 @@ class App(tk.Tk):
                     vs = str(e.get("victim_sid",""))
                     if ks in sids_set and vs:
                         pair_count[(ks, vs)] += 1
-                # Keep kills where the pair has been repeated ≥ bour_n times
-                # Only keep the bour_n-th kill and beyond (not the first occurrences)
                 pair_seen: Counter = Counter()
+                _sigs = set()
                 for e in sorted(kill_events, key=lambda e: e["tick"]):
                     ks = str(e.get("killer_sid",""))
                     vs = str(e.get("victim_sid",""))
@@ -6487,25 +6534,36 @@ class App(tk.Tk):
                         continue
                     pair_seen[(ks, vs)] += 1
                     if pair_count[(ks, vs)] >= bour_n and pair_seen[(ks, vs)] >= bour_n:
-                        keep_sigs.add((e["tick"], ks))
+                        _sigs.add((e["tick"], ks))
+                per_mod_sigs.append(_sigs)
 
             # ── Eco-Frag ───────────────────────────────────────────────────
             if do_eco:
+                _sigs = set()
                 for e in player_kills:
                     kw = (e.get("weapon") or "").lower().strip()
                     if kw not in PISTOLS:
                         continue
                     vw = (e.get("victim_weapon") or "").lower().strip()
                     if not vw:
-                        # No victim weapon info — include anyway (can't filter)
-                        keep_sigs.add((e["tick"], str(e.get("killer_sid",""))))
+                        _sigs.add((e["tick"], str(e.get("killer_sid",""))))
                         continue
                     if vw in FULL_BUY:
-                        keep_sigs.add((e["tick"], str(e.get("killer_sid",""))))
+                        _sigs.add((e["tick"], str(e.get("killer_sid",""))))
+                per_mod_sigs.append(_sigs)
 
-            # If multiple modifiers active, keep_sigs is their UNION.
-            # Filter: keep only kill events whose sig is in keep_sigs;
-            # also keep all non-kill events (deaths/rounds unchanged).
+            # ── Combine per-modifier sets ──────────────────────────────────
+            if not per_mod_sigs:
+                continue
+            if logic_and and len(per_mod_sigs) > 1:
+                # AND: intersection — kill must satisfy every active modifier
+                keep_sigs = per_mod_sigs[0].intersection(*per_mod_sigs[1:])
+            else:
+                # OR: union — kill qualifies if it satisfies at least one
+                keep_sigs: set = set()
+                for s in per_mod_sigs:
+                    keep_sigs |= s
+
             kept_kills = [e for e in kill_events
                           if (e["tick"], str(e.get("killer_sid",""))) in keep_sigs]
 
@@ -7542,34 +7600,9 @@ class App(tk.Tk):
             self._preparse_dp2(cfg, list(evts.keys()))
             t_preparse = time.time() - t0
             # ─────────────────────────────────────────────────────────────────
-            # Apply demoparser2 modifiers before preview.
-            # trois_tap is exclusive; trois_shot + no_trois_shot + one_tap are cumulative (AND).
+            # Apply demoparser2 modifiers before preview (shared helper handles AND/OR logic).
             t0 = time.time()
-            if cfg.get("kill_mod_trois_tap"):
-                self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
-                evts = self._apply_trois_tap_to_events(evts, cfg)
-            else:
-                if cfg.get("kill_mod_trois_shot"):
-                    self._alog("  🎲 TROIS SHOT — analyzing demos…", "info")
-                    evts = self._apply_trois_shot_to_events(evts, cfg)
-                if cfg.get("kill_mod_no_trois_shot"):
-                    self._alog("  🚫🎲 Exclude — analyzing demos…", "info")
-                    evts = self._apply_no_trois_shot_to_events(evts, cfg)
-                if cfg.get("kill_mod_one_tap"):
-                    self._alog("  🎯 ONE TAP — analyzing demos…", "info")
-                    evts = self._apply_one_tap_to_events(evts, cfg)
-                if cfg.get("kill_mod_spray_transfer"):
-                    self._alog("  🔫 SPRAY TRANSFER — analyzing demos…", "info")
-                    evts = self._apply_spray_transfer_to_events(evts, cfg)
-                if cfg.get("kill_mod_high_velocity"):
-                    self._alog("  🏎 HIGH VELOCITY — analyzing demos…", "info")
-                    evts = self._apply_high_velocity_to_events(evts, cfg)
-                if cfg.get("kill_mod_flick"):
-                    self._alog("  ↩ FLICK — analyzing demos…", "info")
-                    evts = self._apply_flick_to_events(evts, cfg)
-                if cfg.get("kill_mod_sauveur"):
-                    self._alog("  🛡 SAVIOR — analyzing demos…", "info")
-                    evts = self._apply_sauveur_to_events(evts, cfg)
+            evts = self._apply_dp2_filters_to_events(evts, cfg)
             t_filters = time.time() - t0
             t_total = time.time() - t0_total
             timings = {
@@ -7884,49 +7917,153 @@ class App(tk.Tk):
             self._alog(f"  ✗ Assembly failed: {err_msg}", "err")
 
     def _apply_dp2_modifiers(self, dp, events, cfg):
-        """Apply active demoparser2 kill modifiers for one demo.
+        """Apply active demoparser2 kill modifiers for one demo (batch worker path).
 
-        Returns the filtered event list, or None if no kills remain
-        (caller should skip this demo).
-        TROIS TAP is exclusive; the others are cumulative (AND logic).
+        Logic mode (cfg["kill_mod_logic_dp2"]):
+          "any" (default/OR): a kill is kept if it passes at least one active filter.
+                              Each filter runs independently on the original event list;
+                              results are unioned.
+          "all"        (AND): a kill must pass every active filter — filters are chained
+                              sequentially (each narrows the set further).
+
+        TROIS TAP is always exclusive and bypasses the logic setting.
+
+        Returns the filtered event list, or None if no kills remain (caller skips demo).
         """
-        modifiers = [
-            ("kill_mod_trois_tap",     self._trois_tap_filter,
-             "🎯🎲 TROIS TAP",  "TROIS TAP",  "0 TROIS TAP"),
-        ]
-        cumulative = [
-            ("kill_mod_trois_shot",    self._trois_shot_filter,
-             "🎲 TROIS SHOT",   "TROIS SHOT", "0 TROIS SHOT"),
-            ("kill_mod_no_trois_shot", self._no_trois_shot_filter,
-             "🚫🎲 Exclude",    "precise",    "0 EXCLUDE"),
-            ("kill_mod_one_tap",       self._one_tap_filter,
-             "🎯 ONE TAP",      "one tap",    "0 ONE TAP"),
-            ("kill_mod_spray_transfer", self._spray_transfer_filter,
-             "🔫 SPRAY",        "spray transfer", "0 SPRAY"),
-            ("kill_mod_high_velocity", self._high_velocity_filter,
-             "🏎 FERRARI PEEK", "counter-strafe", "0 FERRARI PEEK"),
-            ("kill_mod_flick",         self._flick_filter,
-             "↩ FLICK",         "flick",          "0 FLICK"),
-            ("kill_mod_sauveur",       self._sauveur_filter,
-             "🛡 SAVIOR",      "savior",        "0 SAVIOR"),
-        ]
-
+        # TROIS TAP short-circuit — always AND / exclusive
         if cfg.get("kill_mod_trois_tap"):
-            active = modifiers
-        else:
-            active = [m for m in cumulative if cfg.get(m[0])]
-
-        for cfg_key, filter_fn, log_label, result_label, skip_label in active:
             n_before = _count_kills(events)
-            events   = filter_fn(dp, events, cfg)
+            events   = self._trois_tap_filter(dp, events, cfg)
             n_after  = _count_kills(events)
-            self._alog(
-                f"  {log_label} : {n_before} kills → {n_after} {result_label}",
-                "info")
+            self._alog(f"  🎯🎲 TROIS TAP : {n_before} kills → {n_after} TROIS TAP", "info")
             if not events:
-                self._alog(f"  ⏭ SKIP: {skip_label} in this demo", "dim")
+                self._alog("  ⏭ SKIP: 0 TROIS TAP in this demo", "dim")
                 return None
-        return events
+            return events
+
+        _DP2_MODS = [
+            ("kill_mod_trois_shot",     self._trois_shot_filter,
+             "🎲 TROIS SHOT",    "TROIS SHOT",     "0 TROIS SHOT"),
+            ("kill_mod_no_trois_shot",  self._no_trois_shot_filter,
+             "🚫🎲 Exclude",     "precise",        "0 EXCLUDE"),
+            ("kill_mod_one_tap",        self._one_tap_filter,
+             "🎯 ONE TAP",       "one tap",        "0 ONE TAP"),
+            ("kill_mod_spray_transfer", self._spray_transfer_filter,
+             "🔫 SPRAY",         "spray transfer", "0 SPRAY"),
+            ("kill_mod_high_velocity",  self._high_velocity_filter,
+             "🏎 FERRARI PEEK",  "counter-strafe", "0 FERRARI PEEK"),
+            ("kill_mod_flick",          self._flick_filter,
+             "↩ FLICK",          "flick",          "0 FLICK"),
+            ("kill_mod_sauveur",        self._sauveur_filter,
+             "🛡 SAVIOR",        "savior",         "0 SAVIOR"),
+        ]
+        active = [(k, fn, ll, rl, sl) for k, fn, ll, rl, sl in _DP2_MODS if cfg.get(k)]
+        if not active:
+            return events
+
+        logic_and = cfg.get("kill_mod_logic_dp2", "any") == "all"
+
+        if logic_and:
+            # AND: chain filters — each pass narrows the surviving set
+            for cfg_key, filter_fn, log_label, result_label, skip_label in active:
+                n_before = _count_kills(events)
+                events   = filter_fn(dp, events, cfg)
+                n_after  = _count_kills(events)
+                self._alog(
+                    f"  {log_label} : {n_before} kills → {n_after} {result_label}",
+                    "info")
+                if not events:
+                    self._alog(f"  ⏭ SKIP: {skip_label} in this demo", "dim")
+                    return None
+            return events
+        else:
+            # OR: run each filter independently on the original list, union kill sigs
+            non_kill   = [e for e in events if e.get("type") != "kill"]
+            kill_sigs_union: set = set()
+            for cfg_key, filter_fn, log_label, result_label, skip_label in active:
+                n_before = _count_kills(events)
+                passed   = filter_fn(dp, events, cfg)
+                n_after  = _count_kills(passed)
+                self._alog(
+                    f"  {log_label} : {n_before} kills → {n_after} {result_label}",
+                    "info")
+                for e in passed:
+                    if e.get("type") == "kill":
+                        kill_sigs_union.add((e["tick"], str(e.get("killer_sid", ""))))
+            kept_kills = [e for e in events
+                          if e.get("type") == "kill"
+                          and (e["tick"], str(e.get("killer_sid", ""))) in kill_sigs_union]
+            result = kept_kills + non_kill
+            if not result:
+                self._alog("  ⏭ SKIP: 0 kills after dp2 OR filters in this demo", "dim")
+                return None
+            return result
+
+    def _apply_dp2_filters_to_events(self, evts, cfg):
+        """Apply active demoparser2 modifiers to a full {demo_path: events} dict.
+
+        Shared by the Preview path and the tag-redo path so the logic lives in one place.
+        Respects kill_mod_logic_dp2 (any/all) for the OR/AND behaviour.
+        TROIS TAP is always exclusive and bypasses the logic setting.
+
+        Returns a new dict with empty-demo entries removed.
+        """
+        if cfg.get("kill_mod_trois_tap"):
+            self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
+            return self._apply_trois_tap_to_events(evts, cfg)
+
+        _DP2_MODS = [
+            ("kill_mod_trois_shot",     self._apply_trois_shot_to_events,    "🎲 TROIS SHOT"),
+            ("kill_mod_no_trois_shot",  self._apply_no_trois_shot_to_events, "🚫🎲 Exclude"),
+            ("kill_mod_one_tap",        self._apply_one_tap_to_events,       "🎯 ONE TAP"),
+            ("kill_mod_spray_transfer", self._apply_spray_transfer_to_events,"🔫 SPRAY TRANSFER"),
+            ("kill_mod_high_velocity",  self._apply_high_velocity_to_events, "🏎 HIGH VELOCITY"),
+            ("kill_mod_flick",          self._apply_flick_to_events,         "↩ FLICK"),
+            ("kill_mod_sauveur",        self._apply_sauveur_to_events,       "🛡 SAVIOR"),
+        ]
+        active = [(k, fn, ll) for k, fn, ll in _DP2_MODS if cfg.get(k)]
+        if not active:
+            return evts
+
+        logic_and = cfg.get("kill_mod_logic_dp2", "any") == "all"
+
+        if logic_and:
+            # AND: chain — each _apply_*_to_events call narrows the dict further
+            result = evts
+            for cfg_key, apply_fn, log_label in active:
+                self._alog(f"  {log_label} — analyzing demos…", "info")
+                result = apply_fn(result, cfg)
+            return result
+        else:
+            # OR: run each filter independently, then union per-demo
+            per_filter_results = []
+            for cfg_key, apply_fn, log_label in active:
+                self._alog(f"  {log_label} — analyzing demos…", "info")
+                per_filter_results.append(apply_fn(evts, cfg))
+
+            # Merge: for each demo, union the kill (tick, killer_sid) sigs across all filters
+            all_demos = set()
+            for r in per_filter_results:
+                all_demos |= set(r.keys())
+
+            merged = {}
+            for dp in all_demos:
+                # Collect kill sigs from every filter that produced results for this demo
+                kill_sigs_union: set = set()
+                for r in per_filter_results:
+                    for e in r.get(dp, []):
+                        if e.get("type") == "kill":
+                            kill_sigs_union.add((e["tick"], str(e.get("killer_sid", ""))))
+
+                # Use the original event list for this demo to preserve non-kill events
+                original_events = evts.get(dp, [])
+                non_kill = [e for e in original_events if e.get("type") != "kill"]
+                kept_kills = [e for e in original_events
+                              if e.get("type") == "kill"
+                              and (e["tick"], str(e.get("killer_sid", ""))) in kill_sigs_union]
+                if kept_kills or non_kill:
+                    merged[dp] = kept_kills + non_kill
+            return merged
 
 
     def _worker(self, cfg):
@@ -8118,31 +8255,8 @@ class App(tk.Tk):
                             nonlocal _fe
                             # Pre-parse (no-op if already cached from the previous preview)
                             self._preparse_dp2(cfg, list(_fe.keys()))
-                            if cfg.get("kill_mod_trois_tap"):
-                                self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
-                                _fe = self._apply_trois_tap_to_events(_fe, cfg)
-                            else:
-                                if cfg.get("kill_mod_trois_shot"):
-                                    self._alog("  🎲 TROIS SHOT — analyzing demos…", "info")
-                                    _fe = self._apply_trois_shot_to_events(_fe, cfg)
-                                if cfg.get("kill_mod_no_trois_shot"):
-                                    self._alog("  🚫🎲 Exclude — analyzing demos…", "info")
-                                    _fe = self._apply_no_trois_shot_to_events(_fe, cfg)
-                                if cfg.get("kill_mod_one_tap"):
-                                    self._alog("  🎯 ONE TAP — analyzing demos…", "info")
-                                    _fe = self._apply_one_tap_to_events(_fe, cfg)
-                                if cfg.get("kill_mod_spray_transfer"):
-                                    self._alog("  🔫 SPRAY TRANSFER — analyzing demos…", "info")
-                                    _fe = self._apply_spray_transfer_to_events(_fe, cfg)
-                                if cfg.get("kill_mod_high_velocity"):
-                                    self._alog("  🏎 HIGH VELOCITY — analyzing demos…", "info")
-                                    _fe = self._apply_high_velocity_to_events(_fe, cfg)
-                                if cfg.get("kill_mod_flick"):
-                                    self._alog("  ↩ FLICK — analyzing demos…", "info")
-                                    _fe = self._apply_flick_to_events(_fe, cfg)
-                                if cfg.get("kill_mod_sauveur"):
-                                    self._alog("  🛡 SAVIOR — analyzing demos…", "info")
-                                    _fe = self._apply_sauveur_to_events(_fe, cfg)
+                            # Apply dp2 modifiers via shared helper (handles AND/OR logic)
+                            _fe = self._apply_dp2_filters_to_events(_fe, cfg)
                             self.after(0, lambda: self._show_preview(_fe, cfg))
                         threading.Thread(target=_bg, daemon=True).start()
                     self.after(0, _redo)

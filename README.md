@@ -61,6 +61,13 @@ In **CS** mode, CS2 replays the demo from tick 0 to reach each target tick — a
 
 ## Kill modifiers
 
+Each of the three modifier categories has an **AT LEAST ONE / ALL AT ONCE** toggle:
+
+- **AT LEAST ONE** (default) — OR logic: a kill is kept if it matches any one of the checked modifiers in that category.
+- **ALL AT ONCE** — AND logic: a kill must satisfy every checked modifier in that category simultaneously.
+
+The three categories are independent — you can mix modes freely (e.g. OR across demoparser2 mods, AND across DB mods).
+
 ### 🔵 demoparser2-powered
 
 > Demos are pre-parsed in parallel before the batch starts. The cache persists for the session — Preview → Batch never re-parses.
@@ -76,7 +83,7 @@ In **CS** mode, CS2 replays the demo from tick 0 to reach each target tick — a
 | ↩ **Flick** | Large view-angle change in the ~0.5s before the kill |
 | 🛡 **Savior** | Kill an enemy who was actively damaging a teammate |
 
-> Modifiers stack with AND logic. Enabling TROIS SHOT + ONE TAP simultaneously auto-converts to TROIS TAP.
+> Modifier logic follows the **AT LEAST ONE / ALL AT ONCE** toggle for this category. Enabling TROIS SHOT + ONE TAP simultaneously auto-converts to TROIS TAP regardless of the logic setting.
 
 ### 🟢 DB-only
 

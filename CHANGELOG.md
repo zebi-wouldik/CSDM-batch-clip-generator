@@ -5,7 +5,31 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v104]
+## [v105]
+### Added
+
+- **Logic mode selector for each kill filter category**:
+  Each of the three kill filter sections now has its own **AT LEAST ONE / ALL AT ONCE** radio toggle:
+  - **Mods** (DB boolean columns — smoke, wallbang, airborne, etc.): toggles the SQL `WHERE` clause between `OR` and `AND` across the checked mods.
+  - **demoparser2 modifiers** (TROIS SHOT, ONE TAP, SPRAY, FERRARI PEEK, FLICK, SAVIOR): in OR mode each filter runs independently on the original kill list and results are unioned; in AND mode filters are chained (each narrows the surviving set). TROIS TAP is always exclusive and bypasses this setting.
+  - **DB modifiers** (ENTRY, ACE, MULTI-KILL, BULLY, ECO): in OR mode the per-modifier sig sets are unioned; in AND mode they are intersected — a kill must satisfy every checked modifier simultaneously.
+  - All three selectors default to **AT LEAST ONE** (OR), preserving existing behaviour.
+
+- **New config keys** (saved/restored through existing config persistence):
+  - `kill_mod_logic_mods` — `"any"` | `"all"`
+  - `kill_mod_logic_dp2`  — `"any"` | `"all"`
+  - `kill_mod_logic_db`   — `"any"` | `"all"`
+
+### Changed
+
+- **DRY refactor — dp2 filter application**:
+  The three previously identical inline blocks that applied demoparser2 filters (preview path, tag-redo path, and a prior shared helper) have been consolidated into a single `_apply_dp2_filters_to_events(evts, cfg)` method. All three call sites now delegate to it. The per-demo worker path goes through `_apply_dp2_modifiers` which was also rewritten to support both logic modes.
+
+- **Version bump**: script version moved to `v105`.
+
+---
+
+
 ### Changed
 
 - **DRY refactor for demo log entries**:
