@@ -44,7 +44,7 @@ Open the **Tools** tab → connect to PostgreSQL with the same credentials as CS
 ## Workflow
 
 ```
-Capture tab  →  select player(s) + filters  →  F6 Preview  →  F5 Run
+Capture tab  →  PLAYER + CAPTURE + KILL FILTERS  →  F6 Preview  →  F5 Run
 ```
 
 - **Preview** shows clip count, total duration, and a per-demo breakdown — uncheck any demo to exclude it

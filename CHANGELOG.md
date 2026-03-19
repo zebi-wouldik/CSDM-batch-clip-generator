@@ -5,6 +5,19 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v97]
+### Changed — Section restructure, Mods (OR) refonte
+
+**Sections renommées et réorganisées dans l'onglet Capture :**
+- `EVENTS & CAMERA` → **`CAPTURE`** — KILLS / DEATHS BY / ROUNDS + Perspective uniquement.
+- Nouvelle section **`KILL FILTERS`** — tous les filtres de kills regroupés.
+- `TIMING & ROBUSTNESS` → **`TIMING`**
+- `DATE RANGE & DEMO SELECTION` → **`DEMO SELECTION`**
+
+**Mods (OR) refaits en style ligne-par-ligne** (comme les DB modifiers) : chaque mod a son propre label et sa checkbox Enable sur sa propre ligne. HS ONLY est intégré dans cette liste. Suicides et TK restent en haut de la section sur une ligne compacte séparée.
+
+---
+
 ## [v96]
 ### Fixed & Changed
 

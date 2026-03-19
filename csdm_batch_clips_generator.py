@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v96"""
+"""CSDM Batch Clips Generator v97"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v96"
+APP_VERSION = "v97"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -2484,7 +2484,7 @@ class App(tk.Tk):
         self.player_search = PlayerSearchWidget(sec, on_change=self._on_player_change)
         self.player_search.pack(fill="x")
 
-        sec = Sec(p, "EVENTS & CAMERA")
+        sec = Sec(p, "CAPTURE")
         sec.pack(fill="x", pady=(0, 10))
 
         ev_row = tk.Frame(sec, bg=BG2)
@@ -2522,48 +2522,105 @@ class App(tk.Tk):
                            "Clips every round regardless of kills — useful for full-round montages.\n"
                            "Requires a 'rounds' table in the CSDM database.").pack(side="left", padx=(4, 0))
 
-        opt_row = tk.Frame(sec, bg=BG2)
-        opt_row.pack(fill="x", pady=(4, 0))
-        self._hs_cb = hchk(opt_row, "HS only", self.v["headshots_only"])
-        self._hs_cb.pack(side="left")
-        add_tip(self._hs_cb, "Only captures headshot kills (is_headshot column).")
-        _sui_cb = hchk(opt_row, "Suicides", self.v["include_suicides"])
-        _sui_cb.pack(side="left", padx=(4, 0))
+
+        # ── PERSPECTIVE ───────────────────────────────────────────────────────
+        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
+        persp_row = tk.Frame(sec, bg=BG2)
+        persp_row.pack(fill="x")
+        mlabel(persp_row, "Perspective:").pack(side="left")
+        for lbl, val, tip in [
+            ("POV Killer", "killer", "Camera on the killer throughout the clip"),
+            ("POV Victim", "victim", "Camera on the victim throughout the clip"),
+            ("Both",       "both",   "Starts on the killer, then switches to the victim before the kill"),
+        ]:
+            _rb = hradio(persp_row, lbl, self.v["perspective"], val,
+                         command=self._on_perspective_change)
+            _rb.pack(side="left", padx=(4, 0))
+            add_tip(_rb, tip)
+
+        # Switch delay slider — visible only in both mode
+        self._victim_pre_row = tk.Frame(sec, bg=BG2)
+        self._victim_pre_row.pack(fill="x", pady=(4, 0))
+        _vp_lbl = mlabel(self._victim_pre_row, "Switch delay (s):")
+        _vp_lbl.pack(side="left")
+        add_tip(_vp_lbl,
+                "Seconds before the kill tick at which the camera switches from killer to victim.\n"
+                "0 = switch exactly at the kill. Capped at BEFORE seconds.")
+        _vp_val_lbl = tk.Label(self._victim_pre_row, text=f"{self.v['victim_pre_s'].get()}s",
+                               font=FONT_SM, fg=ORANGE, bg=BG2)
+        _vp_val_lbl.pack(side="right")
+        tk.Scale(self._victim_pre_row, from_=0, to=10, variable=self.v["victim_pre_s"],
+                 orient="horizontal", bg=BG2, fg=TEXT, troughcolor=BG3,
+                 activebackground=ORANGE, highlightthickness=0, bd=0,
+                 showvalue=False, cursor="hand2",
+                 command=lambda v: _vp_val_lbl.config(text=f"{int(float(v))}s")
+                 ).pack(side="left", fill="x", expand=True, pady=(2, 0))
+        self.after(50, self._on_perspective_change)
+
+        # ══════════════════════════════════════════════════════════════════════
+        sec = Sec(p, "KILL FILTERS")
+        sec.pack(fill="x", pady=(0, 10))
+
+        # ── SUICIDES / TK ─────────────────────────────────────────────────────
+        tk_row = tk.Frame(sec, bg=BG2)
+        tk_row.pack(fill="x")
+        _sui_cb = hchk(tk_row, "Suicides", self.v["include_suicides"])
+        _sui_cb.pack(side="left")
         add_tip(_sui_cb, "Include world / fall / suicide deaths in clips.")
-        mlabel(opt_row, "   TK:").pack(side="left", padx=(8, 0))
+        mlabel(tk_row, "   TK:").pack(side="left", padx=(8, 0))
         for lbl, val, tip in [
             ("Include", "include", "All kills, including teamkills"),
             ("Exclude", "exclude", "Exclude teamkill frags"),
             ("Only",    "only",    "Only kills on teammates"),
         ]:
-            _rb = hradio(opt_row, lbl, self.v["teamkills_mode"], val)
+            _rb = hradio(tk_row, lbl, self.v["teamkills_mode"], val)
             _rb.pack(side="left", padx=(4, 0))
             add_tip(_rb, tip)
 
-        # ── MODS ──────────────────────────────────────────────────────────────
+        # ── MODS (OR) ─────────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
-        mods_row = tk.Frame(sec, bg=BG2)
-        mods_row.pack(fill="x")
-        _m_lbl = mlabel(mods_row, "Mods (OR):")
-        _m_lbl.pack(side="left")
-        add_tip(_m_lbl, "If none checked → all kills included.\nIf multiple checked → one must match (OR).")
+        mlabel(sec, "Mods (OR) — one must match, or none checked = all kills:").pack(anchor="w", pady=(0, 4))
+
         _MODS = [
-            ("kill_mod_through_smoke",  "Smoke",          "Kill through a smoke grenade"),
-            ("kill_mod_no_scope",       "No-scope",        "No-scope kill (sniper only)"),
-            ("kill_mod_wall_bang",      "Wallbang",        "Kill by shooting through a wall or object"),
-            ("kill_mod_airborne",       "Airborne",        "Killer is in the air at time of shot"),
-            ("kill_mod_assisted_flash", "Victim flashed",  "Victim was blinded by a flashbang"),
-            ("kill_mod_collateral",     "Collateral",      "Bullet passed through a first victim"),
-            ("kill_mod_attacker_blind", "Blind Fire 😵",   "Killer was blinded by a flashbang at shot time"),
+            ("headshots_only",          "🎯 HS ONLY:",        None,
+             "Only captures headshot kills (is_headshot column)."),
+            ("kill_mod_through_smoke",  "💨 SMOKE:",          "kill_mod_through_smoke",
+             "Kill through a smoke grenade"),
+            ("kill_mod_no_scope",       "🔭 NO-SCOPE:",       "kill_mod_no_scope",
+             "No-scope kill (sniper only)"),
+            ("kill_mod_wall_bang",      "🧱 WALLBANG:",       "kill_mod_wall_bang",
+             "Kill by shooting through a wall or object"),
+            ("kill_mod_airborne",       "🪂 AIRBORNE:",       "kill_mod_airborne",
+             "Killer is in the air at time of shot"),
+            ("kill_mod_assisted_flash", "⚡ VICTIM FLASHED:", "kill_mod_assisted_flash",
+             "Victim was blinded by a flashbang"),
+            ("kill_mod_collateral",     "🎯 COLLATERAL:",     "kill_mod_collateral",
+             "Bullet passed through a first victim"),
+            ("kill_mod_attacker_blind", "😵 BLIND FIRE:",     "kill_mod_attacker_blind",
+             "Killer was blinded by a flashbang at shot time"),
         ]
-        for key, lbl, tip in _MODS:
-            _cb = hchk(mods_row, lbl, self.v[key])
-            _cb.pack(side="left", padx=(4, 0))
-            add_tip(_cb, tip)
+        for i, (key, label, _ck, tip) in enumerate(_MODS):
+            row = tk.Frame(sec, bg=BG2)
+            row.pack(fill="x", pady=(2 if i > 0 else 0, 0))
+            _lbl = mlabel(row, label)
+            _lbl.pack(side="left")
+            add_tip(_lbl, tip)
+            if key == "headshots_only":
+                self._hs_cb = hchk(row, "Enable", self.v[key])
+                self._hs_cb.pack(side="left", padx=(4, 0))
+                add_tip(self._hs_cb, tip)
+            else:
+                _cb = hchk(row, "Enable", self.v[key])
+                _cb.pack(side="left", padx=(4, 0))
+                add_tip(_cb, tip)
+
+        # ── demoparser2 modifiers ─────────────────────────────────────────────
+        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
+        mlabel(sec, "demoparser2 modifiers:").pack(anchor="w", pady=(0, 4))
 
         # ── TROIS SHOT ────────────────────────────────────────────────────────
         trois_row = tk.Frame(sec, bg=BG2)
-        trois_row.pack(fill="x", pady=(4, 0))
+        trois_row.pack(fill="x", pady=(2, 0))
         _ts_lbl = mlabel(trois_row, "🎲 TROIS SHOT:")
         _ts_lbl.pack(side="left")
         add_tip(_ts_lbl,
@@ -2641,15 +2698,29 @@ class App(tk.Tk):
                 "     (skipped if no post-kill fire found)\n\n"
                 "CS2 run speeds: knife 250 · pistols 240 · Deagle 230 · AK-47 215 · AWP 200 u/s\n"
                 "Default 100 u/s — catches any active peek above walking speed.")
-        hchk(hv_row, "Enable", self.v["kill_mod_high_velocity"]).pack(side="left", padx=(4, 0))
-        _os_cb = hchk(hv_row, "One-shot", self.v["kill_mod_hv_one_shot"])
+
+        _hv_inner = tk.Frame(hv_row, bg=BG2)
+
+        def _on_hv_toggle(*_):
+            if self.v["kill_mod_high_velocity"].get():
+                _hv_inner.pack(side="left", fill="x")
+            else:
+                _hv_inner.pack_forget()
+
+        _hv_enable = hchk(hv_row, "Enable", self.v["kill_mod_high_velocity"],
+                          command=_on_hv_toggle)
+        _hv_enable.pack(side="left", padx=(4, 0))
+
+        _os_cb = hchk(_hv_inner, "One-shot", self.v["kill_mod_hv_one_shot"])
         _os_cb.pack(side="left", padx=(8, 0))
         add_tip(_os_cb, "Require no prior fire within ~0.75s before the kill.\n"
                         "Uncheck to allow spray finishers as long as the approach and resume conditions hold.")
-        mlabel(hv_row, "  Min approach:").pack(side="left", padx=(8, 0))
-        sentry(hv_row, self.v["kill_mod_high_vel_thr"], width=5).pack(side="left", padx=(4, 0), ipady=4)
-        mlabel(hv_row, "u/s").pack(side="left", padx=(2, 0))
-        dp2_badge(hv_row).pack(side="left", padx=(8, 0))
+        mlabel(_hv_inner, "  Min approach:").pack(side="left", padx=(8, 0))
+        sentry(_hv_inner, self.v["kill_mod_high_vel_thr"], width=5).pack(side="left", padx=(4, 0), ipady=4)
+        mlabel(_hv_inner, "u/s").pack(side="left", padx=(2, 0))
+        dp2_badge(_hv_inner).pack(side="left", padx=(8, 0))
+
+        self.after(50, _on_hv_toggle)
 
         # ── FLICK ─────────────────────────────────────────────────────────────
         fl_row = tk.Frame(sec, bg=BG2)
@@ -2665,7 +2736,7 @@ class App(tk.Tk):
         mlabel(fl_row, "°").pack(side="left", padx=(2, 0))
         dp2_badge(fl_row).pack(side="left", padx=(8, 0))
 
-        # ── SAVIOR ───────────────────────────────────────────────────────────
+        # ── SAVIOR ────────────────────────────────────────────────────────────
         sv_row = tk.Frame(sec, bg=BG2)
         sv_row.pack(fill="x", pady=(4, 0))
         _sv_lbl = mlabel(sv_row, "🛡 SAVIOR:")
@@ -2748,12 +2819,16 @@ class App(tk.Tk):
                       command=self._on_clutch_toggle)
         _cl_cb.pack(side="left", padx=(4, 0))
 
+        # Always-packed container — inner content shown/hidden by _on_clutch_toggle
         self._clutch_opts_row = tk.Frame(sec, bg=BG2)
-        # Do NOT pack here — _on_clutch_toggle controls visibility
+        self._clutch_opts_row.pack(fill="x")
+
+        # Inner frame — this is what gets shown/hidden
+        self._clutch_opts_inner = tk.Frame(self._clutch_opts_row, bg=BG2)
 
         # 1vX checkboxes
-        _sizes_row = tk.Frame(self._clutch_opts_row, bg=BG2)
-        _sizes_row.pack(fill="x")
+        _sizes_row = tk.Frame(self._clutch_opts_inner, bg=BG2)
+        _sizes_row.pack(fill="x", pady=(4, 0))
         mlabel(_sizes_row, "Sizes:").pack(side="left")
         add_tip(_sizes_row.winfo_children()[-1],
                 "No box checked = all sizes included (1v1 through 1v5).")
@@ -2762,7 +2837,7 @@ class App(tk.Tk):
             _cb.pack(side="left", padx=(6, 0))
 
         # Clip mode + win only
-        _clip_row = tk.Frame(self._clutch_opts_row, bg=BG2)
+        _clip_row = tk.Frame(self._clutch_opts_inner, bg=BG2)
         _clip_row.pack(fill="x", pady=(4, 0))
         mlabel(_clip_row, "Clip:").pack(side="left")
         for lbl, val, tip in [
@@ -2778,41 +2853,7 @@ class App(tk.Tk):
 
         self.after(50, self._on_clutch_toggle)
 
-        # ── PERSPECTIVE ───────────────────────────────────────────────────────
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
-        persp_row = tk.Frame(sec, bg=BG2)
-        persp_row.pack(fill="x")
-        mlabel(persp_row, "Perspective:").pack(side="left")
-        for lbl, val, tip in [
-            ("POV Killer", "killer", "Camera on the killer throughout the clip"),
-            ("POV Victim", "victim", "Camera on the victim throughout the clip"),
-            ("Both",       "both",   "Starts on the killer, then switches to the victim before the kill"),
-        ]:
-            _rb = hradio(persp_row, lbl, self.v["perspective"], val,
-                         command=self._on_perspective_change)
-            _rb.pack(side="left", padx=(4, 0))
-            add_tip(_rb, tip)
-
-        # Switch delay slider — visible only in both mode
-        self._victim_pre_row = tk.Frame(sec, bg=BG2)
-        self._victim_pre_row.pack(fill="x", pady=(4, 0))
-        _vp_lbl = mlabel(self._victim_pre_row, "Switch delay (s):")
-        _vp_lbl.pack(side="left")
-        add_tip(_vp_lbl,
-                "Seconds before the kill tick at which the camera switches from killer to victim.\n"
-                "0 = switch exactly at the kill. Capped at BEFORE seconds.")
-        _vp_val_lbl = tk.Label(self._victim_pre_row, text=f"{self.v['victim_pre_s'].get()}s",
-                               font=FONT_SM, fg=ORANGE, bg=BG2)
-        _vp_val_lbl.pack(side="right")
-        tk.Scale(self._victim_pre_row, from_=0, to=10, variable=self.v["victim_pre_s"],
-                 orient="horizontal", bg=BG2, fg=TEXT, troughcolor=BG3,
-                 activebackground=ORANGE, highlightthickness=0, bd=0,
-                 showvalue=False, cursor="hand2",
-                 command=lambda v: _vp_val_lbl.config(text=f"{int(float(v))}s")
-                 ).pack(side="left", fill="x", expand=True, pady=(2, 0))
-        self.after(50, self._on_perspective_change)
-
-        sec = Sec(p, "TIMING & ROBUSTNESS")
+        sec = Sec(p, "TIMING")
         sec.pack(fill="x", pady=(0, 6))
 
         tg = tk.Frame(sec, bg=BG2)
@@ -2860,7 +2901,7 @@ class App(tk.Tk):
         for lbl, val in [("Chrono","chrono"),("Random 🎲","random")]:
             hradio(rg, lbl, self.v["clip_order"], val).pack(side="left", padx=(4, 0))
 
-        sec = Sec(p, "DATE RANGE & DEMO SELECTION")
+        sec = Sec(p, "DEMO SELECTION")
         sec.pack(fill="x", pady=(0, 6))
 
         # ── Date range row ────────────────────────────────────────────────────
@@ -3790,9 +3831,9 @@ class App(tk.Tk):
         """Show/hide clutch options based on clutch_enabled."""
         try:
             if self.v["clutch_enabled"].get():
-                self._clutch_opts_row.pack(fill="x", pady=(4, 0))
+                self._clutch_opts_inner.pack(fill="x")
             else:
-                self._clutch_opts_row.pack_forget()
+                self._clutch_opts_inner.pack_forget()
         except Exception:
             pass
 
