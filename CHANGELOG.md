@@ -15,7 +15,7 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Internal docstring updated to document the actual behaviour of each condition.
 
 **README — Recording section corrected:**
-- `CS2 effects` marked ❌ for CS mode (was ✅, incorrect). The code only injects physics commands via `hlaeOptions.extraArgs` (HLAE). In CS mode they are logged but not forwarded to CSDM.
+- `CS2 effects` marked ❌ for CS mode (was ✅, incorrect). The physics commands (`cl_ragdoll_gravity`, `sv_gravity`, etc.) are standard CS2 console commands — they work in any mode. The real issue is that CSDM's CS mode JSON schema has no `extraArgs` field to inject them through, so the script logs them but cannot forward them. HLAE is not required for the physics themselves.
 
 ---
 
@@ -45,10 +45,8 @@ New logic — two conditions only:
 Default threshold: **150 u/s** (above walking speed, clearly an active peek). UI label: "Min speed at shot:". Tooltip fully rewritten.
 
 **CS2 EFFECTS — corrections:**
-- UI section renamed to `"HLAE mode only"` (was "both HLAE and CS modes" — incorrect).
-- Section description corrected.
-- System selector tooltip corrected: CS2 effects listed explicitly as HLAE-only.
-- README: Recording systems table completed (Hide spectator UI + TrueView added), note clarified.
+- Physics commands (`cl_ragdoll_gravity`, `sv_gravity`, etc.) are standard CS2 console commands — HLAE is not required for them. In HLAE mode the script injects them via `hlaeOptions.extraArgs`. In CS mode, CSDM's JSON schema has no equivalent field, so they are logged but not forwarded — pending CSDM support.
+- README Recording table corrected accordingly.
 
 ---
 

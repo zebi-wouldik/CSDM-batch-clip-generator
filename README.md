@@ -116,10 +116,10 @@ Two systems available: **HLAE** (recommended) and **CS** (native). The HLAE-spec
 | Slow motion | ✅ | ❌ |
 | AFX streams | ✅ | ❌ |
 | Hide spectator UI | ✅ | ❌ |
-| CS2 effects (physics, gravity, blood) | ✅ | ❌ |
+| CS2 effects (physics, gravity, blood) | ✅ | ⚠️ |
 | TrueView | ✅ | ✅ |
 
-> CS2 effects (ragdoll, gravity, blood) are injected via HLAE extraArgs. In CS mode, these settings have no effect — CS mode has no `extraArgs` equivalent.
+> CS2 effects use standard CS2 console commands — they don't require HLAE. In HLAE mode they are injected via `hlaeOptions.extraArgs`. In CS mode, CSDM's JSON schema has no `extraArgs` field to inject them through, so they are currently ignored.
 
 ---
 
