@@ -5,6 +5,74 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v121]
+### Changed
+
+- **Updated "DEATHS BY" capture tooltip** to explicitly reflect current behavior:
+  it now states that deaths use the same active weapon, kill-filter, and situation-filter logic as kills, with the selected player(s) on the victim side.
+- **Version bump**: script version moved to `v121`.
+
+---
+
+## [v120]
+### Changed
+
+- **Kill filter logic selector is now single-source in UI**:
+  replaced duplicated `AT LEAST ONE / ALL AT ONCE / MIXED` blocks for Mods and demoparser2 with one shared selector: **Kill filters logic (Mods + demoparser2)**.
+- **DB modifiers moved to Situation category with Clutch**:
+  DB postfilters and Clutch are now grouped under **Situation (DB + Clutch)** for clearer mental model and less UI noise.
+- **Situation logic remains additive after kill filters**:
+  situation modifiers apply after kill-filter selection (`kill_mod_logic_db`), preserving pipeline behavior while improving clarity.
+- **DRY cleanup**:
+  kill-logic synchronization now goes through one handler (`_on_kill_logic_change`) that keeps internal Mods/dp2 logic state aligned.
+- **Version bump**: script version moved to `v120`.
+
+---
+
+## [v119]
+### Fixed
+
+- **Headshots auto-lock logic is now context-aware**:
+  `🎯 Headshots = Only` is no longer forced just because `ONE TAP` is checked in every case.
+- **Force-only now applies only when HS-only output is guaranteed by active logic**:
+  - Always forced for `TROIS TAP`.
+  - Forced for `ONE TAP` only in HS-strict combinations (for example dp2 `ALL`, or dp2 `MIXED` when ONE TAP is required / sole optional).
+  - Not forced for broad OR combinations where non-HS clips can still validly pass.
+- **UI + runtime alignment**:
+  - HS radio lock/unlock now uses one shared evaluator.
+  - DB query headshot coercion uses the same evaluator, avoiding over-filtering.
+- **Version bump**: script version moved to `v119`.
+
+---
+
+## [v118]
+### Changed
+
+- **DP2 pre-parse is now section-aware** instead of parsing every dataset unconditionally per demo:
+  - Parses only required sections by active filters (`fire`, `death`, `hurt`).
+  - Avoids heavy `weapon_fire` parsing when only death-flag filters (e.g. WALLBANG/AIRBORNE/BLIND/COLLATERAL) are enabled.
+- **DRY refactor for parse requirements**:
+  - Added `_dp2_required_sections(cfg)` as single source of truth for filter → required data mapping.
+  - `_preparse_dp2` and `_dp2_parse_demo` now share this section model.
+- **Incremental cache coverage**:
+  - Cache now tracks parsed sections per demo and only fills missing sections, instead of treating cache as all-or-nothing per file.
+- **Version bump**: script version moved to `v118`.
+
+---
+
+## [v117]
+### Fixed
+
+- **AT LEAST ONE logic across Mods + dp2 now behaves as expected when stacking more filters**:
+  when both categories are set to `ANY`, adding dp2 filters no longer unintentionally narrows results through an implicit cross-category AND caused by SQL pre-filtering before dp2 pass.
+- **Cross-engine OR union added for `Mods[ANY] + dp2[ANY]`**:
+  SQL-backed mod matches (`SMOKE`, `NO-SCOPE`, `VIC.FLASH`) are preserved as `_mf` matches and unioned with dp2 OR results in both preview and batch worker paths.
+- **Graceful handling when SQL mod columns are missing in this union mode**:
+  if SQL mods cannot be applied from DB but dp2 ANY is active, the query no longer hard-returns empty solely due to missing SQL mod columns.
+- **Version bump**: script version moved to `v117`.
+
+---
+
 ## [v116]
 ### Fixed
 

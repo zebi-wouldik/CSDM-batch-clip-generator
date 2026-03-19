@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v116"""
+"""CSDM Batch Clips Generator v121"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v116"
+APP_VERSION = "v121"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -2786,7 +2786,9 @@ class App(tk.Tk):
                            "Capture kills made by the player.").pack(side="left", padx=(10, 0))
         _make_event_toggle(ev_row, "DEATHS BY",
                            self.sel_events["Deaths"],
-                           "Capture deaths — clips show the player dying, from the killer's perspective.").pack(side="left", padx=(4, 0))
+                           "Capture deaths of the selected player(s).\n"
+                           "Uses the same active weapon / kill-filter / situation-filter logic as KILLS;\n"
+                           "the difference is that matching events are those where the selected player dies.").pack(side="left", padx=(4, 0))
         _make_event_toggle(ev_row, "ROUNDS",
                            self.sel_events["Rounds"],
                            "One clip per round the player participated in, starting at round start tick.\n"
@@ -2857,7 +2859,7 @@ class App(tk.Tk):
                 "All = include all kills regardless of headshot status.\n"
                 "Only = keep headshot kills only (is_headshot column).\n"
                 "Exclude = keep non-headshot kills only.\n"
-                "⚠ ONE TAP and TROIS TAP force 'Only' when enabled.")
+                "⚠ HS is auto-forced only when active filter logic guarantees HS-only output.")
         for lbl, val in [("All", "all"), ("Only", "only"), ("Exclude", "exclude")]:
             _rb = hradio(hs_row, lbl, self.v["headshots_mode"], val,
                          command=self._on_headshots_mode_change)
@@ -2865,20 +2867,21 @@ class App(tk.Tk):
         # Store the radio buttons container so ONE TAP / TROIS TAP can disable it
         self._hs_row = hs_row
 
-        # ── MODS ──────────────────────────────────────────────────────────────
+        # ── KILL FILTERS LOGIC (shared for Mods + demoparser2) ───────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
-        _mods_hdr = tk.Frame(sec, bg=BG2)
-        _mods_hdr.pack(fill="x", pady=(0, 4))
-        mlabel(_mods_hdr, "Mods — none checked = all kills:").pack(side="left")
-        _logic_tip_mods = (
-            "AT LEAST ONE (OR): a kill is kept if it matches any one of the checked mods.\n"
-            "ALL AT ONCE (AND): a kill must match every checked mod simultaneously.\n"
-            "MIXED: required mods (★ Must) must ALL match, plus at least one optional mod.")
+        _kill_logic_hdr = tk.Frame(sec, bg=BG2)
+        _kill_logic_hdr.pack(fill="x", pady=(0, 4))
+        mlabel(_kill_logic_hdr, "Kill filters logic (Mods + demoparser2):").pack(side="left")
+        _logic_tip_kill = (
+            "AT LEAST ONE (OR): keep kills matching at least one enabled kill filter.\n"
+            "ALL AT ONCE (AND): keep kills matching every enabled kill filter.\n"
+            "MIXED: ★ Must filters must all match, plus at least one optional filter.")
         for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE"), ("mixed", "MIXED")):
-            _rb = hradio(_mods_hdr, _ll, self.v["kill_mod_logic_mods"], _lv,
-                         command=lambda *_, cat="mods": self._on_logic_mode_change(cat))
+            _rb = hradio(_kill_logic_hdr, _ll, self.v["kill_mod_logic_dp2"], _lv,
+                         command=self._on_kill_logic_change)
             _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
-            add_tip(_rb, _logic_tip_mods)
+            add_tip(_rb, _logic_tip_kill)
+        self._on_kill_logic_change()
 
         _MODS = [
             ("kill_mod_through_smoke",  "💨 SMOKE:",          "kill_mod_through_smoke",
@@ -2904,21 +2907,18 @@ class App(tk.Tk):
             self._wire_enable_must(self.v[key], self.v[f"{key}_req"])
         self.after(50, lambda: self._on_logic_mode_change("mods"))
 
+        # ── Mods ───────────────────────────────────────────────────────────────
+        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
+        _mods_hdr = tk.Frame(sec, bg=BG2)
+        _mods_hdr.pack(fill="x", pady=(0, 4))
+        mlabel(_mods_hdr, "Mods — none checked = all kills:").pack(side="left")
+
         # ── demoparser2 modifiers ─────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
         _dp2_hdr = tk.Frame(sec, bg=BG2)
         _dp2_hdr.pack(fill="x", pady=(0, 4))
         mlabel(_dp2_hdr, "demoparser2 modifiers:").pack(side="left")
-        _logic_tip_dp2 = (
-            "AT LEAST ONE (OR): a kill is kept if it passes any one of the checked dp2 filters.\n"
-            "ALL AT ONCE (AND): a kill must pass every checked dp2 filter simultaneously.\n"
-            "MIXED: required filters (★ Must) must ALL pass, plus at least one optional passes.\n"
-            "Note: TROIS TAP is always exclusive and overrides this setting when active.")
-        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE"), ("mixed", "MIXED")):
-            _rb = hradio(_dp2_hdr, _ll, self.v["kill_mod_logic_dp2"], _lv,
-                         command=lambda *_, cat="dp2": self._on_logic_mode_change(cat))
-            _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
-            add_tip(_rb, _logic_tip_dp2)
+        mlabel(_dp2_hdr, "  (uses shared kill logic above)").pack(side="left", padx=(8, 0))
 
         # ── player_death flag modifiers (dp2) ─────────────────────────────────
         self._must_widgets["dp2"] = []
@@ -2987,7 +2987,7 @@ class App(tk.Tk):
                 "TROIS SHOT + ONE TAP combined: lucky isolated headshot.\n"
                 "Must be a headshot, qualify as lucky (TROIS SHOT), and have no other\n"
                 "shot within 2s before or after.\n"
-                "⚠ Forces 'HS only' when enabled.")
+                "HS is auto-forced only when active logic guarantees HS-only output.")
         _tt_cb = hchk(tt_row, "Enable", self.v["kill_mod_trois_tap"],
                       command=self._on_trois_tap_toggle)
         _tt_cb.pack(side="left", padx=(4, 0))
@@ -3004,7 +3004,7 @@ class App(tk.Tk):
         _ot_lbl.pack(side="left")
         add_tip(_ot_lbl,
                 "Isolated single-shot headshot — no other shot within 2s before or after.\n"
-                "⚠ Forces 'HS only' when enabled.")
+                "HS is auto-forced only when active logic guarantees HS-only output.")
         _ot_cb = hchk(ot_row, "Enable", self.v["kill_mod_one_tap"],
                       command=self._on_one_tap_toggle)
         _ot_cb.pack(side="left", padx=(4, 0))
@@ -3110,17 +3110,18 @@ class App(tk.Tk):
         dp2_badge(sv_row).pack(side="left", padx=(8, 0))
         self.after(50, lambda: self._on_logic_mode_change("dp2"))
 
-        # ── DB modifiers ──────────────────────────────────────────────────────
+        # ── SITUATION ─────────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
-        _db_hdr = tk.Frame(sec, bg=BG2)
-        _db_hdr.pack(fill="x", pady=(0, 4))
-        mlabel(_db_hdr, "DB modifiers — no demoparser2 needed:").pack(side="left")
+        _sit_hdr = tk.Frame(sec, bg=BG2)
+        _sit_hdr.pack(fill="x", pady=(0, 4))
+        mlabel(_sit_hdr, "Situation (DB + Clutch):").pack(side="left")
         _logic_tip_db = (
-            "AT LEAST ONE (OR): a kill is kept if it matches any one of the checked DB modifiers.\n"
-            "ALL AT ONCE (AND): a kill must satisfy every checked DB modifier simultaneously.\n"
-            "MIXED: required modifiers (★ Must) must ALL match, plus at least one optional matches.")
+            "Applied after kill filters.\n"
+            "AT LEAST ONE (OR): keep kills matching at least one enabled situation modifier.\n"
+            "ALL AT ONCE (AND): keep kills matching every enabled situation modifier.\n"
+            "MIXED: ★ Must situation modifiers must all match, plus at least one optional matches.")
         for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE"), ("mixed", "MIXED")):
-            _rb = hradio(_db_hdr, _ll, self.v["kill_mod_logic_db"], _lv,
+            _rb = hradio(_sit_hdr, _ll, self.v["kill_mod_logic_db"], _lv,
                          command=lambda *_, cat="db": self._on_logic_mode_change(cat))
             _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
             add_tip(_rb, _logic_tip_db)
@@ -3199,9 +3200,9 @@ class App(tk.Tk):
         add_tip(_eco_must, "In MIXED mode: this filter is required (must match).")
         self._wire_enable_must(self.v["kill_mod_eco_frag"], self.v["kill_mod_eco_frag_req"])
         self.after(50, lambda: self._on_logic_mode_change("db"))
+        self._install_hs_lock_watchers()
 
         # ── CLUTCH ────────────────────────────────────────────────────────────
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
         clutch_hdr = tk.Frame(sec, bg=BG2)
         clutch_hdr.pack(fill="x")
         _cl_lbl = mlabel(clutch_hdr, "🤝 CLUTCH:")
@@ -4304,7 +4305,7 @@ class App(tk.Tk):
                 self._disengage_trois_tap()
 
     def _on_one_tap_toggle(self, *_):
-        """Toggle ONE TAP. Forces and locks 'HS only'.
+        """Toggle ONE TAP.
         If both TROIS SHOT + ONE TAP are now checked → auto-enable TROIS TAP."""
         active = self.v["kill_mod_one_tap"].get()
         # Mutually exclusive with TROIS TAP
@@ -4318,11 +4319,7 @@ class App(tk.Tk):
             self.v["kill_mod_trois_tap"].set(True)
             self._engage_trois_tap()
             return
-        if active:
-            self._lock_hs_to_only()
-        else:
-            if not self.v["kill_mod_trois_tap"].get():
-                self._unlock_hs()
+        self._refresh_hs_lock_state()
 
     def _on_headshots_mode_change(self, *_):
         """Called when the user manually changes the HS radio — no-op if locked."""
@@ -4358,6 +4355,7 @@ class App(tk.Tk):
         else:
             # User manually unchecked → simply disengage, do NOT restore sub-modifiers
             self._disengage_trois_tap()
+        self._refresh_hs_lock_state()
 
     def _on_logic_mode_change(self, category: str, *_):
         """Show ★ Must toggles only when the category's logic mode is 'mixed'.
@@ -4375,6 +4373,83 @@ class App(tk.Tk):
                     widget.pack_forget()
             except Exception:
                 pass
+        if category in ("mods", "dp2"):
+            self._refresh_hs_lock_state()
+
+    def _on_kill_logic_change(self, *_):
+        logic = self.v["kill_mod_logic_dp2"].get()
+        self.v["kill_mod_logic_mods"].set(logic)
+        self._on_logic_mode_change("mods")
+        self._on_logic_mode_change("dp2")
+        self._refresh_hs_lock_state()
+
+    @staticmethod
+    def _cfg_scalar(cfg, key, default=None):
+        v = cfg.get(key, default)
+        if hasattr(v, "get") and callable(v.get):
+            try:
+                return v.get()
+            except Exception:
+                return default
+        return v
+
+    def _hs_only_is_required(self, cfg) -> bool:
+        if bool(self._cfg_scalar(cfg, "kill_mod_trois_tap", False)):
+            return True
+        if not bool(self._cfg_scalar(cfg, "kill_mod_one_tap", False)):
+            return False
+
+        active_dp2 = [k for k, *_ in self._DP2_FILTER_DEFS if bool(self._cfg_scalar(cfg, k, False))]
+        if "kill_mod_one_tap" not in active_dp2:
+            return False
+
+        logic = str(self._cfg_scalar(cfg, "kill_mod_logic_dp2", "any") or "any")
+        if logic == "all":
+            return True
+
+        if logic == "mixed":
+            req = [k for k in active_dp2 if bool(self._cfg_scalar(cfg, f"{k}_req", False))]
+            opt = [k for k in active_dp2 if not bool(self._cfg_scalar(cfg, f"{k}_req", False))]
+            if "kill_mod_one_tap" in req:
+                return True
+            if "kill_mod_one_tap" in opt and len(opt) == 1:
+                return True
+            return False
+
+        if not (len(active_dp2) == 1 and active_dp2[0] == "kill_mod_one_tap"):
+            return False
+
+        mods_any = str(self._cfg_scalar(cfg, "kill_mod_logic_mods", "any") or "any") == "any"
+        mods_active = any(bool(self._cfg_scalar(cfg, k, False)) for k in self._SQL_MOD_KEYS)
+        if mods_any and mods_active:
+            return False
+        return True
+
+    def _refresh_hs_lock_state(self):
+        try:
+            if self._hs_only_is_required(self.v):
+                self._lock_hs_to_only()
+            else:
+                self._unlock_hs()
+        except Exception:
+            pass
+
+    def _install_hs_lock_watchers(self):
+        if getattr(self, "_hs_lock_watchers_installed", False):
+            return
+        keys = {
+            "kill_mod_one_tap", "kill_mod_trois_tap",
+            "kill_mod_logic_dp2", "kill_mod_logic_mods",
+            "kill_mod_one_tap_req",
+            *self._SQL_MOD_KEYS,
+            *(k for k, *_ in self._DP2_FILTER_DEFS),
+        }
+        for key in keys:
+            var = self.v.get(key)
+            if hasattr(var, "trace_add"):
+                var.trace_add("write", lambda *_: self._refresh_hs_lock_state())
+        self._hs_lock_watchers_installed = True
+        self._refresh_hs_lock_state()
 
     def _wire_enable_must(self, enable_var: tk.BooleanVar, req_var: tk.BooleanVar):
         """Couple an Enable checkbox with its ★ Must checkbox.
@@ -4424,13 +4499,10 @@ class App(tk.Tk):
         return sizes  # empty = no restriction
 
     def _engage_trois_tap(self):
-        """Apply side-effects of TROIS TAP becoming active (HS lock only)."""
-        self._lock_hs_to_only()
+        self._refresh_hs_lock_state()
 
     def _disengage_trois_tap(self):
-        """Undo side-effects of TROIS TAP (release HS lock if ONE TAP also off)."""
-        if not self.v["kill_mod_one_tap"].get():
-            self._unlock_hs()
+        self._refresh_hs_lock_state()
 
 
     def _retrigger_toggle_vars(self):
@@ -4528,42 +4600,31 @@ class App(tk.Tk):
 
         return filtered
 
-    def _dp2_parse_demo(self, demo_path):
-        """Parse a single demo with demoparser2 and store the result in _dp2_cache.
-
-        This is the ONLY method that calls demoparser2 in the entire codebase.
-        weapon_fire is parsed ONCE with all needed player fields; both indexes
-        (fire_detail and fire_ticks) are derived from that single parse.
-
-        Cache entry stored under demo_path:
-          {
-            "fire_detail": {(sid, wpn_suffix): [(tick, acc, scoped, vel), ...]},
-              — used by _trois_shot_filter / _no_trois_shot_filter
-            "fire_ticks":  {(sid, wpn_suffix): [tick, ...]},
-              — used by _one_tap_filter / _trois_tap_filter
-              — derived from fire_detail, no second parse needed
-          }
-
-        To add a future filter that needs a new event type (e.g. "player_hurt"):
-          1. Add a parser.parse_event("player_hurt", ...) call here
-          2. Build and store the new index under a new key in the cache entry
-          3. Read it in the new filter via _dp2_cache.get(path, {}).get("new_key", {})
-          No other method needs to change.
-
-        Thread-safe: double-check inside lock before parsing.
-        Safe to call concurrently on the same demo (only one thread will parse).
-        Returns True on success, False on import/parse failure.
-        """
-        # Fast path — already in cache
+    def _dp2_parse_demo(self, demo_path, required_sections=None):
+        if required_sections is None:
+            required_sections = {"fire", "death", "hurt"}
+        required_sections = set(required_sections)
         with self._dp2_cache_lock:
-            if demo_path in self._dp2_cache:
-                return True
-
+            existing = self._dp2_cache.get(demo_path)
+            if not isinstance(existing, dict):
+                existing = {}
+            existing_sections = set(existing.get("_sections", set()))
+        needed = required_sections - existing_sections
+        if not needed:
+            return True
         if not os.path.isfile(demo_path):
             with self._dp2_cache_lock:
-                self._dp2_cache[demo_path] = {}
+                cur = self._dp2_cache.get(demo_path, {})
+                if not isinstance(cur, dict):
+                    cur = {}
+                cur.setdefault("fire_detail", {})
+                cur.setdefault("fire_ticks", {})
+                cur.setdefault("view_angles", {})
+                cur.setdefault("hurt_index", {})
+                cur.setdefault("death_flags", {})
+                cur["_sections"] = set(cur.get("_sections", set())) | required_sections
+                self._dp2_cache[demo_path] = cur
             return False
-
         try:
             from demoparser2 import DemoParser
         except ImportError:
@@ -4571,186 +4632,180 @@ class App(tk.Tk):
                 "  ⚠ demoparser2 not installed — install with: pip install demoparser2",
                 "warn")
             return False
-
         try:
-            parser  = DemoParser(demo_path)
-            fire_df = parser.parse_event(
-                "weapon_fire",
-                player=["is_scoped", "velocity_X", "velocity_Y",
-                        "accuracy_penalty", "player_steamid"],
-                other=[],
-            )
+            parser = DemoParser(demo_path)
         except Exception as e:
             self._alog(f"  ⚠ dp2 parse error ({Path(demo_path).name}): {e}", "warn")
-            with self._dp2_cache_lock:
-                self._dp2_cache[demo_path] = {}
             return False
 
-        if fire_df is None or len(fire_df) == 0:
-            with self._dp2_cache_lock:
-                self._dp2_cache[demo_path] = {"fire_detail": {}, "fire_ticks": {}}
-            return True
+        fire_detail = dict(existing.get("fire_detail") or {})
+        fire_ticks = dict(existing.get("fire_ticks") or {})
+        view_angles = dict(existing.get("view_angles") or {})
+        hurt_index = dict(existing.get("hurt_index") or {})
+        death_flags = dict(existing.get("death_flags") or {})
 
-        cols = list(fire_df.columns)
-        def _col(name):
-            if name in cols: return name
-            if f"user_{name}" in cols: return f"user_{name}"
-            return None
+        if "fire" in needed:
+            try:
+                fire_df = parser.parse_event(
+                    "weapon_fire",
+                    player=["is_scoped", "velocity_X", "velocity_Y",
+                            "accuracy_penalty", "player_steamid"],
+                    other=[],
+                )
+                if fire_df is None or len(fire_df) == 0:
+                    fire_detail = {}
+                    fire_ticks = {}
+                else:
+                    cols = list(fire_df.columns)
+                    def _col(name):
+                        if name in cols:
+                            return name
+                        if f"user_{name}" in cols:
+                            return f"user_{name}"
+                        return None
+                    col_sid = _col("player_steamid") or _col("steamid")
+                    col_acc = _col("accuracy_penalty")
+                    col_scope = _col("is_scoped")
+                    col_vx = _col("velocity_X")
+                    col_vy = _col("velocity_Y")
+                    if not col_sid or not col_acc:
+                        self._alog(
+                            f"  ⚠ dp2: steamid/accuracy columns missing in weapon_fire "
+                            f"({Path(demo_path).name})", "warn")
+                        fire_detail = {}
+                        fire_ticks = {}
+                    else:
+                        np_cols = ["tick", "weapon", col_sid, col_acc]
+                        opt_cols = ([col_scope] if col_scope else []) + \
+                                   ([col_vx] if col_vx else []) + \
+                                   ([col_vy] if col_vy else [])
+                        arr = fire_df[np_cols + opt_cols].to_numpy()
+                        i_scope = 4 if col_scope else None
+                        i_vx = 4 + (1 if col_scope else 0) if col_vx else None
+                        i_vy = 4 + (1 if col_scope else 0) + (1 if col_vx else 0) if col_vy else None
+                        fd = defaultdict(list)
+                        for row in arr:
+                            tick = int(row[0] or 0)
+                            wpn = str(row[1] or "").lower()
+                            sid = str(row[2] or "")
+                            acc = float(row[3] or 0)
+                            scoped = bool(row[i_scope]) if i_scope is not None else False
+                            vx = float(row[i_vx]) if i_vx is not None else 0.0
+                            vy = float(row[i_vy]) if i_vy is not None else 0.0
+                            vel = (vx**2 + vy**2) ** 0.5
+                            wpn_s = wpn[7:] if wpn.startswith("weapon_") else wpn
+                            fd[(sid, wpn_s)].append((tick, acc, scoped, vel))
+                        for k in fd:
+                            fd[k].sort(key=lambda r: r[0])
+                        fire_detail = dict(fd)
+                        fire_ticks = {k: [r[0] for r in v] for k, v in fire_detail.items()}
+            except Exception as e:
+                self._alog(f"  ⚠ dp2 parse error ({Path(demo_path).name}): {e}", "warn")
+                fire_detail = {}
+                fire_ticks = {}
 
-        col_sid   = _col("player_steamid") or _col("steamid")
-        col_acc   = _col("accuracy_penalty")
-        col_scope = _col("is_scoped")
-        col_vx    = _col("velocity_X")
-        col_vy    = _col("velocity_Y")
-
-        if not col_sid or not col_acc:
-            self._alog(
-                f"  ⚠ dp2: steamid/accuracy columns missing in weapon_fire "
-                f"({Path(demo_path).name})", "warn")
-            with self._dp2_cache_lock:
-                self._dp2_cache[demo_path] = {"fire_detail": {}, "fire_ticks": {}}
-            return True
-
-        np_cols  = ["tick", "weapon", col_sid, col_acc]
-        opt_cols = ([col_scope] if col_scope else []) + \
-                   ([col_vx]    if col_vx    else []) + \
-                   ([col_vy]    if col_vy    else [])
-        arr = fire_df[np_cols + opt_cols].to_numpy()
-
-        i_scope = 4                                if col_scope else None
-        i_vx    = 4 + (1 if col_scope else 0)     if col_vx    else None
-        i_vy    = 4 + (1 if col_scope else 0) \
-                    + (1 if col_vx    else 0)     if col_vy    else None
-
-        fire_detail: dict = defaultdict(list)
-        for row in arr:
-            tick   = int(row[0]   or 0)
-            wpn    = str(row[1]   or "").lower()
-            sid    = str(row[2]   or "")
-            acc    = float(row[3] or 0)
-            scoped = bool(row[i_scope]) if i_scope is not None else False
-            vx     = float(row[i_vx])   if i_vx   is not None else 0.0
-            vy     = float(row[i_vy])   if i_vy   is not None else 0.0
-            vel    = (vx**2 + vy**2) ** 0.5
-            wpn_s  = wpn[7:] if wpn.startswith("weapon_") else wpn
-            fire_detail[(sid, wpn_s)].append((tick, acc, scoped, vel))
-
-        for k in fire_detail:
-            fire_detail[k].sort(key=lambda r: r[0])
-
-        fire_detail = dict(fire_detail)
-
-        # fire_ticks derived from fire_detail — no second parse needed
-        fire_ticks = {k: [r[0] for r in v] for k, v in fire_detail.items()}
-
-        # ── player_death parse — view_angles for Flick + kill flags ─────────
-        # Fields: tick, attacker_steamid, user_steamid (victim),
-        #         view_angle_X (pitch), view_angle_Y (yaw)
-        #         noscope, thrusmoke, attackerblind, penetrated, attackerinair
-        # view_angles indexed by killer_sid → [(tick, yaw, pitch), ...]
-        # death_flags indexed by (tick, killer_sid) → {flag: value, ...}
-        # Used by: _flick_filter, _death_flag_filter
-        view_angles: dict = {}   # {killer_sid: [(tick, yaw, pitch), ...]} sorted by tick
-        death_flags: dict = {}   # {(tick, killer_sid): {flag_name: bool/int, ...}}
-        try:
-            death_df = parser.parse_event(
-                "player_death",
-                player=["pitch", "yaw"],
-                other=["attacker_steamid",
-                       "noscope", "thrusmoke", "attackerblind",
-                       "penetrated", "attackerinair"],
-            )
-            if death_df is not None and len(death_df) > 0:
-                dcols = list(death_df.columns)
-                def _dc(name):
-                    if name in dcols: return name
-                    if f"attacker_{name}" in dcols: return f"attacker_{name}"
-                    if f"user_{name}" in dcols: return f"user_{name}"
-                    return None
-                col_atk  = _dc("attacker_steamid") or next(
-                    (c for c in dcols if "attacker" in c.lower() and "steam" in c.lower()), None)
-                col_yaw   = next((c for c in dcols if "yaw"   in c.lower()), None)
-                col_pitch = next((c for c in dcols if "pitch" in c.lower()), None)
-                # kill flag columns — graceful if absent in older demos
-                _flag_cols = {
-                    "noscope":       next((c for c in dcols if "noscope"       in c.lower()), None),
-                    "thrusmoke":     next((c for c in dcols if "thrusmoke"     in c.lower()), None),
-                    "attackerblind": next((c for c in dcols if "attackerblind" in c.lower()), None),
-                    "penetrated":    next((c for c in dcols if "penetrated"    in c.lower()), None),
-                    "attackerinair": next((c for c in dcols if "attackerinair" in c.lower()), None),
-                }
-                if col_atk:
-                    fetch_cols = ["tick", col_atk]
-                    if col_yaw:   fetch_cols.append(col_yaw)
-                    if col_pitch: fetch_cols.append(col_pitch)
-                    for fc in _flag_cols.values():
-                        if fc and fc not in fetch_cols:
-                            fetch_cols.append(fc)
-                    arr_d = death_df[fetch_cols].to_numpy()
-                    yaw_i   = fetch_cols.index(col_yaw)   if col_yaw   else None
-                    pitch_i = fetch_cols.index(col_pitch) if col_pitch else None
-                    flag_indices = {
-                        fname: fetch_cols.index(fc)
-                        for fname, fc in _flag_cols.items() if fc
+        if "death" in needed:
+            view_angles = {}
+            death_flags = {}
+            try:
+                death_df = parser.parse_event(
+                    "player_death",
+                    player=["pitch", "yaw"],
+                    other=["attacker_steamid",
+                           "noscope", "thrusmoke", "attackerblind",
+                           "penetrated", "attackerinair"],
+                )
+                if death_df is not None and len(death_df) > 0:
+                    dcols = list(death_df.columns)
+                    def _dc(name):
+                        if name in dcols:
+                            return name
+                        if f"attacker_{name}" in dcols:
+                            return f"attacker_{name}"
+                        if f"user_{name}" in dcols:
+                            return f"user_{name}"
+                        return None
+                    col_atk = _dc("attacker_steamid") or next(
+                        (c for c in dcols if "attacker" in c.lower() and "steam" in c.lower()), None)
+                    col_yaw = next((c for c in dcols if "yaw" in c.lower()), None)
+                    col_pitch = next((c for c in dcols if "pitch" in c.lower()), None)
+                    flag_cols = {
+                        "noscope": next((c for c in dcols if "noscope" in c.lower()), None),
+                        "thrusmoke": next((c for c in dcols if "thrusmoke" in c.lower()), None),
+                        "attackerblind": next((c for c in dcols if "attackerblind" in c.lower()), None),
+                        "penetrated": next((c for c in dcols if "penetrated" in c.lower()), None),
+                        "attackerinair": next((c for c in dcols if "attackerinair" in c.lower()), None),
                     }
-                    for row in arr_d:
-                        t   = int(row[0]  or 0)
-                        sid = str(row[1]  or "")
-                        if not sid:
-                            continue
-                        yaw = float(row[yaw_i]   or 0) if yaw_i   is not None else 0.0
-                        pit = float(row[pitch_i] or 0) if pitch_i is not None else 0.0
-                        if yaw_i or pitch_i:
-                            view_angles.setdefault(sid, []).append((t, yaw, pit))
-                        # Store kill flags keyed by (tick, killer_sid)
-                        flags = {}
-                        for fname, fi in flag_indices.items():
-                            val = row[fi]
-                            if val is not None:
-                                # penetrated is an int (count); others are bool
-                                flags[fname] = int(val) if fname == "penetrated" else bool(val)
-                        if flags:
-                            death_flags[(t, sid)] = flags
-            for k in view_angles:
-                view_angles[k].sort(key=lambda r: r[0])
-        except Exception:
-            pass  # view_angles/death_flags stay empty — filters degrade gracefully
+                    if col_atk:
+                        fetch_cols = ["tick", col_atk]
+                        if col_yaw:
+                            fetch_cols.append(col_yaw)
+                        if col_pitch:
+                            fetch_cols.append(col_pitch)
+                        for fc in flag_cols.values():
+                            if fc and fc not in fetch_cols:
+                                fetch_cols.append(fc)
+                        arr_d = death_df[fetch_cols].to_numpy()
+                        yaw_i = fetch_cols.index(col_yaw) if col_yaw else None
+                        pitch_i = fetch_cols.index(col_pitch) if col_pitch else None
+                        flag_indices = {fname: fetch_cols.index(fc) for fname, fc in flag_cols.items() if fc}
+                        for row in arr_d:
+                            t = int(row[0] or 0)
+                            sid = str(row[1] or "")
+                            if not sid:
+                                continue
+                            yaw = float(row[yaw_i] or 0) if yaw_i is not None else 0.0
+                            pit = float(row[pitch_i] or 0) if pitch_i is not None else 0.0
+                            if yaw_i is not None or pitch_i is not None:
+                                view_angles.setdefault(sid, []).append((t, yaw, pit))
+                            flags = {}
+                            for fname, fi in flag_indices.items():
+                                val = row[fi]
+                                if val is not None:
+                                    flags[fname] = int(val) if fname == "penetrated" else bool(val)
+                            if flags:
+                                death_flags[(t, sid)] = flags
+                for k in view_angles:
+                    view_angles[k].sort(key=lambda r: r[0])
+            except Exception:
+                pass
 
-        # ── player_hurt parse — for Savior filter ────────────────────────
-        # Indexes: {victim_sid: [(tick, attacker_sid), ...]} sorted by tick
-        # Used to check if a teammate was being hurt just before the player's kill
-        hurt_index: dict = {}  # {victim_sid: [(tick, attacker_sid), ...]}
-        try:
-            hurt_df = parser.parse_event(
-                "player_hurt",
-                player=[],
-                other=["attacker_steamid", "userid_steamid"],
-            )
-            if hurt_df is not None and len(hurt_df) > 0:
-                hcols = list(hurt_df.columns)
-                col_hatk = next((c for c in hcols if "attacker" in c.lower() and "steam" in c.lower()), None)
-                col_hvic = next((c for c in hcols if ("user" in c.lower() or "victim" in c.lower())
-                                 and "steam" in c.lower() and "attacker" not in c.lower()), None)
-                if col_hatk and col_hvic:
-                    for row in hurt_df[["tick", col_hatk, col_hvic]].to_numpy():
-                        t    = int(row[0]  or 0)
-                        atk  = str(row[1]  or "")
-                        vic  = str(row[2]  or "")
-                        if atk and vic:
-                            hurt_index.setdefault(vic, []).append((t, atk))
-            for k in hurt_index:
-                hurt_index[k].sort(key=lambda r: r[0])
-        except Exception:
-            pass  # hurt_index stays empty — sauveur filter degrades gracefully
+        if "hurt" in needed:
+            hurt_index = {}
+            try:
+                hurt_df = parser.parse_event(
+                    "player_hurt",
+                    player=[],
+                    other=["attacker_steamid", "userid_steamid"],
+                )
+                if hurt_df is not None and len(hurt_df) > 0:
+                    hcols = list(hurt_df.columns)
+                    col_hatk = next((c for c in hcols if "attacker" in c.lower() and "steam" in c.lower()), None)
+                    col_hvic = next((c for c in hcols if ("user" in c.lower() or "victim" in c.lower())
+                                     and "steam" in c.lower() and "attacker" not in c.lower()), None)
+                    if col_hatk and col_hvic:
+                        for row in hurt_df[["tick", col_hatk, col_hvic]].to_numpy():
+                            t = int(row[0] or 0)
+                            atk = str(row[1] or "")
+                            vic = str(row[2] or "")
+                            if atk and vic:
+                                hurt_index.setdefault(vic, []).append((t, atk))
+                for k in hurt_index:
+                    hurt_index[k].sort(key=lambda r: r[0])
+            except Exception:
+                pass
 
         with self._dp2_cache_lock:
-            self._dp2_cache[demo_path] = {
-                "fire_detail":  fire_detail,
-                "fire_ticks":   fire_ticks,
-                "view_angles":  view_angles,   # {killer_sid: [(tick, yaw, pitch), ...]}
-                "hurt_index":   hurt_index,    # {victim_sid: [(tick, attacker_sid), ...]}
-                "death_flags":  death_flags,   # {(tick, killer_sid): {flag: bool/int}}
-            }
+            merged = self._dp2_cache.get(demo_path, {})
+            if not isinstance(merged, dict):
+                merged = {}
+            merged["fire_detail"] = fire_detail
+            merged["fire_ticks"] = fire_ticks
+            merged["view_angles"] = view_angles
+            merged["hurt_index"] = hurt_index
+            merged["death_flags"] = death_flags
+            merged["_sections"] = set(merged.get("_sections", set())) | required_sections
+            self._dp2_cache[demo_path] = merged
         return True
 
     def _no_trois_shot_filter(self, demo_path, events, cfg):
@@ -6710,6 +6765,29 @@ class App(tk.Tk):
 
     _LOG_PUMP_MS = 50   # drain interval in milliseconds — 50ms ≈ 20 flushes/sec
 
+    def _drain_log_buffer_once(self):
+        if not self._log_buf:
+            return
+        with self._log_buf_lock:
+            pending = list(self._log_buf)
+            self._log_buf.clear()
+        try:
+            self.log.configure(state="normal")
+            autoscroll = self._log_autoscroll.get()
+            for item in pending:
+                if item[0] == "__parts__":
+                    for txt, tag in item[1]:
+                        self.log.insert("end", txt, tag or "")
+                    self.log.insert("end", "\n")
+                else:
+                    msg, tag = item
+                    self.log.insert("end", msg + "\n", tag)
+            if autoscroll:
+                self.log.see("end")
+            self.log.configure(state="disabled")
+        except Exception:
+            pass
+
     def _log_pump(self):
         """Drain the async log buffer in a single Text widget operation.
 
@@ -6717,26 +6795,7 @@ class App(tk.Tk):
         Batches all pending messages into one configure/insert/see/configure
         cycle — N messages = 1 redraw instead of N redraws.
         """
-        if self._log_buf:
-            with self._log_buf_lock:
-                pending = list(self._log_buf)
-                self._log_buf.clear()
-            try:
-                self.log.configure(state="normal")
-                autoscroll = self._log_autoscroll.get()
-                for item in pending:
-                    if item[0] == "__parts__":
-                        for txt, tag in item[1]:
-                            self.log.insert("end", txt, tag or "")
-                        self.log.insert("end", "\n")
-                    else:
-                        msg, tag = item
-                        self.log.insert("end", msg + "\n", tag)
-                if autoscroll:
-                    self.log.see("end")
-                self.log.configure(state="disabled")
-            except Exception:
-                pass
+        self._drain_log_buffer_once()
         self.after(self._LOG_PUMP_MS, self._log_pump)
 
     def _clear_log(self):
@@ -6791,6 +6850,23 @@ class App(tk.Tk):
         ("kill_mod_eco_frag",       "💰 ECO",            "db"),
     ]
 
+    _SQL_MOD_KEYS = (
+        "kill_mod_through_smoke",
+        "kill_mod_no_scope",
+        "kill_mod_assisted_flash",
+    )
+
+    def _mods_dp2_global_any_union_enabled(self, cfg):
+        if cfg.get("kill_mod_logic_mods", "any") != "any":
+            return False
+        if cfg.get("kill_mod_logic_dp2", "any") != "any":
+            return False
+        if not any(cfg.get(k) for k in self._SQL_MOD_KEYS):
+            return False
+        if cfg.get("kill_mod_trois_tap"):
+            return False
+        return any(cfg.get(k) for k, *_ in self._DP2_FILTER_DEFS)
+
     def _build_filter_badges(self, cfg, events=None):
         """Return (text, tag) badge tuples for kill filters that matched this clip.
 
@@ -6824,7 +6900,7 @@ class App(tk.Tk):
         _CAT_META = {
             "mods": ("Mods",  "kill_mod_logic_mods"),
             "dp2":  ("dp2",   "kill_mod_logic_dp2"),
-            "db":   ("DB",    "kill_mod_logic_db"),
+            "db":   ("Situation", "kill_mod_logic_db"),
         }
         groups: dict = {}  # category → [label, ...]
         for k, lbl, cat in self._FILTER_BADGE_DEFS:
@@ -7039,9 +7115,9 @@ class App(tk.Tk):
                 kills_on = cfg["events_kills"]
                 deaths_on = cfg["events_deaths"]
                 weapons = cfg["weapons"]
-                # Resolve headshots_mode — ONE TAP / TROIS TAP force "only"
+                # Resolve headshots_mode — force ONLY only when logic guarantees HS-only output
                 _hsmode = cfg.get("headshots_mode", "all")
-                if cfg.get("kill_mod_one_tap") or cfg.get("kill_mod_trois_tap"):
+                if self._hs_only_is_required(cfg):
                     _hsmode = "only"
                 headshots_only   = (_hsmode == "only")
                 headshots_exclude = (_hsmode == "exclude")
@@ -7088,6 +7164,7 @@ class App(tk.Tk):
                 }
                 active_mods = [k for k in _MOD_COLS if cfg.get(k, False)]
                 modsql = ""
+                _mods_dp2_or_any = self._mods_dp2_global_any_union_enabled(cfg)
                 if active_mods:
                     mod_clauses = []
                     missing_mods = []
@@ -7119,8 +7196,9 @@ class App(tk.Tk):
                                     f"No clips returned — uncheck these modifiers or check the schema.",
                                     "err")
                                 self._warned_missing_mods = missing_set
-                            conn.close()
-                            return {}
+                            if not _mods_dp2_or_any:
+                                conn.close()
+                                return {}
                         else:
                             # Some columns absent — warn once per unique missing set
                             if missing_set != self._warned_missing_mods:
@@ -7133,31 +7211,30 @@ class App(tk.Tk):
                                     "warn")
                                 self._warned_missing_mods = missing_set
                     if mod_clauses:
-                        _mods_logic = cfg.get("kill_mod_logic_mods", "any")
-                        if _mods_logic == "all":
-                            modsql = " AND (" + " AND ".join(mod_clauses) + ")"
-                        elif _mods_logic == "mixed":
-                            # Build per-clause map: mod_key → clause
-                            # Rebuild clause list pairing keys with their SQL fragments
-                            _key_clause = []
-                            _mi = 0
-                            for mod_key in active_mods:
-                                col = self._find_col("kills", _MOD_COLS[mod_key])
-                                if col:
-                                    _key_clause.append((mod_key, mod_clauses[_mi]))
-                                    _mi += 1
-                            req_keys   = [k for k, _ in _key_clause if cfg.get(f"{k}_req", False)]
-                            opt_clauses = [c for k, c in _key_clause if not cfg.get(f"{k}_req", False)]
-                            req_clauses = [c for k, c in _key_clause if cfg.get(f"{k}_req", False)]
-                            parts = req_clauses[:]
-                            if opt_clauses:
-                                parts.append("(" + " OR ".join(opt_clauses) + ")")
-                            if parts:
-                                modsql = " AND (" + " AND ".join(parts) + ")"
-                            elif req_clauses:
-                                modsql = " AND (" + " AND ".join(req_clauses) + ")"
-                        else:
-                            modsql = " AND (" + " OR ".join(mod_clauses) + ")"
+                        if not _mods_dp2_or_any:
+                            _mods_logic = cfg.get("kill_mod_logic_mods", "any")
+                            if _mods_logic == "all":
+                                modsql = " AND (" + " AND ".join(mod_clauses) + ")"
+                            elif _mods_logic == "mixed":
+                                _key_clause = []
+                                _mi = 0
+                                for mod_key in active_mods:
+                                    col = self._find_col("kills", _MOD_COLS[mod_key])
+                                    if col:
+                                        _key_clause.append((mod_key, mod_clauses[_mi]))
+                                        _mi += 1
+                                req_keys = [k for k, _ in _key_clause if cfg.get(f"{k}_req", False)]
+                                opt_clauses = [c for k, c in _key_clause if not cfg.get(f"{k}_req", False)]
+                                req_clauses = [c for k, c in _key_clause if cfg.get(f"{k}_req", False)]
+                                parts = req_clauses[:]
+                                if opt_clauses:
+                                    parts.append("(" + " OR ".join(opt_clauses) + ")")
+                                if parts:
+                                    modsql = " AND (" + " AND ".join(parts) + ")"
+                                elif req_clauses:
+                                    modsql = " AND (" + " AND ".join(req_clauses) + ")"
+                            else:
+                                modsql = " AND (" + " OR ".join(mod_clauses) + ")"
 
                 date_col = self._date_col   # may be None → auto-detected below
                 if not date_col and self._db_schema.get("matches"):
@@ -8530,20 +8607,22 @@ class App(tk.Tk):
 
         Thread-safe via _dp2_cache_lock (inside _dp2_parse_demo).
         """
-        # Derive from _DP2_FILTER_DEFS so this can never fall out of sync.
-        # Also include TROIS TAP which is not in _DP2_FILTER_DEFS (always exclusive).
-        _dp2_keys = {k for k, *_ in self._DP2_FILTER_DEFS} | {"kill_mod_trois_tap"}
-        needs_dp2 = any(cfg.get(k) for k in _dp2_keys)
-        if not needs_dp2:
+        required_sections = self._dp2_required_sections(cfg)
+        if not required_sections:
             return
 
         paths = [dp for dp in demo_paths if os.path.isfile(dp)]
         if not paths:
             return
 
-        # Determine which demos are not yet cached
+        # Determine which demos are not yet cached for the required sections
         with self._dp2_cache_lock:
-            missing = [dp for dp in paths if dp not in self._dp2_cache]
+            missing = []
+            for dp in paths:
+                entry = self._dp2_cache.get(dp, {})
+                have = set(entry.get("_sections", set())) if isinstance(entry, dict) else set()
+                if not required_sections.issubset(have):
+                    missing.append(dp)
 
         n_cached = len(paths) - len(missing)
 
@@ -8567,7 +8646,7 @@ class App(tk.Tk):
         done = 0
         total = len(missing)
         with concurrent.futures.ThreadPoolExecutor(max_workers=n_threads) as ex:
-            futs = {ex.submit(self._dp2_parse_demo, dp): dp for dp in missing}
+            futs = {ex.submit(self._dp2_parse_demo, dp, required_sections): dp for dp in missing}
             for fut in concurrent.futures.as_completed(futs):
                 done += 1
                 try:
@@ -8587,6 +8666,32 @@ class App(tk.Tk):
         self._alog(
             f"  ✓ Pre-parse done ({done} parsed, {cached_total}/{len(paths)} total in cache)",
             "ok")
+
+    @staticmethod
+    def _dp2_required_sections(cfg):
+        sections = set()
+        fire_keys = {
+            "kill_mod_trois_tap",
+            "kill_mod_trois_shot",
+            "kill_mod_no_trois_shot",
+            "kill_mod_one_tap",
+            "kill_mod_spray_transfer",
+            "kill_mod_high_velocity",
+        }
+        death_keys = {
+            "kill_mod_wall_bang",
+            "kill_mod_airborne",
+            "kill_mod_attacker_blind",
+            "kill_mod_collateral",
+            "kill_mod_flick",
+        }
+        if any(cfg.get(k) for k in fire_keys):
+            sections.add("fire")
+        if any(cfg.get(k) for k in death_keys):
+            sections.add("death")
+        if cfg.get("kill_mod_sauveur"):
+            sections.add("hurt")
+        return sections
 
 
     def _dry_run(self):
@@ -8633,6 +8738,7 @@ class App(tk.Tk):
         """Display preview results. Must be called on the main thread.
         timings: optional dict with keys query/preparse/filters/total/seqbuild (seconds).
         """
+        self._drain_log_buffer_once()
         if not evts:
             self._log("No events.", "warn")
             self._summary_lbl.config(text="  No clips found.", fg=MUTED)
@@ -9100,14 +9206,31 @@ class App(tk.Tk):
 
         else:  # "any" — OR
             s2k, non_kill = _run_or(active)
+            include_mod_or = self._mods_dp2_global_any_union_enabled(cfg)
+            mod_sig_to_keys = {}
+            if include_mod_or:
+                mod_keys = set(self._SQL_MOD_KEYS)
+                for e in events:
+                    if e.get("type") != "kill":
+                        continue
+                    matched_mods = (e.get("_mf") or set()) & mod_keys
+                    if not matched_mods:
+                        continue
+                    sig = (e["tick"], str(e.get("killer_sid", "")))
+                    ex = mod_sig_to_keys.get(sig)
+                    mod_sig_to_keys[sig] = (ex | matched_mods) if ex else set(matched_mods)
             kill_sigs_union = set(s2k.keys())
+            if mod_sig_to_keys:
+                kill_sigs_union |= set(mod_sig_to_keys.keys())
             kept_kills = []
             for e in events:
                 if e.get("type") != "kill":
                     continue
                 sig = (e["tick"], str(e.get("killer_sid", "")))
                 if sig in kill_sigs_union:
-                    matched = s2k.get(sig, set())
+                    matched = set(s2k.get(sig, set()))
+                    if mod_sig_to_keys:
+                        matched |= mod_sig_to_keys.get(sig, set())
                     if matched:
                         mf = e.get("_mf")
                         e["_mf"] = (mf | matched) if mf else set(matched)
@@ -9137,6 +9260,7 @@ class App(tk.Tk):
             return evts
 
         logic = cfg.get("kill_mod_logic_dp2", "any")
+        include_mod_or = self._mods_dp2_global_any_union_enabled(cfg)
 
         def _chain(filters, src):
             """AND-chain: each apply_fn narrows the dict further."""
@@ -9156,10 +9280,23 @@ class App(tk.Tk):
             all_demos: set = set()
             for _, r in per:
                 all_demos |= set(r.keys())
+            if include_mod_or:
+                all_demos |= set(src.keys())
 
             merged = {}
             for dp in all_demos:
                 sig_to_mf: dict = {}
+                if include_mod_or:
+                    mod_keys = set(self._SQL_MOD_KEYS)
+                    for e in src.get(dp, []):
+                        if e.get("type") != "kill":
+                            continue
+                        matched_mods = (e.get("_mf") or set()) & mod_keys
+                        if not matched_mods:
+                            continue
+                        sig = (e["tick"], str(e.get("killer_sid", "")))
+                        ex = sig_to_mf.get(sig)
+                        sig_to_mf[sig] = (ex | matched_mods) if ex else set(matched_mods)
                 for _ck, r in per:
                     for e in r.get(dp, []):
                         if e.get("type") == "kill":

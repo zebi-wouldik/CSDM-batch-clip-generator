@@ -7,7 +7,7 @@
 [![Python](https://img.shields.io/badge/python-3.10+-3b82f6?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![CS2](https://img.shields.io/badge/CS2-compatible-f97316?style=flat-square)](https://www.counter-strike.net/)
 [![License](https://img.shields.io/badge/license-do%20what%20you%20want-8b5cf6?style=flat-square)]()
-[![Version](https://img.shields.io/badge/version-v114-22c55e?style=flat-square)]()
+[![Version](https://img.shields.io/badge/version-v121-22c55e?style=flat-square)]()
 
 </div>
 
@@ -87,13 +87,15 @@ An independent `🎯 Headshots` tri-state radio alongside Suicides and TK — no
 | **Only** | Keep headshot kills only |
 | **Exclude** | Keep non-headshot kills only |
 
-ONE TAP and TROIS TAP force **Only** when enabled and release the lock on disable.
+`Only` is auto-forced only when the active modifier logic guarantees HS-only output (for example, TROIS TAP, or ONE TAP in an HS-strict combination).
 
 ---
 
 ## Kill modifier logic
 
-Each of the three modifier categories (Mods, demoparser2, DB) has an independent logic selector with three modes:
+The UI uses two logic selectors:
+- **Kill filters logic** (shared by Mods + demoparser2)
+- **Situation logic** (DB + Clutch section, applied after kill filters)
 
 | Mode | Behaviour |
 |---|---|
@@ -103,7 +105,7 @@ Each of the three modifier categories (Mods, demoparser2, DB) has an independent
 
 **MIXED mode example:** WALLBANG as ★ Must + SMOKE + BLIND as optional → clips that are wallbangs AND either through smoke or blind. In MIXED mode each filter row shows a **★ Must** checkbox that is hidden in the other modes.
 
-The three categories are fully independent — you can combine modes freely across them.
+Kill logic and Situation logic are independent and composable.
 
 ---
 
