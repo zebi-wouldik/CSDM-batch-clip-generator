@@ -7,12 +7,13 @@
 [![Python](https://img.shields.io/badge/python-3.10+-3b82f6?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![CS2](https://img.shields.io/badge/CS2-compatible-f97316?style=flat-square)](https://www.counter-strike.net/)
 [![License](https://img.shields.io/badge/license-do%20what%20you%20want-8b5cf6?style=flat-square)]()
+[![Version](https://img.shields.io/badge/version-v114-22c55e?style=flat-square)]()
 
 </div>
 
 ---
 
-A Python GUI that plugs into [CS Demo Manager](https://cs-demo-manager.com/) and lets you batch-record highlights from your entire CS2 demo library — by player, event type, date range, weapon, and a growing list of kill modifiers (lucky shots, one-taps, clutches, spray transfers...).
+A Python GUI that plugs into [CS Demo Manager](https://cs-demo-manager.com/) and lets you batch-record highlights from your entire CS2 demo library — by player, event type, date range, weapon, and a comprehensive set of kill modifiers (lucky shots, one-taps, clutches, spray transfers, wallbangs, flicks, and more).
 
 Pick your filters → Preview → Run. CSDM handles the actual recording; this tool handles everything else.
 
@@ -20,13 +21,13 @@ Pick your filters → Preview → Run. CSDM handles the actual recording; this t
 
 ## Requirements
 
-| Dependency | |
+| Dependency | Notes |
 |---|---|
 | **Python 3.10+** | |
 | **FFmpeg** | Must be in `PATH` |
 | **CS Demo Manager** | [cs-demo-manager.com](https://cs-demo-manager.com/) — provides the CLI and PostgreSQL DB |
 | `pip install psycopg2-binary` | Required |
-| `pip install demoparser2` | Optional — needed for advanced kill modifiers |
+| `pip install demoparser2` | Needed for advanced kill modifiers (TROIS SHOT, ONE TAP, WALLBANG, AIRBORNE, etc.) |
 | `pip install pywin32` | Optional — CS2 auto-minimize on Windows |
 
 ---
@@ -44,46 +45,90 @@ Open the **Tools** tab → connect to PostgreSQL with the same credentials as CS
 ## Workflow
 
 ```
-Capture tab  →  PLAYER + CAPTURE + KILL FILTERS  →  F6 Preview  →  F5 Run
+Capture tab  →  PLAYER + EVENTS + KILL FILTERS  →  F6 Preview  →  F5 Run
 ```
 
-- **Preview** shows clip count, total duration, and a per-demo breakdown — uncheck any demo to exclude it
+- **Preview** shows clip count, total duration, a structured filter summary, and a per-demo breakdown with content badges — uncheck any demo to exclude it
 - **Manual mode** lets you pick any demo from the full database regardless of date range
-- **Auto-tag** tags processed demos in CSDM when the batch completes. Tags are **rolled back automatically** if the batch is stopped or killed mid-run.
+- **Auto-tag** tags processed demos in CSDM when the batch completes. Tags are **rolled back automatically** if the batch is stopped or killed mid-run
 
 ---
 
-## ⚠ CS recording mode
+## Preview header
 
-In **CS** mode, CS2 replays the demo from tick 0 to reach each target tick — a clip near the end of a 40-minute match takes ~40 minutes to record. **HLAE is strongly recommended** for any batch work.
+Each preview shows a clean summary block before the demo list:
+
+```
+Player:  MAMMOUTH (76561198…)
+Dates:   2025-12-19  →  2026-03-19
+Events:  Kills
+Weapons: 🎯 Rifles(1)
+Rec:     POV Killer  |  TrueView: ON  |  Order: Chronological
+Filters: dp2 [MIXED]: ★ 🧱 WALLBANG · 💨 SMOKE
+Found:   17 demo(s)  ·  23 event(s)
+Output:  H:\CS\CSVideos\Raws
+```
+
+Each demo line shows a **content badge** (what weapon/event type the clip contains) followed by **filter badges** (which specific filter each kill triggered):
+
+```
+09 02 2026  match730_…dem  (5 events → 5 seq) [5✕ AK-47] [💨 SMOKE] [🧱 WALLBANG]
+```
+
+---
+
+## Headshot filter
+
+An independent `🎯 Headshots` tri-state radio alongside Suicides and TK — not part of kill-mod logic:
+
+| Mode | Behaviour |
+|---|---|
+| **All** | No headshot filtering (default) |
+| **Only** | Keep headshot kills only |
+| **Exclude** | Keep non-headshot kills only |
+
+ONE TAP and TROIS TAP force **Only** when enabled and release the lock on disable.
+
+---
+
+## Kill modifier logic
+
+Each of the three modifier categories (Mods, demoparser2, DB) has an independent logic selector with three modes:
+
+| Mode | Behaviour |
+|---|---|
+| **AT LEAST ONE** | OR — a kill is kept if it matches any one checked modifier |
+| **ALL AT ONCE** | AND — a kill must match every checked modifier simultaneously |
+| **MIXED** | Required (★ Must) modifiers must ALL match, AND at least one optional modifier must match |
+
+**MIXED mode example:** WALLBANG as ★ Must + SMOKE + BLIND as optional → clips that are wallbangs AND either through smoke or blind. In MIXED mode each filter row shows a **★ Must** checkbox that is hidden in the other modes.
+
+The three categories are fully independent — you can combine modes freely across them.
 
 ---
 
 ## Kill modifiers
 
-Each of the three modifier categories has an **AT LEAST ONE / ALL AT ONCE** toggle:
-
-- **AT LEAST ONE** (default) — OR logic: a kill is kept if it matches any one of the checked modifiers in that category.
-- **ALL AT ONCE** — AND logic: a kill must satisfy every checked modifier in that category simultaneously.
-
-The three categories are independent — you can mix modes freely (e.g. OR across demoparser2 mods, AND across DB mods).
-
 ### 🔵 demoparser2-powered
 
 > Demos are pre-parsed in parallel before the batch starts. The cache persists for the session — Preview → Batch never re-parses.
 
-| Modifier | What it captures |
-|---|---|
-| 🎲 **TROIS SHOT** | Lucky kills on precision weapons — bloom too high, unscoped, or moving at shot time |
-| 🎲 **TROIS SHOT — Exclude** | Inverse: precise kills only on those same weapons |
-| 🎯 **ONE TAP** | Isolated headshot with no other shot fired within ±2s |
-| 🎯🎲 **TROIS TAP** | TROIS SHOT + ONE TAP simultaneously |
-| 🔫 **Spray Transfer** | ≥2 kills in one continuous burst, no trigger release (auto weapons only) |
-| 🏎 **Ferrari Peek** | Moving peek that kills on a single shot then immediately resumes — one-shot condition optional |
-| ↩ **Flick** | Large view-angle change in the ~0.5s before the kill |
-| 🛡 **Savior** | Kill an enemy who was actively damaging a teammate |
+| Modifier | What it captures | Source |
+|---|---|---|
+| 🎲 **TROIS SHOT** | Lucky kills on precision weapons — bloom too high, unscoped, or moving at shot time | `weapon_fire` accuracy |
+| 🎲 **TROIS SHOT — Exclude** | Inverse: precise kills only on those same weapons | `weapon_fire` accuracy |
+| 🎯 **ONE TAP** | Isolated headshot with no other shot fired within ±2s | `weapon_fire` ticks |
+| 🎯🎲 **TROIS TAP** | TROIS SHOT + ONE TAP simultaneously | Combined |
+| 🔫 **Spray Transfer** | ≥2 kills in one continuous burst, no trigger release (auto weapons only) | `weapon_fire` gaps |
+| 🏎 **Ferrari Peek** | Moving peek that kills on a single shot then immediately resumes | `weapon_fire` velocity |
+| ↩ **Flick** | Large view-angle change in the ~0.5s before the kill | `player_death` yaw |
+| 🛡 **Savior** | Kill an enemy who was actively damaging a teammate | `player_hurt` events |
+| 🧱 **Wallbang** | Kill by shooting through a wall or object | `player_death.penetrated` |
+| 🪂 **Airborne** | Killer was in the air at shot time | `player_death.attackerinair` |
+| 😵 **Blind Fire** | Killer was blinded by a flashbang at shot time | `player_death.attackerblind` |
+| 🎯 **Collateral** | Bullet passed through a first victim | `player_death.penetrated` |
 
-> Modifier logic follows the **AT LEAST ONE / ALL AT ONCE** toggle for this category. Enabling TROIS SHOT + ONE TAP simultaneously auto-converts to TROIS TAP regardless of the logic setting.
+> Enabling TROIS SHOT + ONE TAP simultaneously auto-converts to TROIS TAP regardless of the logic setting.
 
 ### 🟢 DB-only
 
@@ -91,12 +136,14 @@ The three categories are independent — you can mix modes freely (e.g. OR acros
 
 | Modifier | What it captures |
 |---|---|
+| 💨 **Smoke** | Kill through a smoke grenade |
+| 🔭 **No-Scope** | No-scope kill (sniper only) |
+| ⚡ **Victim Flashed** | Victim was blinded by a flashbang |
 | 🚀 **Entry Frag** | First kill of the round |
 | 🃏 **Ace** | Player eliminated all 5 opponents in a single round |
 | ⚡ **Multi-Kill** | N or more kills in one round within a configurable time window |
 | 💀 **BULLY** | Kill the same opponent for the Nth time in the match |
 | 💰 **Eco Frag** | Pistol kill against a full-buy opponent |
-| 😵 **Blind Fire** | Killer was blinded by a flashbang at shot time |
 
 ---
 
@@ -120,18 +167,27 @@ Two systems available: **HLAE** (recommended) and **CS** (native). The HLAE-spec
 | | HLAE | CS |
 |---|:---:|:---:|
 | FOV override | ✅ | ❌ |
-| Slow motion | ✅ | ❌ |
+| Slow motion / Game speed | ✅ | ❌ |
 | AFX streams | ✅ | ❌ |
 | Hide spectator UI | ✅ | ❌ |
 | CS2 effects (physics, gravity, blood) | ✅ | ✅ |
 | TrueView | ✅ | ✅ |
 
-> CS2 effects use standard CS2 console commands — they don't require HLAE.
->  
-> - **HLAE mode**: injected through `hlaeOptions.extraArgs` (plus HLAE-specific options).
-> - **CS mode**: injected through a managed runtime cfg (`csdm_batch_runtime.cfg`) automatically executed from `autoexec.cfg`.
->  
-> If CS2 cfg path cannot be auto-detected, set `cs2_cfg_dir` in `csdm_config.json`.
+> **CS mode warning:** CS2 replays the demo from tick 0 to reach each target tick — a clip near the end of a 40-minute match takes ~40 minutes to record. **HLAE is strongly recommended** for any batch work.
+
+> CS2 effects use standard CS2 console commands injected through `hlaeOptions.extraArgs` (HLAE) or a managed runtime cfg `csdm_batch_runtime.cfg` (CS). If the CS2 cfg path cannot be auto-detected, set `cs2_cfg_dir` in `csdm_config.json`.
+
+---
+
+## UI Theme
+
+A **UI THEME** section in the Tools tab lets you change the entire interface colour scheme in real time — no restart needed.
+
+**Background presets:** Dark · AMOLED (pure black) · Deep Blue · White
+
+**Accent presets:** Green · Blue · Orange · Purple · Red · Cyan · Pink · Yellow
+
+**Custom accent:** `🎨 Custom colour…` opens the Windows native colour picker. A darker shade is derived automatically for hover/selected states. Theme persists across sessions.
 
 ---
 
@@ -142,6 +198,7 @@ Two systems available: **HLAE** (recommended) and **CS** (native). The HLAE-spec
 | `F5` | Run batch |
 | `F6` | Preview |
 | `Esc` | Stop after current demo |
+| `Ctrl+B` | Toggle clip badges ON/OFF |
 
 ---
 
@@ -157,5 +214,7 @@ Two systems available: **HLAE** (recommended) and **CS** (native). The HLAE-spec
 
 *Built with Claude. My code knowledge is equal to the void space separating our planet from the sun.*  
 *Do as you wish with it.*
+
+*Assisted by GPT-5.3 Codex alongside Claude.*
 
 </div>

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v109"""
+"""CSDM Batch Clips Generator v116"""
 
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
 import subprocess, threading, json, os, tempfile, time, shutil, re, uuid, random, shlex
 import bisect, concurrent.futures
-from collections import defaultdict
+from collections import defaultdict, deque
 import calendar as cal_mod
 from datetime import datetime, timedelta, date
 from pathlib import Path
@@ -20,17 +20,135 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v109"
+APP_VERSION = "v116"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
 # ═══════════════════════════════════════════════════════
-BG, BG2, BG3 = "#0e0e0e", "#141414", "#1a1a1a"
-BORDER = "#252525"
-ORANGE, ORANGE2 = "#22c55e", "#16a34a"
-TEXT, MUTED = "#e0e0e0", "#999999"
-GREEN, RED, YELLOW, BLUE = "#86efac", "#f87171", "#fde68a", "#93c5fd"
-DESC_COLOR = "#888888"
+#  Theme system
+# ═══════════════════════════════════════════════════════
+
+# Background presets — each defines the full bg family
+_BG_PRESETS = {
+    "dark":    {"BG": "#0e0e0e", "BG2": "#141414", "BG3": "#1a1a1a",
+                "BORDER": "#252525", "TEXT": "#e0e0e0", "MUTED": "#999999",
+                "DESC_COLOR": "#888888", "LOG_BG": "#090909"},
+    "amoled":  {"BG": "#000000", "BG2": "#000000", "BG3": "#0a0a0a",
+                "BORDER": "#1a1a1a", "TEXT": "#e0e0e0", "MUTED": "#888888",
+                "DESC_COLOR": "#777777", "LOG_BG": "#000000"},
+    "deepblue":{"BG": "#0a0f1e", "BG2": "#0d1526", "BG3": "#111d35",
+                "BORDER": "#1a2a4a", "TEXT": "#cdd6f4", "MUTED": "#7a8fba",
+                "DESC_COLOR": "#6a7faa", "LOG_BG": "#080d18"},
+    "white":   {"BG": "#f0f0f0", "BG2": "#ffffff", "BG3": "#e8e8e8",
+                "BORDER": "#cccccc", "TEXT": "#111111", "MUTED": "#666666",
+                "DESC_COLOR": "#888888", "LOG_BG": "#fafafa"},
+}
+
+# Semantic accent colours — accent + darker shade
+_ACCENT_PRESETS = {
+    "green":    {"ACCENT": "#22c55e", "ACCENT2": "#16a34a"},
+    "blue":     {"ACCENT": "#3b82f6", "ACCENT2": "#2563eb"},
+    "orange":   {"ACCENT": "#f97316", "ACCENT2": "#ea580c"},
+    "purple":   {"ACCENT": "#a855f7", "ACCENT2": "#9333ea"},
+    "red":      {"ACCENT": "#ef4444", "ACCENT2": "#dc2626"},
+    "cyan":     {"ACCENT": "#06b6d4", "ACCENT2": "#0891b2"},
+    "pink":     {"ACCENT": "#ec4899", "ACCENT2": "#db2777"},
+    "yellow":   {"ACCENT": "#eab308", "ACCENT2": "#ca8a04"},
+}
+
+# Status colours — always the same regardless of accent/bg
+_STATUS_COLOURS = {
+    "GREEN":  "#86efac",
+    "RED":    "#f87171",
+    "YELLOW": "#fde68a",
+    "BLUE":   "#93c5fd",
+}
+
+def _build_theme(bg_name: str, accent_name_or_hex: str) -> dict:
+    """Build a complete theme dict from a bg-preset name and accent name or raw hex.
+
+    Returns a flat dict with all colour keys used throughout the UI.
+    """
+    bg = _BG_PRESETS.get(bg_name, _BG_PRESETS["dark"])
+    if accent_name_or_hex in _ACCENT_PRESETS:
+        ac = _ACCENT_PRESETS[accent_name_or_hex]
+        accent  = ac["ACCENT"]
+        accent2 = ac["ACCENT2"]
+    else:
+        # Raw hex from custom colour picker
+        accent  = accent_name_or_hex if accent_name_or_hex.startswith("#") else "#22c55e"
+        # Derive darker shade: darken by ~20%
+        try:
+            h = accent.lstrip("#")
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            r2, g2, b2 = int(r * 0.72), int(g * 0.72), int(b * 0.72)
+            accent2 = f"#{r2:02x}{g2:02x}{b2:02x}"
+        except Exception:
+            accent2 = accent
+    return {
+        "BG":        bg["BG"],
+        "BG2":       bg["BG2"],
+        "BG3":       bg["BG3"],
+        "BORDER":    bg["BORDER"],
+        "TEXT":      bg["TEXT"],
+        "MUTED":     bg["MUTED"],
+        "DESC_COLOR":bg["DESC_COLOR"],
+        "LOG_BG":    bg["LOG_BG"],
+        "ORANGE":    accent,
+        "ORANGE2":   accent2,
+        "GREEN":     _STATUS_COLOURS["GREEN"],
+        "RED":       _STATUS_COLOURS["RED"],
+        "YELLOW":    _STATUS_COLOURS["YELLOW"],
+        "BLUE":      _STATUS_COLOURS["BLUE"],
+    }
+
+# Active theme — populated at startup and updated on theme change
+_THEME: dict = _build_theme("dark", "green")
+
+def _t(key: str) -> str:
+    """Return the current theme colour for a given key."""
+    return _THEME[key]
+
+# Apply the initial theme to module-level globals for backward compat
+BG       = _THEME["BG"]
+BG2      = _THEME["BG2"]
+BG3      = _THEME["BG3"]
+BORDER   = _THEME["BORDER"]
+ORANGE   = _THEME["ORANGE"]
+ORANGE2  = _THEME["ORANGE2"]
+TEXT     = _THEME["TEXT"]
+MUTED    = _THEME["MUTED"]
+GREEN    = _THEME["GREEN"]
+RED      = _THEME["RED"]
+YELLOW   = _THEME["YELLOW"]
+BLUE     = _THEME["BLUE"]
+DESC_COLOR = _THEME["DESC_COLOR"]
+
+def _apply_theme_globals(bg_name: str, accent: str):
+    """Recompute _THEME and update every module-level colour global in-place.
+
+    Called at startup (before widgets) and again when user changes theme.
+    After this, any new widget creation will use the updated globals.
+    Existing widgets are updated by App._apply_theme_to_widgets().
+    """
+    global _THEME
+    global BG, BG2, BG3, BORDER, ORANGE, ORANGE2, TEXT, MUTED
+    global GREEN, RED, YELLOW, BLUE, DESC_COLOR
+    _THEME = _build_theme(bg_name, accent)
+    BG        = _THEME["BG"]
+    BG2       = _THEME["BG2"]
+    BG3       = _THEME["BG3"]
+    BORDER    = _THEME["BORDER"]
+    ORANGE    = _THEME["ORANGE"]
+    ORANGE2   = _THEME["ORANGE2"]
+    TEXT      = _THEME["TEXT"]
+    MUTED     = _THEME["MUTED"]
+    GREEN     = _THEME["GREEN"]
+    RED       = _THEME["RED"]
+    YELLOW    = _THEME["YELLOW"]
+    BLUE      = _THEME["BLUE"]
+    DESC_COLOR = _THEME["DESC_COLOR"]
+
 FONT_MONO = ("Consolas", 10)
 FONT_SM = ("Consolas", 9)
 FONT_DESC = ("Consolas", 8)
@@ -53,7 +171,6 @@ CSDM_RUNTIME_BLOCK_END = "// <<< CSDM_BATCH_RUNTIME END <<<"
 EVENTS = ["Kills", "Deaths", "Rounds"]
 ENCODER_OPTIONS = ["FFmpeg"]
 RECSYS_OPTIONS = ["HLAE", "CS"]
-REC_OUTPUT_OPTIONS = ["video"]
 VIDEO_CONTAINERS = ["mp4", "avi", "mkv", "mov", "webm"]
 PERSP_LABELS = {"killer": "POV Killer", "victim": "POV Victim", "both": "Both"}
 
@@ -305,12 +422,14 @@ DEFAULT_CONFIG = {
     "ui_window_h": 900,
     "ui_split_pct": 60,
     "ui_remember_layout": True,
+    "theme_bg": "dark",      # background preset: dark | amoled | deepblue | white
+    "theme_accent": "green", # accent preset or custom hex: green | blue | orange | purple | red | cyan | pink | yellow | #rrggbb
     "steam_id": "", "player_name": "",
     "events": ["Kills"], "weapons": [],
     "date_from": "", "date_to": "",
     "before": 3, "after": 5,
     "encoder": "FFmpeg", "recsys": "HLAE",
-    "recording_output": "video", "tickrate": 64,
+    "tickrate": 64,
     "use_config_file_mode": True, "close_game_after": True,
     "subfolder_per_demo": True,
     "width": 1920, "height": 1080, "framerate": 60,
@@ -337,10 +456,33 @@ DEFAULT_CONFIG = {
     "teamkills_mode": "include",
     "include_suicides": True,   # include suicides (weapon world/suicide/world_entity)
     # Kill modifiers — logic mode per category
-    # "any" = OR (at least one must match)  |  "all" = AND (all checked must match)
+    # "any"   = OR  (at least one must match)
+    # "all"   = AND (every checked filter must match)
+    # "mixed" = required filters must all match AND at least one optional filter matches
     "kill_mod_logic_mods": "any",   # Mods section (DB boolean columns)
     "kill_mod_logic_dp2":  "any",   # demoparser2 modifiers
     "kill_mod_logic_db":   "any",   # DB post-filter modifiers (entry, ace, multi, bully, eco)
+    # Per-filter "required" flags — only active when category logic == "mixed"
+    "kill_mod_through_smoke_req":  False,
+    "kill_mod_no_scope_req":       False,
+    "kill_mod_wall_bang_req":      False,
+    "kill_mod_airborne_req":       False,
+    "kill_mod_assisted_flash_req": False,
+    "kill_mod_collateral_req":     False,
+    "kill_mod_attacker_blind_req": False,
+    "kill_mod_trois_shot_req":     False,
+    "kill_mod_no_trois_shot_req":  False,
+    "kill_mod_trois_tap_req":      False,
+    "kill_mod_one_tap_req":        False,
+    "kill_mod_spray_transfer_req": False,
+    "kill_mod_high_velocity_req":  False,
+    "kill_mod_flick_req":          False,
+    "kill_mod_sauveur_req":        False,
+    "kill_mod_entry_frag_req":     False,
+    "kill_mod_ace_req":            False,
+    "kill_mod_multi_kill_req":     False,
+    "kill_mod_bourreau_req":       False,
+    "kill_mod_eco_frag_req":       False,
 
     # Kill modifiers (OR logic: checked = must match; none checked = no filter)
     
@@ -435,11 +577,22 @@ PRESET_KEYS = {
                "kill_mod_eco_frag", "kill_mod_attacker_blind",
                "kill_mod_high_velocity", "kill_mod_hv_one_shot", "kill_mod_high_vel_thr",
                "kill_mod_flick", "kill_mod_flick_deg", "kill_mod_sauveur",
+               # _req flags (mixed mode)
+               "kill_mod_through_smoke_req", "kill_mod_no_scope_req",
+               "kill_mod_wall_bang_req", "kill_mod_airborne_req",
+               "kill_mod_assisted_flash_req", "kill_mod_collateral_req",
+               "kill_mod_attacker_blind_req",
+               "kill_mod_trois_shot_req", "kill_mod_no_trois_shot_req",
+               "kill_mod_trois_tap_req", "kill_mod_one_tap_req",
+               "kill_mod_spray_transfer_req", "kill_mod_high_velocity_req",
+               "kill_mod_flick_req", "kill_mod_sauveur_req",
+               "kill_mod_entry_frag_req", "kill_mod_ace_req",
+               "kill_mod_multi_kill_req", "kill_mod_bourreau_req", "kill_mod_eco_frag_req",
                "clutch_enabled", "clutch_1v1", "clutch_1v2", "clutch_1v3",
                "clutch_1v4", "clutch_1v5",
                "clutch_require_win", "clutch_clip_mode",
                "clip_order", "show_xray"],
-    "video": ["encoder", "recsys", "recording_output", "width", "height", "framerate",
+    "video": ["encoder", "recsys", "width", "height", "framerate",
               "crf", "video_codec", "video_preset", "audio_codec", "audio_bitrate",
               "video_container", "ffmpeg_input_params", "ffmpeg_output_params",
               "death_notices_duration", "show_only_death_notices", "concatenate_sequences",
@@ -1246,13 +1399,13 @@ def hchk(parent, text, var, **kw):
 
     def _update(*_):
         if var.get():
-            cb.config(bg=ORANGE2, fg="white",
-                      activebackground=ORANGE, activeforeground="white",
-                      selectcolor=ORANGE2)
+            cb.config(bg=_t("ORANGE2"), fg="white",
+                      activebackground=_t("ORANGE"), activeforeground="white",
+                      selectcolor=_t("ORANGE2"))
         else:
-            cb.config(bg=BG3, fg=MUTED,
-                      activebackground=BG3, activeforeground=ORANGE,
-                      selectcolor=BG3)
+            cb.config(bg=_t("BG3"), fg=_t("MUTED"),
+                      activebackground=_t("BG3"), activeforeground=_t("ORANGE"),
+                      selectcolor=_t("BG3"))
     var.trace_add("write", _update)
     _update()
     return cb
@@ -1267,13 +1420,13 @@ def hradio(parent, text, var, value, **kw):
 
     def _update(*_):
         if var.get() == value:
-            rb.config(bg=ORANGE2, fg="white",
-                      activebackground=ORANGE, activeforeground="white",
-                      selectcolor=ORANGE2)
+            rb.config(bg=_t("ORANGE2"), fg="white",
+                      activebackground=_t("ORANGE"), activeforeground="white",
+                      selectcolor=_t("ORANGE2"))
         else:
-            rb.config(bg=BG3, fg=MUTED,
-                      activebackground=BG3, activeforeground=ORANGE,
-                      selectcolor=BG3)
+            rb.config(bg=_t("BG3"), fg=_t("MUTED"),
+                      activebackground=_t("BG3"), activeforeground=_t("ORANGE"),
+                      selectcolor=_t("BG3"))
     var.trace_add("write", _update)
     _update()
     return rb
@@ -1334,6 +1487,11 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.cfg = load_config()
+        # Apply theme from config before building any widgets
+        _apply_theme_globals(
+            self.cfg.get("theme_bg", "dark"),
+            self.cfg.get("theme_accent", "green")
+        )
         self.title(f"CSDM Batch {APP_VERSION}")
         self.configure(bg=BG)
         _w = int(self.cfg.get("ui_window_w", 1600) or 1600)
@@ -1360,10 +1518,11 @@ class App(tk.Tk):
         self._db_conn        = None  # persistent psycopg2 connection — reused across calls
         self._dp2_verbose    = False  # per-kill dp2 filter logging (debug only — expensive)
         self._tag_search_results = {}
+        self._warned_missing_mods: set = set()  # suppress repeat warnings for same absent cols
 
         self.v = {}
         str_keys = ["pg_host", "pg_port", "pg_user", "pg_pass", "pg_db", "csdm_exe", "output_dir",
-                     "date_from", "date_to", "encoder", "recsys", "recording_output", "video_codec",
+                     "date_from", "date_to", "encoder", "recsys", "video_codec",
                      "audio_codec", "video_container", "ffmpeg_input_params", "ffmpeg_output_params",
                      "tag_on_export", "perspective", "hlae_extra_args", "clip_order",
                      "cs2_window_mode",
@@ -1372,7 +1531,8 @@ class App(tk.Tk):
                      "cs2_cfg_dir",
                      "clutch_clip_mode",
                      "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
-                     "headshots_mode"]
+                     "headshots_mode",
+                     "theme_bg", "theme_accent"]
         int_keys = ["before", "after", "tickrate", "width", "height", "framerate", "crf", "audio_bitrate",
                      "death_notices_duration", "retry_count", "retry_delay", "delay_between_demos",
                      "hlae_fov", "hlae_slow_motion",
@@ -1393,6 +1553,17 @@ class App(tk.Tk):
                       "kill_mod_entry_frag", "kill_mod_ace", "kill_mod_multi_kill",
                       "kill_mod_bourreau", "kill_mod_eco_frag", "kill_mod_attacker_blind",
                       "kill_mod_high_velocity", "kill_mod_hv_one_shot", "kill_mod_flick", "kill_mod_sauveur",
+                      # Per-filter "required" flags (mixed mode)
+                      "kill_mod_through_smoke_req", "kill_mod_no_scope_req",
+                      "kill_mod_wall_bang_req", "kill_mod_airborne_req",
+                      "kill_mod_assisted_flash_req", "kill_mod_collateral_req",
+                      "kill_mod_attacker_blind_req",
+                      "kill_mod_trois_shot_req", "kill_mod_no_trois_shot_req",
+                      "kill_mod_trois_tap_req", "kill_mod_one_tap_req",
+                      "kill_mod_spray_transfer_req", "kill_mod_high_velocity_req",
+                      "kill_mod_flick_req", "kill_mod_sauveur_req",
+                      "kill_mod_entry_frag_req", "kill_mod_ace_req",
+                      "kill_mod_multi_kill_req", "kill_mod_bourreau_req", "kill_mod_eco_frag_req",
                       "assemble_after", "delete_after_assemble",
                       "phys_ragdoll_enable", "phys_blood", "phys_dynamic_lighting",
                       "cs2_minimize",
@@ -1454,9 +1625,14 @@ class App(tk.Tk):
         self._log_badges_btn = None
         self._outer_paned = None
         self._layout_cfg_job = None
+        # Async log buffer — background threads append here; main thread drains
+        # in a single batch every _LOG_PUMP_MS ms instead of one after(0) per line.
+        self._log_buf: deque = deque()
+        self._log_buf_lock = threading.Lock()
 
         self.v["hlae_slow_motion"].trace_add("write", self._on_game_speed_var)
         self._build_ui()
+        self.after(50, self._log_pump)   # start the async log drain pump
 
         # PlayerSearchWidget enables all accounts by default; override
         # with the exact saved list if it exists.
@@ -1527,8 +1703,6 @@ class App(tk.Tk):
             cfg[k] = val
         if cfg.get("encoder") not in ENCODER_OPTIONS:
             cfg["encoder"] = "FFmpeg"
-        if cfg.get("recording_output") not in REC_OUTPUT_OPTIONS:
-            cfg["recording_output"] = "video"
         cfg["events"] = [e for e, v in self.sel_events.items() if v.get()]
         cfg["weapons"] = [w for w, v in self.sel_weapons.items() if v.get()]
         # Compat: output_dir mirrors output_dir_clips
@@ -1557,8 +1731,6 @@ class App(tk.Tk):
             if k in self.v:
                 if k == "encoder" and val not in ENCODER_OPTIONS:
                     val = "FFmpeg"
-                if k == "recording_output" and val not in REC_OUTPUT_OPTIONS:
-                    val = "video"
                 self.v[k].set(iso_to_display(str(val)) if k in ("date_from", "date_to") else val)
             elif k == "events":
                 for e in EVENTS:
@@ -1833,6 +2005,7 @@ class App(tk.Tk):
         self._demo_dates     = {}
         self._ts_cache       = {}
         self._col_cache      = {}
+        self._warned_missing_mods = set()  # reset so re-connect re-checks column presence
 
         # Warn (log only) if the date column was not detected
         if not dc:
@@ -2574,6 +2747,8 @@ class App(tk.Tk):
 
     def _tab_capturer(self, parent):
         p = self._make_tab_scroll(parent)
+        # must_widgets: {category: [hchk_widget, ...]} for MIXED mode show/hide
+        self._must_widgets: dict = {"mods": [], "dp2": [], "db": []}
 
         sec = Sec(p, "PLAYER")
         sec.pack(fill="x", pady=(0, 10))
@@ -2695,29 +2870,25 @@ class App(tk.Tk):
         _mods_hdr = tk.Frame(sec, bg=BG2)
         _mods_hdr.pack(fill="x", pady=(0, 4))
         mlabel(_mods_hdr, "Mods — none checked = all kills:").pack(side="left")
-        _logic_tip_mods = ("AT LEAST ONE (OR): a kill is kept if it matches any one of the checked mods.\n"
-                           "ALL AT ONCE (AND): a kill must match every checked mod simultaneously.")
-        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE")):
-            _rb = hradio(_mods_hdr, _ll, self.v["kill_mod_logic_mods"], _lv)
+        _logic_tip_mods = (
+            "AT LEAST ONE (OR): a kill is kept if it matches any one of the checked mods.\n"
+            "ALL AT ONCE (AND): a kill must match every checked mod simultaneously.\n"
+            "MIXED: required mods (★ Must) must ALL match, plus at least one optional mod.")
+        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE"), ("mixed", "MIXED")):
+            _rb = hradio(_mods_hdr, _ll, self.v["kill_mod_logic_mods"], _lv,
+                         command=lambda *_, cat="mods": self._on_logic_mode_change(cat))
             _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
             add_tip(_rb, _logic_tip_mods)
 
         _MODS = [
             ("kill_mod_through_smoke",  "💨 SMOKE:",          "kill_mod_through_smoke",
-             "Kill through a smoke grenade"),
+             "Kill through a smoke grenade (DB column — fast, no demoparser2 needed)."),
             ("kill_mod_no_scope",       "🔭 NO-SCOPE:",       "kill_mod_no_scope",
-             "No-scope kill (sniper only)"),
-            ("kill_mod_wall_bang",      "🧱 WALLBANG:",       "kill_mod_wall_bang",
-             "Kill by shooting through a wall or object"),
-            ("kill_mod_airborne",       "🪂 AIRBORNE:",       "kill_mod_airborne",
-             "Killer is in the air at time of shot"),
+             "No-scope kill — sniper only (DB column)."),
             ("kill_mod_assisted_flash", "⚡ VICTIM FLASHED:", "kill_mod_assisted_flash",
-             "Victim was blinded by a flashbang"),
-            ("kill_mod_collateral",     "🎯 COLLATERAL:",     "kill_mod_collateral",
-             "Bullet passed through a first victim"),
-            ("kill_mod_attacker_blind", "😵 BLIND FIRE:",     "kill_mod_attacker_blind",
-             "Killer was blinded by a flashbang at shot time"),
+             "Victim was blinded by a flashbang (DB column)."),
         ]
+        self._must_widgets["mods"] = []
         for i, (key, label, _ck, tip) in enumerate(_MODS):
             row = tk.Frame(sec, bg=BG2)
             row.pack(fill="x", pady=(2 if i > 0 else 0, 0))
@@ -2727,19 +2898,58 @@ class App(tk.Tk):
             _cb = hchk(row, "Enable", self.v[key])
             _cb.pack(side="left", padx=(4, 0))
             add_tip(_cb, tip)
+            _must_cb = hchk(row, "★ Must", self.v[f"{key}_req"])
+            self._must_widgets["mods"].append(_must_cb)
+            add_tip(_must_cb, "In MIXED mode: this filter is required (must match).\nOthers without ★ are optional (at least one must match).")
+            self._wire_enable_must(self.v[key], self.v[f"{key}_req"])
+        self.after(50, lambda: self._on_logic_mode_change("mods"))
 
         # ── demoparser2 modifiers ─────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
         _dp2_hdr = tk.Frame(sec, bg=BG2)
         _dp2_hdr.pack(fill="x", pady=(0, 4))
         mlabel(_dp2_hdr, "demoparser2 modifiers:").pack(side="left")
-        _logic_tip_dp2 = ("AT LEAST ONE (OR): a kill is kept if it passes any one of the checked dp2 filters.\n"
-                          "ALL AT ONCE (AND): a kill must pass every checked dp2 filter simultaneously.\n"
-                          "Note: TROIS TAP is always exclusive and overrides this setting when active.")
-        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE")):
-            _rb = hradio(_dp2_hdr, _ll, self.v["kill_mod_logic_dp2"], _lv)
+        _logic_tip_dp2 = (
+            "AT LEAST ONE (OR): a kill is kept if it passes any one of the checked dp2 filters.\n"
+            "ALL AT ONCE (AND): a kill must pass every checked dp2 filter simultaneously.\n"
+            "MIXED: required filters (★ Must) must ALL pass, plus at least one optional passes.\n"
+            "Note: TROIS TAP is always exclusive and overrides this setting when active.")
+        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE"), ("mixed", "MIXED")):
+            _rb = hradio(_dp2_hdr, _ll, self.v["kill_mod_logic_dp2"], _lv,
+                         command=lambda *_, cat="dp2": self._on_logic_mode_change(cat))
             _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
             add_tip(_rb, _logic_tip_dp2)
+
+        # ── player_death flag modifiers (dp2) ─────────────────────────────────
+        self._must_widgets["dp2"] = []
+        _DP2_FLAG_MODS = [
+            ("kill_mod_wall_bang",      "🧱 WALLBANG:",
+             "Kill by shooting through a wall or object.\n"
+             "Uses player_death.penetrated > 0 from the demo file via demoparser2."),
+            ("kill_mod_airborne",       "🪂 AIRBORNE:",
+             "Killer was in the air at time of shot.\n"
+             "Uses player_death.attackerinair from the demo file via demoparser2."),
+            ("kill_mod_collateral",     "🎯 COLLATERAL:",
+             "Bullet passed through a first victim.\n"
+             "Uses player_death.penetrated > 0 from the demo file via demoparser2."),
+            ("kill_mod_attacker_blind", "😵 BLIND FIRE:",
+             "Killer was blinded by a flashbang at shot time.\n"
+             "Uses player_death.attackerblind from the demo file via demoparser2."),
+        ]
+        for key, label, tip in _DP2_FLAG_MODS:
+            row = tk.Frame(sec, bg=BG2)
+            row.pack(fill="x", pady=(2, 0))
+            _lbl = mlabel(row, label)
+            _lbl.pack(side="left")
+            add_tip(_lbl, tip)
+            _cb = hchk(row, "Enable", self.v[key])
+            _cb.pack(side="left", padx=(4, 0))
+            add_tip(_cb, tip)
+            _must_cb = hchk(row, "★ Must", self.v[f"{key}_req"])
+            self._must_widgets["dp2"].append(_must_cb)
+            add_tip(_must_cb, "In MIXED mode: this filter is required (must match).")
+            self._wire_enable_must(self.v[key], self.v[f"{key}_req"])
+            dp2_badge(row).pack(side="left", padx=(8, 0))
 
         # ── TROIS SHOT ────────────────────────────────────────────────────────
         trois_row = tk.Frame(sec, bg=BG2)
@@ -2758,6 +2968,10 @@ class App(tk.Tk):
         _ts_cb = hchk(trois_row, "Enable", self.v["kill_mod_trois_shot"],
                       command=self._on_trois_shot_toggle)
         _ts_cb.pack(side="left", padx=(4, 0))
+        _ts_must = hchk(trois_row, "★ Must", self.v["kill_mod_trois_shot_req"])
+        self._must_widgets["dp2"].append(_ts_must)
+        add_tip(_ts_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_trois_shot"], self.v["kill_mod_trois_shot_req"])
         _nts_cb = hchk(trois_row, "Exclude", self.v["kill_mod_no_trois_shot"],
                        command=self._on_no_trois_shot_toggle)
         _nts_cb.pack(side="left", padx=(12, 0))
@@ -2777,6 +2991,10 @@ class App(tk.Tk):
         _tt_cb = hchk(tt_row, "Enable", self.v["kill_mod_trois_tap"],
                       command=self._on_trois_tap_toggle)
         _tt_cb.pack(side="left", padx=(4, 0))
+        _tt_must = hchk(tt_row, "★ Must", self.v["kill_mod_trois_tap_req"])
+        self._must_widgets["dp2"].append(_tt_must)
+        add_tip(_tt_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_trois_tap"], self.v["kill_mod_trois_tap_req"])
         dp2_badge(tt_row).pack(side="left", padx=(8, 0))
 
         # ── ONE TAP ───────────────────────────────────────────────────────────
@@ -2790,6 +3008,10 @@ class App(tk.Tk):
         _ot_cb = hchk(ot_row, "Enable", self.v["kill_mod_one_tap"],
                       command=self._on_one_tap_toggle)
         _ot_cb.pack(side="left", padx=(4, 0))
+        _ot_must = hchk(ot_row, "★ Must", self.v["kill_mod_one_tap_req"])
+        self._must_widgets["dp2"].append(_ot_must)
+        add_tip(_ot_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_one_tap"], self.v["kill_mod_one_tap_req"])
         dp2_badge(ot_row).pack(side="left", padx=(8, 0))
 
         # ── SPRAY TRANSFER ────────────────────────────────────────────────────
@@ -2804,6 +3026,10 @@ class App(tk.Tk):
                 "Excluded: AWP, SSG 08, SCAR-20, G3SG1, shotguns, other pistols.")
         _st_cb = hchk(st_row, "Enable", self.v["kill_mod_spray_transfer"])
         _st_cb.pack(side="left", padx=(4, 0))
+        _st_must = hchk(st_row, "★ Must", self.v["kill_mod_spray_transfer_req"])
+        self._must_widgets["dp2"].append(_st_must)
+        add_tip(_st_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_spray_transfer"], self.v["kill_mod_spray_transfer_req"])
         dp2_badge(st_row).pack(side="left", padx=(8, 0))
 
         # ── FERRARI PEEK ──────────────────────────────────────────────────────
@@ -2834,6 +3060,10 @@ class App(tk.Tk):
         _hv_enable = hchk(hv_row, "Enable", self.v["kill_mod_high_velocity"],
                           command=_on_hv_toggle)
         _hv_enable.pack(side="left", padx=(4, 0))
+        _hv_must = hchk(hv_row, "★ Must", self.v["kill_mod_high_velocity_req"])
+        self._must_widgets["dp2"].append(_hv_must)
+        add_tip(_hv_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_high_velocity"], self.v["kill_mod_high_velocity_req"])
 
         _os_cb = hchk(_hv_inner, "One-shot", self.v["kill_mod_hv_one_shot"])
         _os_cb.pack(side="left", padx=(8, 0))
@@ -2855,6 +3085,10 @@ class App(tk.Tk):
                 "Kill preceded by a large view-angle change (~0.5s before kill tick).\n"
                 "Default: 50°. Lower = catch smaller corrections, raise = extreme flicks only.")
         hchk(fl_row, "Enable", self.v["kill_mod_flick"]).pack(side="left", padx=(4, 0))
+        _fl_must = hchk(fl_row, "★ Must", self.v["kill_mod_flick_req"])
+        self._must_widgets["dp2"].append(_fl_must)
+        add_tip(_fl_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_flick"], self.v["kill_mod_flick_req"])
         mlabel(fl_row, "  Min angle:").pack(side="left", padx=(8, 0))
         sentry(fl_row, self.v["kill_mod_flick_deg"], width=4).pack(side="left", padx=(4, 0), ipady=4)
         mlabel(fl_row, "°").pack(side="left", padx=(2, 0))
@@ -2869,19 +3103,28 @@ class App(tk.Tk):
                 "Kill an enemy who was actively damaging a teammate in the ~2s prior.\n"
                 "Captures clutch saves and last-second rescues.")
         hchk(sv_row, "Enable", self.v["kill_mod_sauveur"]).pack(side="left", padx=(4, 0))
+        _sv_must = hchk(sv_row, "★ Must", self.v["kill_mod_sauveur_req"])
+        self._must_widgets["dp2"].append(_sv_must)
+        add_tip(_sv_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_sauveur"], self.v["kill_mod_sauveur_req"])
         dp2_badge(sv_row).pack(side="left", padx=(8, 0))
+        self.after(50, lambda: self._on_logic_mode_change("dp2"))
 
         # ── DB modifiers ──────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
         _db_hdr = tk.Frame(sec, bg=BG2)
         _db_hdr.pack(fill="x", pady=(0, 4))
         mlabel(_db_hdr, "DB modifiers — no demoparser2 needed:").pack(side="left")
-        _logic_tip_db = ("AT LEAST ONE (OR): a kill is kept if it matches any one of the checked DB modifiers.\n"
-                         "ALL AT ONCE (AND): a kill must satisfy every checked DB modifier simultaneously.")
-        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE")):
-            _rb = hradio(_db_hdr, _ll, self.v["kill_mod_logic_db"], _lv)
+        _logic_tip_db = (
+            "AT LEAST ONE (OR): a kill is kept if it matches any one of the checked DB modifiers.\n"
+            "ALL AT ONCE (AND): a kill must satisfy every checked DB modifier simultaneously.\n"
+            "MIXED: required modifiers (★ Must) must ALL match, plus at least one optional matches.")
+        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE"), ("mixed", "MIXED")):
+            _rb = hradio(_db_hdr, _ll, self.v["kill_mod_logic_db"], _lv,
+                         command=lambda *_, cat="db": self._on_logic_mode_change(cat))
             _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
             add_tip(_rb, _logic_tip_db)
+        self._must_widgets["db"] = []
 
         # ── ENTRY FRAG ────────────────────────────────────────────────────────
         ef_row = tk.Frame(sec, bg=BG2)
@@ -2890,6 +3133,10 @@ class App(tk.Tk):
         _ef_lbl.pack(side="left")
         add_tip(_ef_lbl, "First kill of the round (earliest tick), regardless of side.")
         hchk(ef_row, "Enable", self.v["kill_mod_entry_frag"]).pack(side="left", padx=(4, 0))
+        _ef_must = hchk(ef_row, "★ Must", self.v["kill_mod_entry_frag_req"])
+        self._must_widgets["db"].append(_ef_must)
+        add_tip(_ef_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_entry_frag"], self.v["kill_mod_entry_frag_req"])
 
         # ── ACE ───────────────────────────────────────────────────────────────
         ac_row = tk.Frame(sec, bg=BG2)
@@ -2898,6 +3145,10 @@ class App(tk.Tk):
         _ac_lbl.pack(side="left")
         add_tip(_ac_lbl, "Rounds where the player eliminated all 5 opponents alone.")
         hchk(ac_row, "Enable", self.v["kill_mod_ace"]).pack(side="left", padx=(4, 0))
+        _ac_must = hchk(ac_row, "★ Must", self.v["kill_mod_ace_req"])
+        self._must_widgets["db"].append(_ac_must)
+        add_tip(_ac_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_ace"], self.v["kill_mod_ace_req"])
 
         # ── MULTI-KILL ────────────────────────────────────────────────────────
         mk_row = tk.Frame(sec, bg=BG2)
@@ -2906,6 +3157,10 @@ class App(tk.Tk):
         _mk_lbl.pack(side="left")
         add_tip(_mk_lbl, "N or more kills in one round within the time window.")
         hchk(mk_row, "Enable", self.v["kill_mod_multi_kill"]).pack(side="left", padx=(4, 0))
+        _mk_must = hchk(mk_row, "★ Must", self.v["kill_mod_multi_kill_req"])
+        self._must_widgets["db"].append(_mk_must)
+        add_tip(_mk_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_multi_kill"], self.v["kill_mod_multi_kill_req"])
         mlabel(mk_row, "  Min kills:").pack(side="left", padx=(8, 0))
         scombo(mk_row, self.v["kill_mod_multi_kill_n"], [2, 3, 4, 5], 3).pack(side="left", padx=(4, 0))
         add_tip(mk_row.winfo_children()[-1], "2 = double, 3 = triple, 4 = quadra, 5 = ace")
@@ -2922,6 +3177,10 @@ class App(tk.Tk):
                 "Kill the same opponent for the Nth time in the match.\n"
                 "e.g. From kill #3 = captured from the 3rd time you kill the same player.")
         hchk(bo_row, "Enable", self.v["kill_mod_bourreau"]).pack(side="left", padx=(4, 0))
+        _bo_must = hchk(bo_row, "★ Must", self.v["kill_mod_bourreau_req"])
+        self._must_widgets["db"].append(_bo_must)
+        add_tip(_bo_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_bourreau"], self.v["kill_mod_bourreau_req"])
         mlabel(bo_row, "  From kill #:").pack(side="left", padx=(8, 0))
         scombo(bo_row, self.v["kill_mod_bourreau_n"], [2, 3, 4, 5], 3).pack(side="left", padx=(4, 0))
         add_tip(bo_row.winfo_children()[-1], "2 = from 2nd kill of same victim, 3 = from 3rd, etc.")
@@ -2935,6 +3194,11 @@ class App(tk.Tk):
                 "Pistol kill against a full-buy opponent (rifle / sniper / LMG).\n"
                 "Falls back to all pistol kills if victim_weapon column is missing.")
         hchk(eco_row, "Enable", self.v["kill_mod_eco_frag"]).pack(side="left", padx=(4, 0))
+        _eco_must = hchk(eco_row, "★ Must", self.v["kill_mod_eco_frag_req"])
+        self._must_widgets["db"].append(_eco_must)
+        add_tip(_eco_must, "In MIXED mode: this filter is required (must match).")
+        self._wire_enable_must(self.v["kill_mod_eco_frag"], self.v["kill_mod_eco_frag_req"])
+        self.after(50, lambda: self._on_logic_mode_change("db"))
 
         # ── CLUTCH ────────────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
@@ -3419,7 +3683,6 @@ class App(tk.Tk):
         rg.pack(fill="x")
         rg.columnconfigure(0, weight=1)
         rg.columnconfigure(1, weight=1)
-        rg.columnconfigure(2, weight=1)
         for col, (title, opts, key, tip) in enumerate([
             ("Encoder", ENCODER_OPTIONS, "encoder", "FFmpeg only."),
             ("System",  RECSYS_OPTIONS,  "recsys",
@@ -3430,10 +3693,9 @@ class App(tk.Tk):
              "  Fix scope FOV, and other mirv_* commands.\n"
              "ℹ Vanilla CS2 effects (physics, gravity, blood) are injected in both modes:\n"
              "  HLAE via extraArgs, CS via autoexec + runtime cfg injection."),
-            ("Output", REC_OUTPUT_OPTIONS, "recording_output", "Video only.")
         ]):
             f = tk.Frame(rg, bg=BG2)
-            f.grid(row=0, column=col, sticky="new", padx=(0, 12 if col < 2 else 0))
+            f.grid(row=0, column=col, sticky="new", padx=(0, 12 if col < 1 else 0))
             mlabel(f, title).pack(anchor="w")
             for o in opts:
                 hradio(f, o, self.v[key], o).pack(anchor="w")
@@ -4097,6 +4359,49 @@ class App(tk.Tk):
             # User manually unchecked → simply disengage, do NOT restore sub-modifiers
             self._disengage_trois_tap()
 
+    def _on_logic_mode_change(self, category: str, *_):
+        """Show ★ Must toggles only when the category's logic mode is 'mixed'.
+
+        Called by each logic radio command and at tab-build time (after(50,...)).
+        DRY: one method handles all three categories via the _must_widgets dict.
+        """
+        logic_key = f"kill_mod_logic_{category}"
+        is_mixed = self.v.get(logic_key, tk.StringVar()).get() == "mixed"
+        for widget in self._must_widgets.get(category, []):
+            try:
+                if is_mixed:
+                    widget.pack(side="left", padx=(8, 0))
+                else:
+                    widget.pack_forget()
+            except Exception:
+                pass
+
+    def _wire_enable_must(self, enable_var: tk.BooleanVar, req_var: tk.BooleanVar):
+        """Couple an Enable checkbox with its ★ Must checkbox.
+
+        Rules:
+          - Checking ★ Must while Enable is off → auto-enables the filter.
+          - Unchecking Enable while Must is on → auto-clears Must.
+
+        This prevents the silent bug where Must=True + Enable=False causes the
+        filter to never appear in the active list, making Must silently ignored.
+        Stores the pair in self._must_couplings for reference.
+        """
+        if not hasattr(self, "_must_couplings"):
+            self._must_couplings: list = []
+        self._must_couplings.append((enable_var, req_var))
+
+        def _on_req_change(*_):
+            if req_var.get() and not enable_var.get():
+                enable_var.set(True)
+
+        def _on_enable_change(*_):
+            if not enable_var.get() and req_var.get():
+                req_var.set(False)
+
+        req_var.trace_add("write", _on_req_change)
+        enable_var.trace_add("write", _on_enable_change)
+
     def _on_clutch_toggle(self, *_):
         """Show/hide clutch options based on clutch_enabled."""
         try:
@@ -4126,6 +4431,21 @@ class App(tk.Tk):
         """Undo side-effects of TROIS TAP (release HS lock if ONE TAP also off)."""
         if not self.v["kill_mod_one_tap"].get():
             self._unlock_hs()
+
+
+    def _retrigger_toggle_vars(self):
+        """Nudge every BooleanVar and StringVar so hchk/hradio _update closures re-fire.
+
+        Since those closures now call _t() for live colour lookups, re-triggering
+        them applies the new theme to all checkboxes and radiobuttons immediately.
+        """
+        for key, var in self.v.items():
+            try:
+                if isinstance(var, (tk.BooleanVar, tk.StringVar)):
+                    cur = var.get()
+                    var.set(cur)
+            except Exception:
+                pass
 
 
     def _trois_shot_filter(self, demo_path, events, cfg):
@@ -4323,17 +4643,22 @@ class App(tk.Tk):
         # fire_ticks derived from fire_detail — no second parse needed
         fire_ticks = {k: [r[0] for r in v] for k, v in fire_detail.items()}
 
-        # ── player_death parse — view_angles for Flick, attacker data ────────
+        # ── player_death parse — view_angles for Flick + kill flags ─────────
         # Fields: tick, attacker_steamid, user_steamid (victim),
         #         view_angle_X (pitch), view_angle_Y (yaw)
-        # view_angles indexed by (attacker_sid, victim_sid) → [(tick, yaw, pitch), ...]
-        # Used by: _flick_filter
-        view_angles: dict = {}  # {killer_sid: [(tick, yaw, pitch), ...]} sorted by tick
+        #         noscope, thrusmoke, attackerblind, penetrated, attackerinair
+        # view_angles indexed by killer_sid → [(tick, yaw, pitch), ...]
+        # death_flags indexed by (tick, killer_sid) → {flag: value, ...}
+        # Used by: _flick_filter, _death_flag_filter
+        view_angles: dict = {}   # {killer_sid: [(tick, yaw, pitch), ...]} sorted by tick
+        death_flags: dict = {}   # {(tick, killer_sid): {flag_name: bool/int, ...}}
         try:
             death_df = parser.parse_event(
                 "player_death",
                 player=["pitch", "yaw"],
-                other=["attacker_steamid"],
+                other=["attacker_steamid",
+                       "noscope", "thrusmoke", "attackerblind",
+                       "penetrated", "attackerinair"],
             )
             if death_df is not None and len(death_df) > 0:
                 dcols = list(death_df.columns)
@@ -4346,20 +4671,50 @@ class App(tk.Tk):
                     (c for c in dcols if "attacker" in c.lower() and "steam" in c.lower()), None)
                 col_yaw   = next((c for c in dcols if "yaw"   in c.lower()), None)
                 col_pitch = next((c for c in dcols if "pitch" in c.lower()), None)
-                if col_atk and (col_yaw or col_pitch):
-                    for row in death_df[["tick", col_atk,
-                                         col_yaw   or col_atk,
-                                         col_pitch or col_atk]].to_numpy():
+                # kill flag columns — graceful if absent in older demos
+                _flag_cols = {
+                    "noscope":       next((c for c in dcols if "noscope"       in c.lower()), None),
+                    "thrusmoke":     next((c for c in dcols if "thrusmoke"     in c.lower()), None),
+                    "attackerblind": next((c for c in dcols if "attackerblind" in c.lower()), None),
+                    "penetrated":    next((c for c in dcols if "penetrated"    in c.lower()), None),
+                    "attackerinair": next((c for c in dcols if "attackerinair" in c.lower()), None),
+                }
+                if col_atk:
+                    fetch_cols = ["tick", col_atk]
+                    if col_yaw:   fetch_cols.append(col_yaw)
+                    if col_pitch: fetch_cols.append(col_pitch)
+                    for fc in _flag_cols.values():
+                        if fc and fc not in fetch_cols:
+                            fetch_cols.append(fc)
+                    arr_d = death_df[fetch_cols].to_numpy()
+                    yaw_i   = fetch_cols.index(col_yaw)   if col_yaw   else None
+                    pitch_i = fetch_cols.index(col_pitch) if col_pitch else None
+                    flag_indices = {
+                        fname: fetch_cols.index(fc)
+                        for fname, fc in _flag_cols.items() if fc
+                    }
+                    for row in arr_d:
                         t   = int(row[0]  or 0)
                         sid = str(row[1]  or "")
-                        yaw = float(row[2] or 0) if col_yaw   else 0.0
-                        pit = float(row[3] or 0) if col_pitch else 0.0
-                        if sid:
+                        if not sid:
+                            continue
+                        yaw = float(row[yaw_i]   or 0) if yaw_i   is not None else 0.0
+                        pit = float(row[pitch_i] or 0) if pitch_i is not None else 0.0
+                        if yaw_i or pitch_i:
                             view_angles.setdefault(sid, []).append((t, yaw, pit))
+                        # Store kill flags keyed by (tick, killer_sid)
+                        flags = {}
+                        for fname, fi in flag_indices.items():
+                            val = row[fi]
+                            if val is not None:
+                                # penetrated is an int (count); others are bool
+                                flags[fname] = int(val) if fname == "penetrated" else bool(val)
+                        if flags:
+                            death_flags[(t, sid)] = flags
             for k in view_angles:
                 view_angles[k].sort(key=lambda r: r[0])
         except Exception:
-            pass  # view_angles stays empty — flick filter degrades gracefully
+            pass  # view_angles/death_flags stay empty — filters degrade gracefully
 
         # ── player_hurt parse — for Savior filter ────────────────────────
         # Indexes: {victim_sid: [(tick, attacker_sid), ...]} sorted by tick
@@ -4394,6 +4749,7 @@ class App(tk.Tk):
                 "fire_ticks":   fire_ticks,
                 "view_angles":  view_angles,   # {killer_sid: [(tick, yaw, pitch), ...]}
                 "hurt_index":   hurt_index,    # {victim_sid: [(tick, attacker_sid), ...]}
+                "death_flags":  death_flags,   # {(tick, killer_sid): {flag: bool/int}}
             }
         return True
 
@@ -4797,6 +5153,82 @@ class App(tk.Tk):
                 filtered.append(evt)
         return filtered
 
+    # ── Death-flag filters (dp2 — from player_death event fields) ─────────────
+    # A single generic filter reads death_flags[(tick, killer_sid)][flag_name].
+    # All four "missing DB column" mods are implemented here.
+
+    _TICK_MATCH_WINDOW = 2   # ticks — death event tick vs kill event tick tolerance
+
+    def _death_flag_filter(self, demo_path, events, cfg,
+                           flag_name: str, threshold=True):
+        """Generic filter: keep kills whose player_death event has flag_name truthy.
+
+        flag_name  — key in death_flags dict (e.g. 'attackerinair', 'attackerblind',
+                     'penetrated', 'noscope', 'thrusmoke')
+        threshold  — value to compare against:
+                       True  → flag must be truthy (bool flags)
+                       int>0 → flag must be >= threshold (penetrated count)
+
+        If death_flags is empty (parse failed / old demo), passes all kills through
+        (graceful degradation — same behaviour as other dp2 filters).
+        """
+        if not os.path.isfile(demo_path):
+            return events
+        if demo_path not in self._dp2_cache:
+            self._dp2_parse_demo(demo_path)
+        with self._dp2_cache_lock:
+            data = self._dp2_cache.get(demo_path, {})
+        death_flags = data.get("death_flags", {})
+
+        if not death_flags:
+            return events  # degrade gracefully
+
+        filtered = []
+        for evt in events:
+            if evt.get("type") != "kill":
+                filtered.append(evt)
+                continue
+            kill_tick  = int(evt.get("tick", 0))
+            killer_sid = str(evt.get("killer_sid", ""))
+            # Look up within a small tick window to tolerate minor tick offsets
+            val = None
+            for dt in range(-self._TICK_MATCH_WINDOW, self._TICK_MATCH_WINDOW + 1):
+                entry = death_flags.get((kill_tick + dt, killer_sid))
+                if entry is not None:
+                    val = entry.get(flag_name)
+                    break
+            if val is None:
+                # Flag absent for this kill — pass through (can't determine)
+                filtered.append(evt)
+                continue
+            if isinstance(threshold, bool):
+                if bool(val) == threshold:
+                    filtered.append(evt)
+            else:
+                if int(val) >= threshold:
+                    filtered.append(evt)
+        return filtered
+
+    def _wall_bang_dp2_filter(self, demo_path, events, cfg):
+        """Wallbang via dp2 — penetrated > 0 in player_death event."""
+        return self._death_flag_filter(demo_path, events, cfg, "penetrated", 1)
+
+    def _airborne_dp2_filter(self, demo_path, events, cfg):
+        """Airborne killer via dp2 — attackerinair = True in player_death event."""
+        return self._death_flag_filter(demo_path, events, cfg, "attackerinair", True)
+
+    def _attacker_blind_dp2_filter(self, demo_path, events, cfg):
+        """Blind fire via dp2 — attackerblind = True in player_death event."""
+        return self._death_flag_filter(demo_path, events, cfg, "attackerblind", True)
+
+    def _collateral_dp2_filter(self, demo_path, events, cfg):
+        """Collateral / noscope via dp2 — penetrated >= 1 like wallbang but
+        this is specifically a bullet-through-body collateral.
+        CS2 sets penetrated=1 for both wallbang and through-body kills;
+        we use it as the best available proxy for collateral.
+        """
+        return self._death_flag_filter(demo_path, events, cfg, "penetrated", 1)
+
     def _apply_high_velocity_to_events(self, evts, cfg):
         return self._apply_filter_to_events(
             evts, cfg, "kill_mod_high_velocity",
@@ -4812,6 +5244,26 @@ class App(tk.Tk):
             evts, cfg, "kill_mod_sauveur",
             self._sauveur_filter, "🛡 SAVIOR")
 
+    def _apply_wall_bang_dp2_to_events(self, evts, cfg):
+        return self._apply_filter_to_events(
+            evts, cfg, "kill_mod_wall_bang",
+            self._wall_bang_dp2_filter, "🧱 WALLBANG → penetrated")
+
+    def _apply_airborne_dp2_to_events(self, evts, cfg):
+        return self._apply_filter_to_events(
+            evts, cfg, "kill_mod_airborne",
+            self._airborne_dp2_filter, "🪂 AIRBORNE → attackerinair")
+
+    def _apply_attacker_blind_dp2_to_events(self, evts, cfg):
+        return self._apply_filter_to_events(
+            evts, cfg, "kill_mod_attacker_blind",
+            self._attacker_blind_dp2_filter, "😵 BLIND FIRE → attackerblind")
+
+    def _apply_collateral_dp2_to_events(self, evts, cfg):
+        return self._apply_filter_to_events(
+            evts, cfg, "kill_mod_collateral",
+            self._collateral_dp2_filter, "🎯 COLLATERAL → penetrated")
+
     @staticmethod
     def _stamp_mf(events, cfg_key):
         """Add cfg_key to the _mf (matched-filters) set on every kill event in events."""
@@ -4822,6 +5274,21 @@ class App(tk.Tk):
                     e["_mf"] = {cfg_key}
                 else:
                     mf.add(cfg_key)
+
+    @staticmethod
+    def _split_required_optional(cfg, keys: list) -> tuple:
+        """Split a list of active filter cfg_keys into (required, optional) for mixed mode.
+
+        A key is "required" when its companion `<key>_req` flag is True in cfg.
+        Returns two lists — callers intersect required sets and union optional sets,
+        then intersect the two results.
+
+        Used by all three filter engines (SQL mods, dp2, DB postfilters) so the
+        mixed-mode logic lives in exactly one place.
+        """
+        required = [k for k in keys if cfg.get(f"{k}_req", False)]
+        optional = [k for k in keys if not cfg.get(f"{k}_req", False)]
+        return required, optional
 
     def _apply_filter_to_events(self, evts, cfg, cfg_key, filter_fn, label):
         """Apply a per-demo filter function to all demos in evts.
@@ -5561,6 +6028,161 @@ class App(tk.Tk):
             messagebox.showerror("Tags", f"Error: {err}")
 
     # ── TAB TOOLS ──
+    # ── Theme application ──────────────────────────────────────────────────
+
+    def _change_theme(self, bg_name: str | None = None, accent: str | None = None):
+        """Change theme at runtime. Pass None to keep the current value.
+
+        Saves to config, updates globals, and re-paints every widget.
+        """
+        old = _THEME.copy()
+        current_bg     = self.v["theme_bg"].get()
+        current_accent = self.v["theme_accent"].get()
+        new_bg     = bg_name if bg_name is not None else current_bg
+        new_accent = accent  if accent  is not None else current_accent
+        self.v["theme_bg"].set(new_bg)
+        self.v["theme_accent"].set(new_accent)
+        _apply_theme_globals(new_bg, new_accent)
+        new = _THEME.copy()
+
+        # Build the set of accent-button widget ids to exclude from the generic walker.
+        # Each accent button has a fixed fg (its own colour) that must never be remapped.
+        try:
+            _ac_exclude = frozenset(id(btn) for btn, _ in self._ac_btn_refs)
+        except Exception:
+            _ac_exclude = frozenset()
+
+        self._apply_theme_to_widgets(self, old, new, exclude_ids=_ac_exclude)
+        self._reapply_ttk_styles()
+
+        # Accent preset buttons: update only bg/activebackground, preserve fg
+        try:
+            for btn, fixed_fg in self._ac_btn_refs:
+                btn.configure(bg=new["BG3"], activebackground=new["BORDER"])
+        except Exception:
+            pass
+
+        # Retrigger hchk/hradio closures so they pick up the new _t() colours
+        self._retrigger_toggle_vars()
+
+        self._auto_save()
+
+    def _reapply_ttk_styles(self):
+        """Reapply ttk styles with current theme colours."""
+        s = ttk.Style()
+        s.configure("TNotebook", background=BG, borderwidth=0, tabmargins=0)
+        s.configure("TNotebook.Tab", background=BG3, foreground=MUTED,
+                    font=("Consolas", 9, "bold"), padding=[12, 7], borderwidth=0)
+        s.map("TNotebook.Tab",
+              background=[("selected", BG2)],
+              foreground=[("selected", ORANGE)])
+        s.configure("TCombobox",
+                    fieldbackground=BG3, background=BG3, foreground=TEXT,
+                    arrowcolor=ORANGE, bordercolor=BORDER,
+                    lightcolor=BORDER, darkcolor=BORDER,
+                    selectbackground=ORANGE, selectforeground="white")
+        s.map("TCombobox",
+              fieldbackground=[("readonly", BG3), ("disabled", BG)],
+              foreground=[("readonly", TEXT), ("disabled", MUTED)],
+              background=[("readonly", BG3)],
+              arrowcolor=[("readonly", ORANGE)])
+        s.configure("TPanedwindow", background=BORDER)
+        s.configure("Vertical.TPanedwindow", background=BORDER)
+        s.configure("DemoPicker.Treeview",
+                    background=BG3, fieldbackground=BG3,
+                    foreground=TEXT, rowheight=18, font=FONT_SM)
+        s.configure("DemoPicker.Treeview.Heading",
+                    background=BG2, foreground=MUTED,
+                    font=FONT_DESC, relief="flat")
+        s.map("DemoPicker.Treeview",
+              background=[("selected", BORDER)],
+              foreground=[("selected", ORANGE)])
+        # Re-configure log tags
+        try:
+            for tag, c in [("ok", GREEN), ("err", RED), ("info", ORANGE),
+                            ("dim", MUTED), ("warn", YELLOW), ("blue", BLUE)]:
+                self.log.tag_configure(tag, foreground=c)
+            self.log.tag_configure("search_hi",  background=ORANGE2, foreground="white")
+            self.log.tag_configure("search_cur", background=ORANGE,  foreground="white")
+            self.log.tag_configure("badge_kill",   foreground=RED)
+            self.log.tag_configure("badge_warn",   foreground=YELLOW)
+            self.log.tag_configure("badge_safe",   foreground=GREEN)
+            self.log.tag_configure("badge_filter", foreground=BLUE)
+            self.log.configure(bg=_THEME["LOG_BG"], fg=TEXT,
+                               insertbackground=ORANGE, selectbackground=ORANGE2)
+        except Exception:
+            pass
+        try:
+            self._demo_tree.tag_configure("ok",  foreground=TEXT)
+            self._demo_tree.tag_configure("off", foreground=MUTED)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _apply_theme_to_widgets(root, old: dict, new: dict,
+                                exclude_ids: frozenset = frozenset()):
+        """Recursively walk all tk widgets and swap old theme colours for new ones.
+
+        Checks every configurable colour property against every value in old{} and
+        replaces it with the corresponding new{} value.  Works for Label, Frame,
+        Button, Checkbutton, Radiobutton, Entry, Text, Scale, Scrollbar, etc.
+
+        exclude_ids — frozenset of id(widget) to skip entirely (e.g. accent preset
+                      buttons whose fg must stay fixed at their own colour).
+
+        The mapping is colour-value based (old hex → new hex) so it is fully
+        DRY — no widget-type-specific code, no per-widget references needed.
+        """
+        # Build bidirectional mapping: old_hex → new_hex
+        # Only map colours that actually changed to avoid unnecessary writes
+        colour_map: dict = {}
+        for key in old:
+            ov, nv = old[key].lower(), new[key].lower()
+            if ov != nv:
+                colour_map[ov] = nv
+
+        if not colour_map:
+            return  # Theme didn't change
+
+        # Also include LOG_BG which is not a named global but is used on the log widget
+        old_log = old.get("LOG_BG", "").lower()
+        new_log = new.get("LOG_BG", "").lower()
+        if old_log and new_log and old_log != new_log:
+            colour_map[old_log] = new_log
+
+        # Widget config keys to check — listed once, used for every widget
+        _COLOUR_PROPS = (
+            "bg", "fg", "background", "foreground",
+            "activebackground", "activeforeground",
+            "selectcolor", "selectbackground", "selectforeground",
+            "highlightbackground", "highlightcolor",
+            "insertbackground", "disabledforeground",
+            "troughcolor", "readonlybackground",
+        )
+
+        def _walk(widget):
+            if id(widget) in exclude_ids:
+                return  # skip — fixed-colour widget (e.g. accent preset buttons)
+            try:
+                for prop in _COLOUR_PROPS:
+                    try:
+                        cur = widget.cget(prop)
+                        if isinstance(cur, str):
+                            mapped = colour_map.get(cur.lower())
+                            if mapped:
+                                widget.configure(**{prop: mapped})
+                    except (tk.TclError, Exception):
+                        pass
+            except Exception:
+                pass
+            try:
+                for child in widget.winfo_children():
+                    _walk(child)
+            except Exception:
+                pass
+
+        _walk(root)
+
     def _tab_outils(self, parent):
         p = self._make_tab_scroll(parent)
 
@@ -5596,6 +6218,77 @@ class App(tk.Tk):
         _sub_cb = hchk(sec, "Subfolder per demo", self.v["subfolder_per_demo"])
         _sub_cb.pack(anchor="w", pady=(4, 0))
         add_tip(_sub_cb, "Creates a folder per demo in the raw clips folder.")
+
+        sec = Sec(p, "UI THEME")
+        sec.pack(fill="x", pady=(0, 12))
+
+        # ── Background row ────────────────────────────────────────────────────
+        bg_row = tk.Frame(sec, bg=BG2)
+        bg_row.pack(fill="x", pady=(4, 0))
+        mlabel(bg_row, "Background:").pack(side="left")
+        _BG_BTN_DEFS = [
+            ("dark",     "Dark",      MUTED),
+            ("amoled",   "AMOLED",    TEXT),
+            ("deepblue", "Deep Blue", "#7a9fda"),
+            ("white",    "White",     "#555555"),
+        ]
+        for _bg_key, _bg_lbl, _bg_fg in _BG_BTN_DEFS:
+            def _make_bg_cmd(k=_bg_key):
+                return lambda: self._change_theme(k, self.v["theme_accent"].get())
+            tk.Button(bg_row, text=_bg_lbl, font=FONT_SM, bg=BG3, fg=_bg_fg,
+                      relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                      activebackground=BORDER, activeforeground=ORANGE,
+                      command=_make_bg_cmd()).pack(side="left", padx=(8, 0), ipady=4, ipadx=8)
+
+        # ── Accent row ────────────────────────────────────────────────────────
+        ac_row = tk.Frame(sec, bg=BG2)
+        ac_row.pack(fill="x", pady=(8, 0))
+        mlabel(ac_row, "Accent:    ").pack(side="left")
+        _AC_BTN_DEFS = [
+            ("green",  "Green",  "#22c55e"),
+            ("blue",   "Blue",   "#3b82f6"),
+            ("orange", "Orange", "#f97316"),
+            ("purple", "Purple", "#a855f7"),
+            ("red",    "Red",    "#ef4444"),
+            ("cyan",   "Cyan",   "#06b6d4"),
+            ("pink",   "Pink",   "#ec4899"),
+            ("yellow", "Yellow", "#eab308"),
+        ]
+        # Keep refs so _apply_theme_to_widgets skips their fg (each btn keeps its own colour)
+        # and so _change_theme can update only their bg/activebackground.
+        self._ac_btn_refs: list = []   # [(widget, fixed_fg_hex), ...]
+        for _ac_key, _ac_lbl, _ac_col in _AC_BTN_DEFS:
+            def _make_ac_cmd(k=_ac_key):
+                return lambda: self._change_theme(self.v["theme_bg"].get(), k)
+            _btn = tk.Button(ac_row, text=_ac_lbl, font=FONT_SM, bg=BG3, fg=_ac_col,
+                             relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                             activebackground=BORDER, activeforeground=_ac_col,
+                             command=_make_ac_cmd())
+            _btn.pack(side="left", padx=(8 if _ac_key == "green" else 4, 0), ipady=4, ipadx=8)
+            self._ac_btn_refs.append((_btn, _ac_col))
+
+        # ── Custom colour picker ───────────────────────────────────────────────
+        custom_row = tk.Frame(sec, bg=BG2)
+        custom_row.pack(fill="x", pady=(8, 0))
+        mlabel(custom_row, "Custom:    ").pack(side="left")
+
+        def _pick_custom_accent():
+            cur = self.v["theme_accent"].get()
+            init = cur if cur.startswith("#") else _ACCENT_PRESETS.get(cur, {}).get("ACCENT", "#22c55e")
+            result = colorchooser.askcolor(color=init, parent=self, title="Pick accent colour")
+            if result and result[1]:
+                self._change_theme(self.v["theme_bg"].get(), result[1])
+
+        tk.Button(custom_row, text="🎨 Custom colour…", font=FONT_SM,
+                  bg=BG3, fg=ORANGE, relief="flat", bd=0, cursor="hand2",
+                  highlightthickness=0, activebackground=BORDER, activeforeground=ORANGE,
+                  command=_pick_custom_accent).pack(side="left", padx=(8, 0), ipady=4, ipadx=8)
+
+        mlabel(custom_row, "   Current:").pack(side="left", padx=(12, 0))
+        self._theme_preview_lbl = tk.Label(custom_row, text="  ██  ", font=FONT_SM,
+                                            fg=ORANGE, bg=BG3, relief="flat")
+        self._theme_preview_lbl.pack(side="left", padx=(4, 0))
+        add_tip(self._theme_preview_lbl, "Current accent colour preview.")
 
         sec = Sec(p, "UI LAYOUT")
         sec.pack(fill="x", pady=(0, 12))
@@ -6002,10 +6695,49 @@ class App(tk.Tk):
         self.log.configure(state="disabled")
 
     def _alog(self, msg, tag=""):
-        self.after(0, lambda m=msg, t=tag: self._log(m, t))
+        """Thread-safe async log. Appends to buffer; main thread drains every _LOG_PUMP_MS ms.
+
+        Never calls after(0) per message — avoids flooding the event queue during
+        parallel operations (dp2 pre-parse, worker) and keeps the UI responsive.
+        """
+        with self._log_buf_lock:
+            self._log_buf.append((msg, tag))
 
     def _alog_parts(self, parts):
-        self.after(0, lambda p=parts: self._log_parts(p))
+        """Thread-safe async log for multi-part lines (badge rows)."""
+        with self._log_buf_lock:
+            self._log_buf.append(("__parts__", parts))
+
+    _LOG_PUMP_MS = 50   # drain interval in milliseconds — 50ms ≈ 20 flushes/sec
+
+    def _log_pump(self):
+        """Drain the async log buffer in a single Text widget operation.
+
+        Called every _LOG_PUMP_MS ms on the main thread via self.after().
+        Batches all pending messages into one configure/insert/see/configure
+        cycle — N messages = 1 redraw instead of N redraws.
+        """
+        if self._log_buf:
+            with self._log_buf_lock:
+                pending = list(self._log_buf)
+                self._log_buf.clear()
+            try:
+                self.log.configure(state="normal")
+                autoscroll = self._log_autoscroll.get()
+                for item in pending:
+                    if item[0] == "__parts__":
+                        for txt, tag in item[1]:
+                            self.log.insert("end", txt, tag or "")
+                        self.log.insert("end", "\n")
+                    else:
+                        msg, tag = item
+                        self.log.insert("end", msg + "\n", tag)
+                if autoscroll:
+                    self.log.see("end")
+                self.log.configure(state="disabled")
+            except Exception:
+                pass
+        self.after(self._LOG_PUMP_MS, self._log_pump)
 
     def _clear_log(self):
         self.log.configure(state="normal")
@@ -6033,15 +6765,11 @@ class App(tk.Tk):
     # category: "mods" | "dp2" | "db"
     # Used by _build_filter_badges (per-clip) and _build_filter_header_parts (preview header).
     _FILTER_BADGE_DEFS = [
-        # Mods
+        # Mods (SQL boolean columns — present in most CSDM DB versions)
         ("kill_mod_through_smoke",  "💨 SMOKE",         "mods"),
         ("kill_mod_no_scope",       "🔭 NOSCOPE",       "mods"),
-        ("kill_mod_wall_bang",      "🧱 WALLBANG",      "mods"),
-        ("kill_mod_airborne",       "🪂 AIR",           "mods"),
         ("kill_mod_assisted_flash", "⚡ VIC.FLASH",     "mods"),
-        ("kill_mod_collateral",     "🎯 COLLAT.",       "mods"),
-        ("kill_mod_attacker_blind", "😵 BLIND",         "mods"),
-        # dp2
+        # dp2 (demoparser2 — weapon_fire and player_death event fields)
         ("kill_mod_trois_tap",      "🎯🎲 TROIS TAP",  "dp2"),
         ("kill_mod_trois_shot",     "🎲 TROIS SHOT",   "dp2"),
         ("kill_mod_no_trois_shot",  "🚫🎲 Exclude",    "dp2"),
@@ -6050,7 +6778,12 @@ class App(tk.Tk):
         ("kill_mod_high_velocity",  "🏎 FERRARI",       "dp2"),
         ("kill_mod_flick",          "↩ FLICK",          "dp2"),
         ("kill_mod_sauveur",        "🛡 SAVIOR",        "dp2"),
-        # DB
+        # dp2 — player_death event flags (formerly "missing DB columns")
+        ("kill_mod_wall_bang",      "🧱 WALLBANG",      "dp2"),
+        ("kill_mod_airborne",       "🪂 AIR",           "dp2"),
+        ("kill_mod_attacker_blind", "😵 BLIND",         "dp2"),
+        ("kill_mod_collateral",     "🎯 COLLAT.",       "dp2"),
+        # DB (post-filter — cross-round context)
         ("kill_mod_entry_frag",     "🚀 ENTRY",         "db"),
         ("kill_mod_ace",            "🃏 ACE",            "db"),
         ("kill_mod_multi_kill",     "⚡ MULTI",          "db"),
@@ -6099,12 +6832,29 @@ class App(tk.Tk):
                 groups.setdefault(cat, []).append(lbl)
         parts = []
         for cat in ("mods", "dp2", "db"):
-            lbls = groups.get(cat)
-            if not lbls:
+            lbls_raw = groups.get(cat)
+            if not lbls_raw:
                 continue
             cat_name, logic_key = _CAT_META[cat]
-            logic = "ALL" if cfg.get(logic_key) == "all" else "ANY"
-            parts.append(f"{cat_name} [{logic}]: {' · '.join(lbls)}")
+            logic_val = cfg.get(logic_key, "any")
+            if logic_val == "all":
+                logic_str = "ALL"
+            elif logic_val == "mixed":
+                logic_str = "MIXED"
+            else:
+                logic_str = "ANY"
+
+            if logic_val == "mixed":
+                # Show ★ prefix on required filters
+                lbls = []
+                for k, lbl, c in self._FILTER_BADGE_DEFS:
+                    if c == cat and cfg.get(k):
+                        prefix = "★ " if cfg.get(f"{k}_req", False) else ""
+                        lbls.append(f"{prefix}{lbl}")
+            else:
+                lbls = lbls_raw
+
+            parts.append(f"{cat_name} [{logic_str}]: {' · '.join(lbls)}")
         return parts
 
     def _build_clip_badges(self, events, cfg):
@@ -6334,12 +7084,7 @@ class App(tk.Tk):
                 _MOD_COLS = {
                     "kill_mod_through_smoke":  ["is_through_smoke", "through_smoke"],
                     "kill_mod_no_scope":       ["is_no_scope", "no_scope"],
-                    "kill_mod_wall_bang":      ["is_wall_bang", "wall_bang", "is_wallbang", "wallbang"],
-                    "kill_mod_airborne":       ["is_airborne", "airborne"],
                     "kill_mod_assisted_flash": ["is_assisted_flash", "assisted_flash"],  # VICTIM blinded
-                    "kill_mod_attacker_blind": ["attacker_blind", "is_blind"],            # KILLER blinded
-                    "kill_mod_collateral":     ["is_collateral", "collateral",
-                                                "is_trade", "through_body"],
                 }
                 active_mods = [k for k in _MOD_COLS if cfg.get(k, False)]
                 modsql = ""
@@ -6361,26 +7106,58 @@ class App(tk.Tk):
                         else:
                             missing_mods.append(mod_key)
                     if missing_mods:
-                        missing_labels = ", ".join(
-                            m.replace("kill_mod_", "").replace("_", " ") for m in missing_mods)
+                        missing_set = frozenset(missing_mods)
                         if not mod_clauses:
                             # All checked modifiers absent from DB →
                             # cannot filter, return empty rather than all clips
-                            self._alog(
-                                f"⛔ Modifiers not found in DB: {missing_labels}. "
-                                f"No clips returned — uncheck these modifiers or check the schema.",
-                                "err")
+                            if missing_set != self._warned_missing_mods:
+                                missing_labels = ", ".join(
+                                    m.replace("kill_mod_", "").replace("_", " ")
+                                    for m in missing_mods)
+                                self._alog(
+                                    f"⛔ Modifiers not found in DB: {missing_labels}. "
+                                    f"No clips returned — uncheck these modifiers or check the schema.",
+                                    "err")
+                                self._warned_missing_mods = missing_set
                             conn.close()
                             return {}
                         else:
-                            self._alog(
-                                f"⚠ Modifiers partially not found: {missing_labels} — ignored. "
-                                f"Only the others are applied.",
-                                "warn")
+                            # Some columns absent — warn once per unique missing set
+                            if missing_set != self._warned_missing_mods:
+                                missing_labels = ", ".join(
+                                    m.replace("kill_mod_", "").replace("_", " ")
+                                    for m in missing_mods)
+                                self._alog(
+                                    f"⚠ Modifiers not found in DB: {missing_labels} — ignored. "
+                                    f"Only the others are applied.",
+                                    "warn")
+                                self._warned_missing_mods = missing_set
                     if mod_clauses:
                         _mods_logic = cfg.get("kill_mod_logic_mods", "any")
-                        _sql_join = " AND " if _mods_logic == "all" else " OR "
-                        modsql = " AND (" + _sql_join.join(mod_clauses) + ")"
+                        if _mods_logic == "all":
+                            modsql = " AND (" + " AND ".join(mod_clauses) + ")"
+                        elif _mods_logic == "mixed":
+                            # Build per-clause map: mod_key → clause
+                            # Rebuild clause list pairing keys with their SQL fragments
+                            _key_clause = []
+                            _mi = 0
+                            for mod_key in active_mods:
+                                col = self._find_col("kills", _MOD_COLS[mod_key])
+                                if col:
+                                    _key_clause.append((mod_key, mod_clauses[_mi]))
+                                    _mi += 1
+                            req_keys   = [k for k, _ in _key_clause if cfg.get(f"{k}_req", False)]
+                            opt_clauses = [c for k, c in _key_clause if not cfg.get(f"{k}_req", False)]
+                            req_clauses = [c for k, c in _key_clause if cfg.get(f"{k}_req", False)]
+                            parts = req_clauses[:]
+                            if opt_clauses:
+                                parts.append("(" + " OR ".join(opt_clauses) + ")")
+                            if parts:
+                                modsql = " AND (" + " AND ".join(parts) + ")"
+                            elif req_clauses:
+                                modsql = " AND (" + " AND ".join(req_clauses) + ")"
+                        else:
+                            modsql = " AND (" + " OR ".join(mod_clauses) + ")"
 
                 date_col = self._date_col   # may be None → auto-detected below
                 if not date_col and self._db_schema.get("matches"):
@@ -6748,14 +7525,41 @@ class App(tk.Tk):
             # ── Combine per-modifier sets ──────────────────────────────────
             if not per_mod_sigs:
                 continue
-            sig_sets = [s for _, s in per_mod_sigs]
-            if logic_and and len(sig_sets) > 1:
-                # AND: intersection — kill must satisfy every active modifier
+
+            logic_mode = cfg.get("kill_mod_logic_db", "any")
+
+            if logic_mode == "mixed":
+                active_db_keys = [k for k, _ in per_mod_sigs]
+                req_keys, opt_keys = self._split_required_optional(cfg, active_db_keys)
+                req_sets = [s for k, s in per_mod_sigs if k in req_keys]
+                opt_sets = [s for k, s in per_mod_sigs if k in opt_keys]
+                # Required: all must match → intersect
+                if req_sets:
+                    req_sigs = req_sets[0].intersection(*req_sets[1:]) if len(req_sets) > 1 else set(req_sets[0])
+                else:
+                    req_sigs = None  # no required → no restriction from req side
+                # Optional: at least one → union (or unrestricted if none checked)
+                if opt_sets:
+                    opt_sigs: set = set()
+                    for s in opt_sets:
+                        opt_sigs |= s
+                else:
+                    opt_sigs = None  # no optionals → no restriction from opt side
+                # Combine: must satisfy all required AND at least one optional
+                if req_sigs is not None and opt_sigs is not None:
+                    keep_sigs = req_sigs & opt_sigs
+                elif req_sigs is not None:
+                    keep_sigs = req_sigs
+                elif opt_sigs is not None:
+                    keep_sigs = opt_sigs
+                else:
+                    keep_sigs = set()
+            elif logic_and and len(per_mod_sigs) > 1:
+                sig_sets = [s for _, s in per_mod_sigs]
                 keep_sigs = sig_sets[0].intersection(*sig_sets[1:])
             else:
-                # OR: union — kill qualifies if it satisfies at least one
                 keep_sigs: set = set()
-                for s in sig_sets:
+                for _, s in per_mod_sigs:
                     keep_sigs |= s
 
             # Build sig → set_of_matched_cfg_keys for _mf tagging
@@ -7537,7 +8341,7 @@ class App(tk.Tk):
             "outputFolderPath": od,
             "encoderSoftware": cfg.get("encoder", "FFmpeg"),
             "recordingSystem": cfg.get("recsys", "HLAE"),
-            "recordingOutput": cfg.get("recording_output", "video"),
+            "recordingOutput": "video",
             "framerate": cfg.get("framerate", 60),
             "width": cfg.get("width", 1920),
             "height": cfg.get("height", 1080),
@@ -7726,14 +8530,10 @@ class App(tk.Tk):
 
         Thread-safe via _dp2_cache_lock (inside _dp2_parse_demo).
         """
-        needs_dp2 = (cfg.get("kill_mod_trois_shot") or
-                     cfg.get("kill_mod_no_trois_shot") or
-                     cfg.get("kill_mod_one_tap") or
-                     cfg.get("kill_mod_trois_tap") or
-                     cfg.get("kill_mod_spray_transfer") or
-                     cfg.get("kill_mod_high_velocity") or
-                     cfg.get("kill_mod_flick") or
-                     cfg.get("kill_mod_sauveur"))
+        # Derive from _DP2_FILTER_DEFS so this can never fall out of sync.
+        # Also include TROIS TAP which is not in _DP2_FILTER_DEFS (always exclusive).
+        _dp2_keys = {k for k, *_ in self._DP2_FILTER_DEFS} | {"kill_mod_trois_tap"}
+        needs_dp2 = any(cfg.get(k) for k in _dp2_keys)
         if not needs_dp2:
             return
 
@@ -7765,6 +8565,7 @@ class App(tk.Tk):
                 "info")
 
         done = 0
+        total = len(missing)
         with concurrent.futures.ThreadPoolExecutor(max_workers=n_threads) as ex:
             futs = {ex.submit(self._dp2_parse_demo, dp): dp for dp in missing}
             for fut in concurrent.futures.as_completed(futs):
@@ -7775,8 +8576,12 @@ class App(tk.Tk):
                     self._alog(
                         f"  ⚠ Pre-parse error ({Path(futs[fut]).name}): {e}",
                         "warn")
-                self.after(0, lambda d=done, t=len(missing):
-                           self.progress_lbl.config(text=f"Pre-parse {d}/{t}"))
+                # Update progress label directly — safe because we're on the worker thread
+                # and after() is thread-safe; but we batch: only schedule every 5 completions
+                # or on the last one to avoid flooding the event queue.
+                if done == total or done % 5 == 0:
+                    self.after(0, lambda d=done, t=total:
+                               self.progress_lbl.config(text=f"Pre-parse {d}/{t}"))
 
         cached_total = n_cached + done
         self._alog(
@@ -8146,39 +8951,41 @@ class App(tk.Tk):
     #
     # TROIS TAP is NOT listed here — it is always exclusive and handled separately.
     _DP2_FILTER_DEFS = [
-        ("kill_mod_trois_shot",     "_trois_shot_filter",     "_apply_trois_shot_to_events",
+        ("kill_mod_trois_shot",     "_trois_shot_filter",          "_apply_trois_shot_to_events",
          "🎲 TROIS SHOT",    "TROIS SHOT",     "0 TROIS SHOT"),
-        ("kill_mod_no_trois_shot",  "_no_trois_shot_filter",  "_apply_no_trois_shot_to_events",
+        ("kill_mod_no_trois_shot",  "_no_trois_shot_filter",       "_apply_no_trois_shot_to_events",
          "🚫🎲 Exclude",     "precise",        "0 EXCLUDE"),
-        ("kill_mod_one_tap",        "_one_tap_filter",        "_apply_one_tap_to_events",
+        ("kill_mod_one_tap",        "_one_tap_filter",             "_apply_one_tap_to_events",
          "🎯 ONE TAP",       "one tap",        "0 ONE TAP"),
-        ("kill_mod_spray_transfer", "_spray_transfer_filter", "_apply_spray_transfer_to_events",
+        ("kill_mod_spray_transfer", "_spray_transfer_filter",      "_apply_spray_transfer_to_events",
          "🔫 SPRAY",         "spray transfer", "0 SPRAY"),
-        ("kill_mod_high_velocity",  "_high_velocity_filter",  "_apply_high_velocity_to_events",
+        ("kill_mod_high_velocity",  "_high_velocity_filter",       "_apply_high_velocity_to_events",
          "🏎 FERRARI PEEK",  "counter-strafe", "0 FERRARI PEEK"),
-        ("kill_mod_flick",          "_flick_filter",          "_apply_flick_to_events",
+        ("kill_mod_flick",          "_flick_filter",               "_apply_flick_to_events",
          "↩ FLICK",          "flick",          "0 FLICK"),
-        ("kill_mod_sauveur",        "_sauveur_filter",        "_apply_sauveur_to_events",
+        ("kill_mod_sauveur",        "_sauveur_filter",             "_apply_sauveur_to_events",
          "🛡 SAVIOR",        "savior",         "0 SAVIOR"),
+        # Filters formerly SQL-only; now backed by player_death event flags via dp2
+        ("kill_mod_wall_bang",      "_wall_bang_dp2_filter",       "_apply_wall_bang_dp2_to_events",
+         "🧱 WALLBANG",      "wallbang",       "0 WALLBANG"),
+        ("kill_mod_airborne",       "_airborne_dp2_filter",        "_apply_airborne_dp2_to_events",
+         "🪂 AIRBORNE",      "airborne",       "0 AIRBORNE"),
+        ("kill_mod_attacker_blind", "_attacker_blind_dp2_filter",  "_apply_attacker_blind_dp2_to_events",
+         "😵 BLIND FIRE",    "blind fire",     "0 BLIND FIRE"),
+        ("kill_mod_collateral",     "_collateral_dp2_filter",      "_apply_collateral_dp2_to_events",
+         "🎯 COLLATERAL",    "collateral",     "0 COLLATERAL"),
     ]
 
     def _apply_dp2_modifiers(self, dp, events, cfg):
         """Apply active demoparser2 kill modifiers for one demo (batch worker path).
 
         Logic mode (cfg["kill_mod_logic_dp2"]):
-          "any" (default/OR): a kill is kept if it passes at least one active filter.
-                              Each filter runs independently on the original event list;
-                              results are unioned. _mf is stamped per-filter per-kill.
-          "all"        (AND): a kill must pass every active filter — filters are chained
-                              sequentially (each narrows the set further).
-                              _mf is stamped per-filter on each surviving kill.
-
-        TROIS TAP is always exclusive and bypasses the logic setting.
-        Derived from _DP2_FILTER_DEFS — add a row there to support a new filter.
-
-        Returns the filtered event list, or None if no kills remain (caller skips demo).
+          "any"   (OR):    a kill passes if it satisfies at least one active filter.
+          "all"   (AND):   a kill must pass every active filter.
+          "mixed":         required filters must ALL match AND at least one optional matches.
+        TROIS TAP always exclusive. Derived from _DP2_FILTER_DEFS.
+        Returns filtered events or None if no kills remain.
         """
-        # TROIS TAP short-circuit — always exclusive
         if cfg.get("kill_mod_trois_tap"):
             n_before = _count_kills(events)
             events   = self._trois_tap_filter(dp, events, cfg)
@@ -8196,46 +9003,111 @@ class App(tk.Tk):
         if not active:
             return events
 
-        logic_and = cfg.get("kill_mod_logic_dp2", "any") == "all"
+        logic = cfg.get("kill_mod_logic_dp2", "any")
 
-        if logic_and:
-            # AND: chain filters — each pass narrows the surviving set.
-            # _stamp_mf per-filter so _mf accumulates all matched keys.
+        if logic == "all":
             for cfg_key, filter_fn, log_label, result_label, skip_label in active:
                 n_before = _count_kills(events)
                 events   = filter_fn(dp, events, cfg)
                 n_after  = _count_kills(events)
-                self._alog(
-                    f"  {log_label} : {n_before} kills → {n_after} {result_label}",
-                    "info")
+                self._alog(f"  {log_label} : {n_before} kills → {n_after} {result_label}", "info")
                 if not events:
                     self._alog(f"  ⏭ SKIP: {skip_label} in this demo", "dim")
                     return None
                 self._stamp_mf(events, cfg_key)
             return events
-        else:
-            # OR: run each filter independently, union kill sigs, merge _mf sets.
+
+        def _run_or(filters):
+            """Run filters independently on original events, return sig→keys union."""
             non_kill = [e for e in events if e.get("type") != "kill"]
-            sig_to_keys: dict = {}
-            for cfg_key, filter_fn, log_label, result_label, skip_label in active:
+            s2k: dict = {}
+            for cfg_key, filter_fn, log_label, result_label, _ in filters:
                 n_before = _count_kills(events)
                 passed   = filter_fn(dp, events, cfg)
                 n_after  = _count_kills(passed)
-                self._alog(
-                    f"  {log_label} : {n_before} kills → {n_after} {result_label}",
-                    "info")
+                self._alog(f"  {log_label} : {n_before} kills → {n_after} {result_label}", "info")
                 for e in passed:
                     if e.get("type") == "kill":
                         sig = (e["tick"], str(e.get("killer_sid", "")))
-                        sig_to_keys.setdefault(sig, set()).add(cfg_key)
-            kill_sigs_union = set(sig_to_keys.keys())
+                        s2k.setdefault(sig, set()).add(cfg_key)
+            return s2k, non_kill
+
+        def _run_and(filters):
+            """Chain filters, return surviving event list."""
+            evts = list(events)
+            for cfg_key, filter_fn, log_label, result_label, skip_label in filters:
+                n_before = _count_kills(evts)
+                evts = filter_fn(dp, evts, cfg)
+                n_after = _count_kills(evts)
+                self._alog(f"  {log_label} : {n_before} kills → {n_after} {result_label}", "info")
+                if not evts:
+                    self._alog(f"  ⏭ SKIP: {skip_label} in this demo", "dim")
+                    return None
+                self._stamp_mf(evts, cfg_key)
+            return evts
+
+        if logic == "mixed":
+            active_keys = [k for k, *_ in active]
+            req_keys, opt_keys = self._split_required_optional(cfg, active_keys)
+            req_active = [(k, fn, ll, rl, sl) for k, fn, ll, rl, sl in active if k in req_keys]
+            opt_active = [(k, fn, ll, rl, sl) for k, fn, ll, rl, sl in active if k in opt_keys]
+
+            # Required: all must pass → AND chain
+            if req_active:
+                req_events = _run_and(req_active)
+                if req_events is None:
+                    return None
+                req_sigs = frozenset((e["tick"], str(e.get("killer_sid", "")))
+                                     for e in req_events if e.get("type") == "kill")
+            else:
+                req_sigs = None
+
+            # Optional: at least one → OR union
+            if opt_active:
+                opt_s2k, non_kill = _run_or(opt_active)
+                opt_sigs = frozenset(opt_s2k.keys())
+            else:
+                opt_s2k, non_kill = {}, [e for e in events if e.get("type") != "kill"]
+                opt_sigs = None
+
+            # Combine: intersect required and optional sig sets
+            if req_sigs is not None and opt_sigs is not None:
+                keep_sigs = req_sigs & opt_sigs
+            elif req_sigs is not None:
+                keep_sigs = req_sigs
+            elif opt_sigs is not None:
+                keep_sigs = opt_sigs
+            else:
+                keep_sigs = frozenset()
+
+            # Build merged _mf: stamp req keys + optional matched keys
+            kept_kills = []
+            for e in events:
+                if e.get("type") != "kill":
+                    continue
+                sig = (e["tick"], str(e.get("killer_sid", "")))
+                if sig in keep_sigs:
+                    all_matched = set(req_keys)
+                    all_matched |= opt_s2k.get(sig, set())
+                    mf = e.get("_mf")
+                    e["_mf"] = (mf | all_matched) if mf else set(all_matched)
+                    kept_kills.append(e)
+            result = kept_kills + non_kill
+            if not result:
+                self._alog("  ⏭ SKIP: 0 kills after dp2 MIXED filters in this demo", "dim")
+                return None
+            return result
+
+        else:  # "any" — OR
+            s2k, non_kill = _run_or(active)
+            kill_sigs_union = set(s2k.keys())
             kept_kills = []
             for e in events:
                 if e.get("type") != "kill":
                     continue
                 sig = (e["tick"], str(e.get("killer_sid", "")))
                 if sig in kill_sigs_union:
-                    matched = sig_to_keys.get(sig, set())
+                    matched = s2k.get(sig, set())
                     if matched:
                         mf = e.get("_mf")
                         e["_mf"] = (mf | matched) if mf else set(matched)
@@ -8247,17 +9119,13 @@ class App(tk.Tk):
             return result
 
     def _apply_dp2_filters_to_events(self, evts, cfg):
-        """Apply active demoparser2 modifiers to a full {demo_path: events} dict.
+        """Apply active dp2 modifiers to a full {demo_path: events} dict (preview/redo path).
 
-        Shared by the Preview path and the tag-redo path.
-        Derived from _DP2_FILTER_DEFS — add a row there to support a new filter.
-        Respects kill_mod_logic_dp2 (any/all).
-        TROIS TAP is always exclusive.
-        _mf is stamped on all surviving kill events via _apply_filter_to_events.
-
+        Logic mode (cfg["kill_mod_logic_dp2"]): "any" | "all" | "mixed".
+        TROIS TAP always exclusive. Derived from _DP2_FILTER_DEFS.
+        _mf stamped on all surviving kill events via _apply_filter_to_events.
         Returns a new dict with empty-demo entries removed.
         """
-        # TROIS TAP — goes through _apply_filter_to_events → _stamp_mf ✓
         if cfg.get("kill_mod_trois_tap"):
             self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
             return self._apply_trois_tap_to_events(evts, cfg)
@@ -8268,52 +9136,98 @@ class App(tk.Tk):
         if not active:
             return evts
 
-        logic_and = cfg.get("kill_mod_logic_dp2", "any") == "all"
+        logic = cfg.get("kill_mod_logic_dp2", "any")
 
-        if logic_and:
-            # AND: chain — _apply_filter_to_events stamps _mf per-filter ✓
-            result = evts
-            for cfg_key, apply_fn, log_label in active:
+        def _chain(filters, src):
+            """AND-chain: each apply_fn narrows the dict further."""
+            result = src
+            for cfg_key, apply_fn, log_label in filters:
                 self._alog(f"  {log_label} — analyzing demos…", "info")
                 result = apply_fn(result, cfg)
             return result
-        else:
-            # OR: run each filter independently, union per-demo, merge _mf sets.
-            per_filter_results = []
-            for cfg_key, apply_fn, log_label in active:
+
+        def _union(filters, src):
+            """OR-union: run each independently, merge _mf per sig."""
+            per = []
+            for cfg_key, apply_fn, log_label in filters:
                 self._alog(f"  {log_label} — analyzing demos…", "info")
-                per_filter_results.append(apply_fn(evts, cfg))
+                per.append((cfg_key, apply_fn(src, cfg)))
 
             all_demos: set = set()
-            for r in per_filter_results:
+            for _, r in per:
                 all_demos |= set(r.keys())
 
             merged = {}
             for dp in all_demos:
                 sig_to_mf: dict = {}
-                for r in per_filter_results:
+                for _ck, r in per:
                     for e in r.get(dp, []):
                         if e.get("type") == "kill":
                             sig = (e["tick"], str(e.get("killer_sid", "")))
-                            existing = sig_to_mf.get(sig)
-                            sig_to_mf[sig] = (existing | e["_mf"]) if existing else set(e.get("_mf") or set())
-
-                kill_sigs_union = set(sig_to_mf.keys())
-                original_events = evts.get(dp, [])
-                non_kill = [e for e in original_events if e.get("type") != "kill"]
-                kept_kills = []
-                for e in original_events:
+                            ex = sig_to_mf.get(sig)
+                            sig_to_mf[sig] = (ex | e["_mf"]) if ex else set(e.get("_mf") or set())
+                kill_sigs = set(sig_to_mf.keys())
+                original = src.get(dp, [])
+                non_kill = [e for e in original if e.get("type") != "kill"]
+                kept = []
+                for e in original:
                     if e.get("type") != "kill":
                         continue
                     sig = (e["tick"], str(e.get("killer_sid", "")))
-                    if sig in kill_sigs_union:
+                    if sig in kill_sigs:
                         mf = sig_to_mf.get(sig)
                         if mf:
                             e["_mf"] = (e["_mf"] | mf) if e.get("_mf") else set(mf)
-                        kept_kills.append(e)
-                if kept_kills or non_kill:
-                    merged[dp] = kept_kills + non_kill
+                        kept.append(e)
+                if kept or non_kill:
+                    merged[dp] = kept + non_kill
             return merged
+
+        if logic == "all":
+            return _chain(active, evts)
+
+        if logic == "mixed":
+            active_keys = [k for k, *_ in active]
+            req_keys, opt_keys = self._split_required_optional(cfg, active_keys)
+            req_active = [(k, fn, ll) for k, fn, ll in active if k in req_keys]
+            opt_active = [(k, fn, ll) for k, fn, ll in active if k in opt_keys]
+
+            req_result = _chain(req_active, evts) if req_active else None
+            opt_result = _union(opt_active, evts) if opt_active else None
+
+            if req_result is None and opt_result is None:
+                return evts
+            if req_result is None:
+                return opt_result
+            if opt_result is None:
+                return req_result
+
+            # Intersect: keep demos and kills present in BOTH results
+            merged = {}
+            for dp in set(req_result.keys()) & set(opt_result.keys()):
+                req_sigs = frozenset((e["tick"], str(e.get("killer_sid", "")))
+                                     for e in req_result.get(dp, []) if e.get("type") == "kill")
+                original = evts.get(dp, [])
+                non_kill = [e for e in original if e.get("type") != "kill"]
+                kept = []
+                opt_sig_mf = {
+                    (e["tick"], str(e.get("killer_sid", ""))): e.get("_mf") or set()
+                    for e in opt_result.get(dp, []) if e.get("type") == "kill"
+                }
+                for e in original:
+                    if e.get("type") != "kill":
+                        continue
+                    sig = (e["tick"], str(e.get("killer_sid", "")))
+                    if sig in req_sigs and sig in opt_sig_mf:
+                        combined_mf = set(req_keys) | opt_sig_mf.get(sig, set())
+                        e["_mf"] = (e["_mf"] | combined_mf) if e.get("_mf") else combined_mf
+                        kept.append(e)
+                if kept or non_kill:
+                    merged[dp] = kept + non_kill
+            return merged
+
+        # "any" — OR
+        return _union(active, evts)
 
     def _worker(self, cfg):
         cli = self._resolve_cli(cfg["csdm_exe"])
@@ -8614,7 +9528,6 @@ class App(tk.Tk):
                     f"  ({dur_s:.1f}s)", "dim")
             self._alog(
                 f"  RecSys: {cfg.get('recsys','HLAE')} | "
-                f"Output: {cfg.get('recording_output','video')} | "
                 f"TrueView: {'ON' if cfg.get('true_view') else 'OFF'} | "
                 f"Concat: {'ON' if cfg.get('concatenate_sequences') else 'OFF'}",
                 "dim")

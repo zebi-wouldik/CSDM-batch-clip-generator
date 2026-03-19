@@ -5,7 +5,177 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v109]
+## [v116]
+### Fixed
+
+- **Enable + ★ Must conflict resolved** — previously, checking ★ Must on a filter while its Enable checkbox was unchecked caused Must to be silently ignored. The filter was never added to the `active` list (built by `cfg.get(key)` which requires Enable=True), so `_split_required_optional` never saw it and the required constraint had no effect.
+
+  **Fix — `_wire_enable_must(enable_var, req_var)`**: new method wires bidirectional `trace_add("write")` coupling between every Enable/Must pair:
+  - Checking ★ Must while Enable is off → **auto-enables** the filter
+  - Unchecking Enable while Must is on → **auto-clears** Must
+
+  Called at UI build time for every modifier row across all three categories (Mods, dp2, DB). The coupling list is stored in `self._must_couplings` for reference.
+
+  Pairs wired: all `_mods` loop entries, all `_dp2` loop entries + TROIS SHOT / TROIS TAP / ONE TAP / SPRAY TRANSFER / FERRARI PEEK / FLICK / SAVIOR individually, and all five DB rows (ENTRY FRAG, ACE, MULTI-KILL, BULLY, ECO FRAG).
+
+---
+
+## [v115]
+### Fixed
+
+- **UI freeze during dp2 pre-parse scan eliminated**: preview and batch-run no longer make the window unresponsive while scanning demos.
+
+  **Root cause:** `_alog` was implemented as `self.after(0, lambda: self._log(...))`. Every call from a background thread scheduled one event-loop callback with zero delay. During parallel dp2 pre-parsing (N demos × M threads), hundreds of `after(0)` lambdas piled up in Tk's event queue. Each callback forced a full `Text.configure(state=normal) → insert → see("end") → configure(state=disabled)` redraw cycle. With the queue saturated, mouse and keyboard events couldn't get through — the window appeared frozen.
+
+  **Fix — batched log pump:**
+  - `_alog` and `_alog_parts` now append to `self._log_buf: deque` (thread-safe via `_log_buf_lock`) instead of calling `after(0)`.
+  - `_log_pump()` runs on the main thread every `_LOG_PUMP_MS = 50` ms via `self.after(50, self._log_pump)`. It drains the entire deque in **one** `Text` operation: one `configure(normal)`, N `insert` calls, one `see("end")`, one `configure(disabled)`. N log messages = 1 redraw regardless of volume.
+  - The progress label update inside `_preparse_dp2` is throttled — fires every 5 completed demos and on the last one, instead of every single completion.
+
+- **WALLBANG / AIRBORNE / BLIND FIRE / COLLATERAL were silently skipped during pre-parse** (bug introduced in v112): `_preparse_dp2` had a hardcoded `needs_dp2` guard that only listed the original 8 filters. The 4 new `player_death`-flag filters added in v112 were absent, so enabling only those mods caused the entire dp2 pre-parse to be skipped — the filters then degraded gracefully (passed all kills) rather than actually filtering. Fixed and made **permanently DRY**: `needs_dp2` is now derived directly from `_DP2_FILTER_DEFS` via `{k for k, *_ in self._DP2_FILTER_DEFS}` so it can never fall out of sync with the filter table again.
+
+- **Version bump**: script version moved to `v115`.
+
+---
+
+
+### Fixed
+
+- **UI freeze during dp2 pre-parse scan eliminated**: preview and batch-run no longer make the window unresponsive while scanning demos.
+
+  **Root cause:** `_alog` was implemented as `self.after(0, lambda: self._log(...))`. Every call from a background thread scheduled one event-loop callback with zero delay. During parallel dp2 pre-parsing (N demos × M threads), hundreds of `after(0)` lambdas piled up in Tk's event queue. Each callback forced a full `Text.configure(state=normal) → insert → see("end") → configure(state=disabled)` redraw cycle. With the queue saturated, mouse and keyboard events couldn't get through — the window appeared frozen.
+
+  **Fix — batched log pump:**
+  - `_alog` and `_alog_parts` now append to `self._log_buf: deque` (thread-safe via `_log_buf_lock`) instead of calling `after(0)`.
+  - `_log_pump()` runs on the main thread every `_LOG_PUMP_MS = 50` ms via `self.after(50, self._log_pump)`. It drains the entire deque in **one** `Text` operation: one `configure(normal)`, N `insert` calls, one `see("end")`, one `configure(disabled)`. N log messages = 1 redraw regardless of volume.
+  - The progress label update inside `_preparse_dp2` is now throttled — it fires every 5 completed demos and on the last one, instead of on every single completion.
+
+- **Version bump**: script version moved to `v115`.
+
+---
+
+
+### Added
+
+- **MIXED logic mode for all three kill filter categories**:
+  Each category (Mods, demoparser2, DB) now has a third option alongside AT LEAST ONE and ALL AT ONCE:
+
+  > **MIXED** — required filters (★ Must) must ALL match, AND at least one of the remaining (optional) filters must also match.
+
+  Example: WALLBANG as ★ Must + SMOKE + BLIND as optional → the kill must be a wallbang AND at least one of smoke/blind.
+
+  Each filter row gains a **★ Must** checkbox, visible only when MIXED mode is active for its category. In AT LEAST ONE or ALL AT ONCE mode, ★ Must checkboxes are hidden.
+
+- **`_on_logic_mode_change(category)`** — single DRY method handles all three category show/hide behaviours via `self._must_widgets: {category: [widget, ...]}`.
+
+- **20 new `_req` config keys** (`kill_mod_<key>_req: False`) — one per filter — stored in config, presets, and session.
+
+### Technical
+
+- **`_split_required_optional(cfg, keys)`** — static DRY helper shared by all three filter engines. Splits active filter keys into `(required, optional)` based on `<key>_req` flags. Used by:
+  - SQL mods engine: builds `(req1 AND req2 AND (opt1 OR opt2))` SQL clause.
+  - DB postfilter: intersects required sig sets, unions optional sig sets, then intersects both.
+  - dp2 worker (`_apply_dp2_modifiers`): AND-chains required filters, OR-unions optionals, intersects results with `_mf` merge.
+  - dp2 preview (`_apply_dp2_filters_to_events`): same via nested `_chain`/`_union` closures.
+
+- **Preview header** `Filters:` line shows `★` prefix on required filters in MIXED mode (e.g. `dp2 [MIXED]: ★ 🧱 WALLBANG · 💨 SMOKE`).
+
+- **Version bump**: script version moved to `v114`.
+
+---
+
+
+### Removed & Fixed
+
+- **"Output: video" radio group removed** — it was the only option and served no purpose. Purged completely: `REC_OUTPUT_OPTIONS` constant, `recording_output` key in `DEFAULT_CONFIG`, `str_keys`, `PRESET_KEYS`, `_collect_config`, `_apply_config`. The CSDM JSON field `recordingOutput` is now hardcoded to `"video"`. The Output column no longer appears in the Video tab RECORDING SYSTEM section.
+
+- **Accent colour preset buttons no longer change colour when switching themes**: the generic `_apply_theme_to_widgets` walker remapped any `fg` that matched the old accent hex — including the fixed per-button colours on the accent row. Fixed by:
+  - Storing button references in `self._ac_btn_refs: list[(widget, fixed_fg)]` at build time.
+  - Passing a `exclude_ids: frozenset` to `_apply_theme_to_widgets` so those specific widgets are skipped entirely by the walker.
+  - After the walk, `_change_theme` explicitly updates only `bg` and `activebackground` on accent buttons to match the new background theme — their `fg` is never touched.
+  - `_retrigger_toggle_vars()` is now also called in `_change_theme` (was missing), ensuring all `hchk`/`hradio` widgets re-read `_t()` after every theme switch.
+
+- **Version bump**: script version moved to `v113`.
+
+---
+
+
+### Fixed & Added
+
+- **WALLBANG, AIRBORNE, BLIND FIRE, COLLATERAL now work via demoparser2**:
+  These four mods produced `⚠ Modifiers not found in DB` on every run because CSDM's PostgreSQL `kills` table never stores those columns — confirmed by auditing the CSDM source and the CS2 `player_death` game-event schema. They are now implemented entirely via demoparser2, reading the native fields embedded in every `.dem` file:
+  - `🧱 WALLBANG` — `player_death.penetrated > 0`
+  - `🪂 AIRBORNE` — `player_death.attackerinair = true`
+  - `😵 BLIND FIRE` — `player_death.attackerblind = true`
+  - `🎯 COLLATERAL` — `player_death.penetrated > 0` (same bullet-penetration flag)
+
+- **`⚠ Modifiers not found in DB` warning will no longer appear** for these four mods. They no longer go through `_MOD_COLS` at all; only `SMOKE`, `NO-SCOPE`, and `VIC.FLASH` remain as SQL-backed mods (those columns do exist in the DB).
+
+### Technical
+
+- **`_dp2_parse_demo`** — the existing `player_death` parse is extended to also extract `noscope`, `thrusmoke`, `attackerblind`, `penetrated`, `attackerinair` into a new `death_flags: {(tick, killer_sid): {flag: value}}` dict, stored in the dp2 cache alongside `fire_detail`, `view_angles`, `hurt_index`. No additional demo scan.
+
+- **`_death_flag_filter(flag_name, threshold)`** — single DRY generic filter. All four concrete methods delegate to it:
+  - `_wall_bang_dp2_filter` → `penetrated ≥ 1`
+  - `_airborne_dp2_filter` → `attackerinair = True`
+  - `_attacker_blind_dp2_filter` → `attackerblind = True`
+  - `_collateral_dp2_filter` → `penetrated ≥ 1`
+  Uses `_TICK_MATCH_WINDOW = 2` tick tolerance for matching kill event ticks. Degrades gracefully (passes all kills) when `death_flags` is empty.
+
+- **`_DP2_FILTER_DEFS`** — all four new filters added. They are automatically picked up by `_apply_dp2_modifiers` (worker) and `_apply_dp2_filters_to_events` (preview), including full `_mf` tagging for clip badges.
+
+- **`_FILTER_BADGE_DEFS`** — all four moved from `"mods"` to `"dp2"` category.
+
+- **UI** — the four mods now show a `demoparser2` badge in the Capture tab, clearly indicating they require demoparser2.
+
+- **Version bump**: script version moved to `v112`.
+
+---
+
+
+### Added
+
+- **UI theme system — background presets + accent colour + custom picker**:
+  A new **UI THEME** section in the Tools tab lets you change the entire interface colour scheme in real time without restarting.
+
+  **Background presets** (4):
+  - `Dark` — the original near-black dark theme
+  - `AMOLED` — true pure black (`#000000`), saves battery on OLED panels
+  - `Deep Blue` — dark navy blue tones
+  - `White` — light theme with dark text
+
+  **Accent presets** (8): Green (default), Blue, Orange, Purple, Red, Cyan, Pink, Yellow
+
+  **Custom accent** — `🎨 Custom colour…` opens the Windows native colour picker (`colorchooser.askcolor`). A darker shade (`ACCENT2`) is derived automatically at 72% brightness for hover/selected states.
+
+  A coloured swatch next to the picker shows the current active accent at a glance.
+
+- **Theme persists across sessions**: `theme_bg` and `theme_accent` keys in `csdm_config.json`. The theme is applied before any widget is built at startup — no flash of default colours.
+
+### Technical
+
+- **`_build_theme(bg_name, accent)`** — single function building a complete 14-key colour dict. All theme data is in two module-level dicts (`_BG_PRESETS`, `_ACCENT_PRESETS`); adding a new preset is one dict entry.
+- **`_apply_theme_globals()`** — atomically updates all module-level colour globals (`BG`, `BG2`, `ORANGE`, etc.) so new widgets built after a theme change automatically use the right colours.
+- **`_change_theme()`** — App method that calls `_apply_theme_globals`, walks all existing widgets via `_apply_theme_to_widgets()`, re-applies `ttk.Style`, updates log text tags, and calls `_retrigger_toggle_vars()` to re-fire `hchk`/`hradio` closures.
+- **`hchk` / `hradio`** — internal `_update()` closures now call `_t(key)` for live theme lookups instead of being bound to the module-global values at creation time. Theme changes are reflected immediately on all existing checkboxes and radio buttons.
+- **`_retrigger_toggle_vars()`** — nudges every `BooleanVar` and `StringVar` to re-trigger the `_update` traces registered by `hchk`/`hradio` across the whole UI.
+
+- **Version bump**: script version moved to `v111`.
+
+---
+
+
+### Fixed
+
+- **"Modifiers partially not found" warning no longer repeats every preview/run**: the warning for DB columns that don't exist in the user's schema (e.g. `wall_bang`, `airborne`, `attacker_blind`, `collateral`) now fires **at most once per session per unique set of missing modifiers**. Subsequent previews and batch runs are silent about the same absent columns. The warning resets automatically on reconnect, so if a CSDM update adds the columns it will be reported correctly again.
+
+- **Implementation**: added `self._warned_missing_mods: set` (reset on DB reconnect in `_on_load_success`) that caches the `frozenset` of missing modifier keys. The warning block compares against it and only logs when the set changes.
+
+- **Version bump**: script version moved to `v110`.
+
+---
+
+
 ### Changed
 
 - **Headshots filter redesigned — tri-state, fully independent of Mods logic**:
