@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v105"""
+"""CSDM Batch Clips Generator v107"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v105"
+APP_VERSION = "v107"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -2405,9 +2405,10 @@ class App(tk.Tk):
         self._search_idx = 0
         self.log.tag_configure("search_hi",  background=ORANGE2, foreground="white")
         self.log.tag_configure("search_cur", background=ORANGE,  foreground="white")
-        self.log.tag_configure("badge_kill", foreground=RED)
-        self.log.tag_configure("badge_warn", foreground=YELLOW)
-        self.log.tag_configure("badge_safe", foreground=GREEN)
+        self.log.tag_configure("badge_kill",   foreground=RED)
+        self.log.tag_configure("badge_warn",   foreground=YELLOW)
+        self.log.tag_configure("badge_safe",   foreground=GREEN)
+        self.log.tag_configure("badge_filter", foreground=BLUE)
 
     def _log_get_text(self):
         return self.log.get("1.0", "end-1c")
@@ -5978,27 +5979,125 @@ class App(tk.Tk):
             pass
         return "break"
 
-    def _build_clip_badges(self, events, cfg):
-        badges = []
-        kill_events = [e for e in events if e.get("type") == "kill"]
-        active_filters = [label for key, label in KILL_FILTER_LABELS.items() if cfg.get(key)]
-        if active_filters and kill_events:
-            shown = ", ".join(active_filters[:2])
-            if len(active_filters) > 2:
-                shown += f" +{len(active_filters)-2}"
-            badges.append((f" [KILL FILTER: {shown}]", "badge_kill"))
+    # Ordered list of (cfg_key, emoji_label, category) for every kill filter that has a badge.
+    # category: "mods" | "dp2" | "db"
+    # Used by _build_filter_badges (per-clip) and _build_filter_header_parts (preview header).
+    _FILTER_BADGE_DEFS = [
+        # Mods
+        ("headshots_only",          "🎯 HS",           "mods"),
+        ("kill_mod_through_smoke",  "💨 SMOKE",         "mods"),
+        ("kill_mod_no_scope",       "🔭 NOSCOPE",       "mods"),
+        ("kill_mod_wall_bang",      "🧱 WALLBANG",      "mods"),
+        ("kill_mod_airborne",       "🪂 AIR",           "mods"),
+        ("kill_mod_assisted_flash", "⚡ VIC.FLASH",     "mods"),
+        ("kill_mod_collateral",     "🎯 COLLAT.",       "mods"),
+        ("kill_mod_attacker_blind", "😵 BLIND",         "mods"),
+        # dp2
+        ("kill_mod_trois_tap",      "🎯🎲 TROIS TAP",  "dp2"),
+        ("kill_mod_trois_shot",     "🎲 TROIS SHOT",   "dp2"),
+        ("kill_mod_no_trois_shot",  "🚫🎲 Exclude",    "dp2"),
+        ("kill_mod_one_tap",        "🎯 ONE TAP",       "dp2"),
+        ("kill_mod_spray_transfer", "🔫 SPRAY",         "dp2"),
+        ("kill_mod_high_velocity",  "🏎 FERRARI",       "dp2"),
+        ("kill_mod_flick",          "↩ FLICK",          "dp2"),
+        ("kill_mod_sauveur",        "🛡 SAVIOR",        "dp2"),
+        # DB
+        ("kill_mod_entry_frag",     "🚀 ENTRY",         "db"),
+        ("kill_mod_ace",            "🃏 ACE",            "db"),
+        ("kill_mod_multi_kill",     "⚡ MULTI",          "db"),
+        ("kill_mod_bourreau",       "💀 BULLY",          "db"),
+        ("kill_mod_eco_frag",       "💰 ECO",            "db"),
+    ]
 
-        weapons = {str(e.get("weapon", "")).lower().strip() for e in events if e.get("weapon")}
-        contains_terms = []
-        for term in ("awp", "deagle", "knife", "he grenade", "molotov", "flashbang", "smoke"):
-            if any(term in w for w in weapons):
-                contains_terms.append(term.upper())
-        if contains_terms:
-            badges.append((f" [CONTAINS: {', '.join(contains_terms[:2])}{' +' + str(len(contains_terms)-2) if len(contains_terms)>2 else ''}]",
-                           "badge_warn"))
+    def _build_filter_badges(self, cfg):
+        """Return a list of (text, tag) badge tuples for every active kill filter.
+
+        Emits one compact badge per active filter key.  Returns [] when no filter is active.
+        Used by _build_clip_badges to append filter context after the content badge.
+        """
+        active = [lbl for k, lbl, _cat in self._FILTER_BADGE_DEFS if cfg.get(k)]
+        return [(f" [{lbl}]", "badge_filter") for lbl in active]
+
+    def _build_filter_header_parts(self, cfg):
+        """Return a list of grouped filter strings for the preview header Filters: line.
+
+        Groups active filters by category (Mods / dp2 / DB), each prefixed with its
+        logic mode.  Returns [] when no kill filter is active.
+        """
+        _CAT_META = {
+            "mods": ("Mods",  "kill_mod_logic_mods"),
+            "dp2":  ("dp2",   "kill_mod_logic_dp2"),
+            "db":   ("DB",    "kill_mod_logic_db"),
+        }
+        groups: dict = {}  # category → [label, ...]
+        for k, lbl, cat in self._FILTER_BADGE_DEFS:
+            if cfg.get(k):
+                groups.setdefault(cat, []).append(lbl)
+        parts = []
+        for cat in ("mods", "dp2", "db"):
+            lbls = groups.get(cat)
+            if not lbls:
+                continue
+            cat_name, logic_key = _CAT_META[cat]
+            logic = "ALL" if cfg.get(logic_key) == "all" else "ANY"
+            parts.append(f"{cat_name} [{logic}]: {' · '.join(lbls)}")
+        return parts
+
+    def _build_clip_badges(self, events, cfg):
+        """Build inline badges that describe what a sequence *contains* followed by which
+        kill filters it matched.
+
+        Layout per demo line:
+          [content badge]  [filter badge 1]  [filter badge 2]  …
+
+        Content badge: derived from actual events (weapon, type, count).
+        Filter badges: one per active kill filter (emojis only, blue).
+        """
+        badges = []
+        kill_events  = [e for e in events if e.get("type") == "kill"]
+        death_events = [e for e in events if e.get("type") == "death"]
+        round_events = [e for e in events if e.get("type") == "round"]
+
+        def _wpn_str(event_list):
+            """Return a compact weapon string for a list of events."""
+            raw = [str(e.get("weapon", "")).lower().strip() for e in event_list if e.get("weapon")]
+            def _fmt(w):
+                w = w.replace("weapon_", "")
+                return w.upper() if len(w) <= 6 else w.title()
+            seen = {}
+            for w in raw:
+                d = _fmt(w)
+                seen[d] = seen.get(d, 0) + 1
+            items = list(seen.items())
+            if not items:       return "?"
+            if len(items) == 1: return items[0][0]
+            if len(items) == 2: return f"{items[0][0]} + {items[1][0]}"
+            return f"{items[0][0]} +{len(items)-1}"
+
+        # ── Kill content ──────────────────────────────────────────────────────
+        if kill_events:
+            n = len(kill_events)
+            wpn = _wpn_str(kill_events)
+            badge_txt = f" [{n}✕ {wpn}]" if n > 1 else f" [KILL {wpn}]"
+            badges.append((badge_txt, "badge_kill"))
+
+        # ── Death content ─────────────────────────────────────────────────────
+        if death_events:
+            n = len(death_events)
+            wpn = _wpn_str(death_events)
+            badge_txt = (f" [{n}✕ DEATH by {wpn}]" if n > 1 else f" [DEATH by {wpn}]")
+            badges.append((badge_txt, "badge_warn"))
+
+        # ── Round marker ──────────────────────────────────────────────────────
+        if round_events and not kill_events and not death_events:
+            badges.append((" [ROUND]", "badge_safe"))
 
         if not badges:
-            badges.append((" [SAFE]", "badge_safe"))
+            badges.append((" [?]", "badge_safe"))
+
+        # ── Active kill filter badges (appended after content) ─────────────
+        badges.extend(self._build_filter_badges(cfg))
+
         return badges
 
     def _build_demo_log_base(self, date_str, demo_name, event_count, seq_count, idx=None, total=None, timing_str=""):
@@ -7625,61 +7724,70 @@ class App(tk.Tk):
             self._summary_lbl.config(text="  No clips found.", fg=MUTED)
             return
         te = sum(len(e) for e in evts.values())
-        self._log(f"Player(s): {self._player_str(cfg)}", "info")
+
+        # ── Header ─────────────────────────────────────────────────────────────
+        self._log(f"Player:  {self._player_str(cfg)}", "info")
+
         _auto_tags = self._get_active_tag_names() if self.v["tag_enabled"].get() else []
         if _auto_tags:
-            self._log(f"Auto-tag: 🏷 {', '.join(_auto_tags)}", "info")
+            self._log(f"Tag:     🏷 {', '.join(_auto_tags)}", "info")
+
         df = cfg.get("date_from", "")
         dt = cfg.get("date_to", "")
         if df or dt:
-            self._log(f"Date filter: {df or '∞'}  →  {dt or '∞'}", "info")
+            self._log(f"Dates:   {df or '∞'}  →  {dt or '∞'}", "info")
+
+        # Events row
+        _ev_parts = []
+        if cfg.get("events_kills"):   _ev_parts.append("Kills")
+        if cfg.get("events_deaths"):  _ev_parts.append("Deaths")
+        if cfg.get("events_rounds"):  _ev_parts.append("Rounds")
+        if cfg.get("events_clutch"):
+            _csizes = App._clutch_allowed_sizes(cfg)
+            _cs = " ".join(f"1v{n}" for n in sorted(_csizes)) if _csizes else "all"
+            _ev_parts.append(f"Clutch [{_cs}]")
+        self._log(f"Events:  {' + '.join(_ev_parts) if _ev_parts else '—'}", "info")
+
+        # Weapons row
         _weapons = cfg.get("weapons", [])
         if _weapons:
             _cat_counts = {}
             for w in _weapons:
                 c = _weapon_category(w)
                 _cat_counts[c] = _cat_counts.get(c, 0) + 1
-            _wstr = "  |  Weapons: " + ", ".join(
-                f"{WEAPON_ICONS.get(c,'')} {c}({n})" for c, n in sorted(_cat_counts.items()))
+            _wstr = ", ".join(f"{WEAPON_ICONS.get(c,'')} {c}({n})" for c, n in sorted(_cat_counts.items()))
         else:
-            _wstr = "  |  Weapons: all"
-        self._log(f"TrueView: {'ON' if cfg.get('true_view') else 'OFF'} | "
-                  f"Perspective: {PERSP_LABELS.get(cfg.get('perspective','killer'), cfg.get('perspective','killer'))}"
-                  f"{_wstr}", "info")
-        order = cfg.get("clip_order", "chrono")
-        hs_str = "  🎯 HS only" if cfg.get("headshots_only") else ""
+            _wstr = "all"
+        self._log(f"Weapons: {_wstr}", "info")
+
+        # Perspective / TrueView / order
+        _persp = PERSP_LABELS.get(cfg.get("perspective","killer"), cfg.get("perspective","killer"))
+        _tv    = "ON" if cfg.get("true_view") else "OFF"
+        _order = "Chronological" if cfg.get("clip_order","chrono") == "chrono" else "Random 🎲"
+        self._log(f"Rec:     {_persp}  |  TrueView: {_tv}  |  Order: {_order}", "info")
+
+        # Active kill filters — grouped by category, derived from shared definition table
+        _kf_parts = self._build_filter_header_parts(cfg)
+
+        # TK / suicides
         _tkm = cfg.get("teamkills_mode", "include")
-        tk_str = ("  🚫 TK excluded" if _tkm == "exclude" else
-                  "  ⚔ TK only" if _tkm == "only" else "")
-        ts_str  = "  🎲 TROIS SHOT"    if cfg.get("kill_mod_trois_shot")    else ""
-        nts_str = "  🚫🎲 Exclude"      if cfg.get("kill_mod_no_trois_shot") else ""
-        tt_str  = "  🎯🎲 TROIS TAP"   if cfg.get("kill_mod_trois_tap")     else ""
-        ot_str  = "  🎯 ONE TAP"        if cfg.get("kill_mod_one_tap")       else ""
-        sp_str  = "  🔫 SPRAY"          if cfg.get("kill_mod_spray_transfer") else ""
-        hv_str  = "  🏎 FERRARI PEEK"         if cfg.get("kill_mod_high_velocity")  else ""
-        fl_str  = "  ↩ FLICK"            if cfg.get("kill_mod_flick")           else ""
-        sv_str  = "  🛡 SAVIOR"         if cfg.get("kill_mod_sauveur")         else ""
-        ef_str  = "  🚀 ENTRY"           if cfg.get("kill_mod_entry_frag")      else ""
-        ac_str  = "  🃏 ACE"             if cfg.get("kill_mod_ace")             else ""
-        mk_str  = "  ⚡ MULTI"           if cfg.get("kill_mod_multi_kill")      else ""
-        bo_str  = "  💀 BOURREAU"        if cfg.get("kill_mod_bourreau")        else ""
-        ec_str  = "  💰 ECO"             if cfg.get("kill_mod_eco_frag")        else ""
-        ab_str  = "  😵 BLIND"           if cfg.get("kill_mod_attacker_blind")  else ""
-        if cfg.get("events_clutch"):
-            _csizes = App._clutch_allowed_sizes(cfg)
-            if _csizes:
-                _csizes_str = " ".join(f"1v{n}" for n in sorted(_csizes))
-                cl_str = f"  🤝 CLUTCH [{_csizes_str}]"
-            else:
-                cl_str = "  🤝 CLUTCH [all]"
-        else:
-            cl_str = ""
-        self._log(f"Order: {'Chronological' if order == 'chrono' else 'Random'} | "
-                  f"{len(evts)} demo(s), {te} events{hs_str}{tk_str}{ts_str}{nts_str}{tt_str}{ot_str}{sp_str}{hv_str}{fl_str}{sv_str}{ef_str}{ac_str}{mk_str}{bo_str}{ec_str}{ab_str}{cl_str}", "ok")
+        _misc = []
+        if _tkm == "exclude":  _misc.append("🚫 TK")
+        elif _tkm == "only":   _misc.append("⚔ TK only")
+        if not cfg.get("include_suicides", True): _misc.append("🚫 suicides")
+        if _misc: _kf_parts.append(" · ".join(_misc))
+
+        if _kf_parts:
+            self._log(f"Filters: {' | '.join(_kf_parts)}", "ok")
+
+        # Result counts
+        self._log(f"Found:   {len(evts)} demo(s)  ·  {te} event(s)", "ok")
+
         _out = (cfg.get("output_dir_clips") or cfg.get("output_dir") or "").strip()
         if _out:
-            self._log(f"Output: {_out}", "dim")
-        self._log("Source dates: .info › mtime .dem › DB", "dim")
+            self._log(f"Output:  {_out}", "dim")
+        self._log("Dates:   .info › mtime .dem › DB", "dim")
+        # ── end header ─────────────────────────────────────────────────────────
         tickrate  = cfg["tickrate"]
         before_s  = self._effective_before(cfg)
         after_s   = cfg["after"]

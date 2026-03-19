@@ -5,7 +5,53 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v105]
+## [v107]
+### Changed
+
+- **Clip badges — filter context appended after content badge**:
+  Each demo line now shows the content badge *and* one compact badge per active kill filter, e.g.:
+  `[KILL AK-47] [😵 BLIND] [💨 SMOKE]`
+  Filter badges are blue (`badge_filter` tag) to visually distinguish them from the red content badge.
+
+- **DRY — single source of truth for filter badge definitions**:
+  Introduced `_FILTER_BADGE_DEFS` (class-level tuple list with `cfg_key`, `emoji_label`, `category`) and two helpers built from it:
+  - `_build_filter_badges(cfg)` — per-clip badge list (used by `_build_clip_badges`).
+  - `_build_filter_header_parts(cfg)` — grouped header strings (used by the preview `Filters:` line).
+  The three previously hardcoded filter lists in `_show_preview` are gone.
+
+- **Version bump**: script version moved to `v107`.
+
+---
+
+
+### Changed
+
+- **Clip badges rewritten — content-aware instead of filter-aware**:
+  Badges no longer show which filters were active during the search. They now describe what each individual sequence **contains**:
+  - Kill clips: `[KILL AK-47]`, `[2✕ M4A1-S]`, `[3✕ AK-47 + M4A1-S]` — weapon(s) used, kill count when > 1.
+  - Death clips: `[DEATH by AWP]`, `[2✕ DEATH by AK-47]` — weapon the player was killed by.
+  - Round-only clips: `[ROUND]`.
+
+- **Preview header redesigned** — replaced the single bloated `Order: … | N demo(s) 😵 BLIND` line with a structured multi-line block:
+  ```
+  Player:  …
+  Tag:     …          (only when auto-tag is active)
+  Dates:   … → …      (only when a date range is set)
+  Events:  Kills + Deaths + Clutch [1v3 1v4]
+  Weapons: 🎯 Rifles(1)
+  Rec:     POV Killer  |  TrueView: ON  |  Order: Chronological
+  Filters: Mods [ANY]: 😵 BLIND · 💨 SMOKE  |  DB [ANY]: 🚀 ENTRY
+  Found:   17 demo(s)  ·  23 event(s)
+  Output:  …
+  Dates:   .info › mtime .dem › DB
+  ```
+  Active kill filters are now grouped by category (Mods / dp2 / DB) with their logic mode on a dedicated `Filters:` line. The `Filters:` line is omitted entirely when no kill filter is active.
+
+- **Version bump**: script version moved to `v106`.
+
+---
+
+
 ### Added
 
 - **Logic mode selector for each kill filter category**:
