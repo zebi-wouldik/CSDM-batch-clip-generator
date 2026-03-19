@@ -5,7 +5,24 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v133.3]
+## [v133.33]
+### Changed
+
+- **"Minimize on launch" replaced by "Send to back on launch"**: instead of minimizing CS2 (which interrupts its taskbar state and can cause issues with HLAE injection timing), the new behaviour uses `SetWindowPos(HWND_BOTTOM)` to push CS2 to the bottom of the Windows Z-order. CS2 keeps running fully in the background — it is simply placed behind every other window so your desktop stays on top. No minimize animation, no taskbar icon change, no playback interruption.
+
+- **Config key renamed**: `cs2_minimize` → `cs2_send_to_back`. Old configs with `cs2_minimize: true` are automatically migrated to `cs2_send_to_back: true` at load time via backward-compat in both `load_config` and `_apply_config`.
+
+- **Log message updated**: `🗕 CS2 minimized.` → `🔙 CS2 sent to back.`
+
+- **UI label/tooltip updated**: "Minimize on launch" → "Send to back on launch" with an updated tooltip explaining the Z-order behaviour.
+
+- **README updated**: pywin32 requirement note updated to reflect the new behaviour.
+
+- **Version bump**: script version moved to `v133.33`.
+
+---
+
+
 ### Fixed
 
 - **Minimize-on-launch behavior reverted**:

@@ -27,7 +27,7 @@ Pick your filters → Preview → Run. CSDM handles the actual recording; this t
 | **CS Demo Manager** | [cs-demo-manager.com](https://cs-demo-manager.com/) — provides the CLI and PostgreSQL DB |
 | `pip install psycopg2-binary` | Required |
 | `pip install demoparser2` | Needed for advanced kill modifiers (TROIS SHOT, ONE TAP, WALLBANG, AIRBORNE, etc.) |
-| `pip install pywin32` | Optional — CS2 auto-minimize on Windows |
+| `pip install pywin32` | Optional — sends CS2 behind all windows on launch |
 
 ---
 
@@ -121,10 +121,10 @@ Example: `SMOKE` only → only smoke clips. `SMOKE + WALLBANG` (both non-★) �
 | 🏎 **Ferrari Peek** | Moving peek that kills on a single shot then immediately resumes | `weapon_fire` velocity |
 | ↩ **Flick** | Large view-angle change in the ~0.5s before the kill | `player_death` yaw |
 | 🛡 **Savior** | Kill an enemy who was actively damaging a teammate | `player_hurt` events |
-| 🧱 **Wallbang** | Kill by shooting through a wall or object | `player_death.penetrated` |
-| 🪂 **Airborne** | Killer was in the air at shot time | `player_death.attackerinair` |
-| 😵 **Blind Fire** | Killer was blinded by a flashbang at shot time | `player_death.attackerblind` |
-| 🎯 **Collateral** | Bullet passed through a first victim | `player_death.penetrated` |
+| 🧱 **Wallbang** | Penetrating kill through obstacle context that is not a same-shot multi-kill chain | `player_death.penetrated` + shot grouping |
+| 🪂 **Airborne** | Bullet of the kill was fired while the killer was not on the ground | `player_death.attackerinair` |
+| 😵 **Blind Fire** | Bullet of the kill was fired while the killer was blinded | `player_death.attackerblind` |
+| 🎯 **Collateral** | Same bullet penetrates and kills multiple players in one shot chain (validated with a single nearby `weapon_fire`) | `player_death.penetrated` + shot grouping + `weapon_fire` |
 
 > Enabling TROIS SHOT + ONE TAP simultaneously auto-converts to TROIS TAP regardless of the logic setting.
 

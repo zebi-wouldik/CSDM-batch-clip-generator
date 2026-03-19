@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v126"""
+"""CSDM Batch Clips Generator v133.33"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v126"
+APP_VERSION = "v133.33"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -547,8 +547,8 @@ DEFAULT_CONFIG = {
     "phys_dynamic_lighting": True,     # r_dynamic
     # CS2 window mode injected as Launch Option
     "cs2_window_mode": "none",   # "none" | "fullscreen" | "windowed" | "noborder"
-    # Automatically minimize CS2 on launch (requires pywin32)
-    "cs2_minimize": False,
+    # Send CS2 behind all windows on launch (requires pywin32)
+    "cs2_send_to_back": False,
     # demoparser2 performance
     "dp2_threads": 2,   # parallel threads for DP2 demo parsing (1–8)
 }
@@ -664,6 +664,9 @@ def load_config():
             # Backward compat: old headshots_only bool → headshots_mode
             if "headshots_only" in saved and "headshots_mode" not in saved:
                 cfg["headshots_mode"] = "only" if saved["headshots_only"] else "all"
+            # Backward compat: old cs2_minimize → cs2_send_to_back
+            if "cs2_minimize" in saved and "cs2_send_to_back" not in saved:
+                cfg["cs2_send_to_back"] = bool(saved["cs2_minimize"])
             return cfg
         except Exception:
             pass
@@ -1563,7 +1566,7 @@ class App(tk.Tk):
                       "kill_mod_multi_kill_req", "kill_mod_bourreau_req", "kill_mod_eco_frag_req",
                       "assemble_after", "delete_after_assemble",
                       "phys_ragdoll_enable", "phys_blood", "phys_dynamic_lighting",
-                      "cs2_minimize",
+                      "cs2_send_to_back",
                      "ui_remember_layout",
                       "clutch_enabled", "clutch_1v1", "clutch_1v2", "clutch_1v3",
                       "clutch_1v4", "clutch_1v5",
@@ -1709,6 +1712,7 @@ class App(tk.Tk):
         cfg["steam_id"]    = self.player_search.get_steam_id()    # compat
         cfg["player_name"] = self.player_search.get_name()
         cfg["active_tags"] = self._get_active_tag_names()         # names of checked tags
+        cfg["recsys"] = self._normalize_recsys(cfg.get("recsys", "HLAE"))
         cfg["kill_mod_logic_mods"] = "mixed"
         cfg["kill_mod_logic_dp2"] = "mixed"
         cfg["kill_mod_logic_db"] = "mixed"
@@ -1728,9 +1732,17 @@ class App(tk.Tk):
                     if "headshots_mode" in self.v:
                         self.v["headshots_mode"].set("only")
                 continue
+            # Backward compat: old cs2_minimize → cs2_send_to_back
+            if k == "cs2_minimize":
+                if val and "cs2_send_to_back" not in cfg:
+                    if "cs2_send_to_back" in self.v:
+                        self.v["cs2_send_to_back"].set(True)
+                continue
             if k in self.v:
                 if k == "encoder" and val not in ENCODER_OPTIONS:
                     val = "FFmpeg"
+                if k == "recsys":
+                    val = self._normalize_recsys(val)
                 self.v[k].set(iso_to_display(str(val)) if k in ("date_from", "date_to") else val)
             elif k == "events":
                 for e in EVENTS:
@@ -2929,16 +2941,17 @@ class App(tk.Tk):
         self._must_widgets["dp2"] = []
         _DP2_FLAG_MODS = [
             ("kill_mod_wall_bang",      "🧱 WALLBANG:",
-             "Kill by shooting through a wall or object.\n"
-             "Uses player_death.penetrated > 0 from the demo file via demoparser2."),
+             "Kill where the bullet penetrated an obstacle and is not a collateral chain.\n"
+             "If penetration goes through a player and also kills another player, it is counted as COLLATERAL instead.\n"
+             "Uses player_death.penetrated with per-shot grouping via demoparser2."),
             ("kill_mod_airborne",       "🪂 AIRBORNE:",
-             "Killer was in the air at time of shot.\n"
+             "Bullet of the kill was fired while the killer was not on ground.\n"
              "Uses player_death.attackerinair from the demo file via demoparser2."),
             ("kill_mod_collateral",     "🎯 COLLATERAL:",
-             "Bullet passed through a first victim.\n"
-             "Uses player_death.penetrated > 0 from the demo file via demoparser2."),
+             "Single bullet penetrated a first player and killed at least one more player in the same shot chain.\n"
+             "Detected from penetrated kills grouped by killer+tick+weapon and validated by a single weapon_fire near that tick."),
             ("kill_mod_attacker_blind", "😵 BLIND FIRE:",
-             "Killer was blinded by a flashbang at shot time.\n"
+             "Bullet of the kill was fired while the killer was blinded.\n"
              "Uses player_death.attackerblind from the demo file via demoparser2."),
         ]
         for key, label, tip in _DP2_FLAG_MODS:
@@ -3980,10 +3993,12 @@ class App(tk.Tk):
         for lbl, val in [("None","none"),("Fullscreen","fullscreen"),
                          ("Windowed","windowed"),("Borderless","noborder")]:
             hradio(win_row, lbl, self.v["cs2_window_mode"], val).pack(side="left", padx=(4, 0))
-        _min_cb = hchk(win_row, "Minimize on launch", self.v["cs2_minimize"])
-        _min_cb.pack(side="left", padx=(16, 0))
-        add_tip(_min_cb,
-                "Automatically minimizes CS2 as soon as it appears.\n"
+        _stb_cb = hchk(win_row, "Send to back on launch", self.v["cs2_send_to_back"])
+        _stb_cb.pack(side="left", padx=(16, 0))
+        add_tip(_stb_cb,
+                "When CS2 appears, sends it behind all other windows without minimizing.\n"
+                "The game keeps running normally — it is simply placed at the bottom of\n"
+                "the Z-order so your desktop stays on top.\n"
                 "Requires pywin32 (pip install pywin32). Silently ignored otherwise.")
 
         # Physics grid
@@ -4196,7 +4211,11 @@ class App(tk.Tk):
 
     def _on_recsys_change(self, *_):
         try:
-            is_hlae = self.v["recsys"].get() == "HLAE"
+            recsys = self._normalize_recsys(self.v["recsys"].get())
+            if recsys != self.v["recsys"].get():
+                self.v["recsys"].set(recsys)
+                return
+            is_hlae = recsys == "HLAE"
             if is_hlae:
                 self._hlae_sec.pack(fill="x", pady=(0, 10))
             else:
@@ -4204,6 +4223,11 @@ class App(tk.Tk):
             # CS2 EFFECTS section is always visible (both modes)
         except Exception:
             pass
+
+    @staticmethod
+    def _normalize_recsys(value):
+        v = str(value or "").strip().upper()
+        return "CS" if v == "CS" else "HLAE"
 
     def _on_res(self, e=None):
         for l, w, h in RESOLUTIONS:
@@ -5233,15 +5257,8 @@ class App(tk.Tk):
             if evt.get("type") != "kill":
                 filtered.append(evt)
                 continue
-            kill_tick  = int(evt.get("tick", 0))
-            killer_sid = str(evt.get("killer_sid", ""))
-            # Look up within a small tick window to tolerate minor tick offsets
-            val = None
-            for dt in range(-self._TICK_MATCH_WINDOW, self._TICK_MATCH_WINDOW + 1):
-                entry = death_flags.get((kill_tick + dt, killer_sid))
-                if entry is not None:
-                    val = entry.get(flag_name)
-                    break
+            entry = self._death_flags_for_kill(death_flags, evt)
+            val = entry.get(flag_name) if entry else None
             if val is None:
                 continue
             if isinstance(threshold, bool):
@@ -5252,9 +5269,59 @@ class App(tk.Tk):
                     filtered.append(evt)
         return filtered
 
+    def _death_flags_for_kill(self, death_flags, evt):
+        kill_tick = int(evt.get("tick", 0))
+        killer_sid = str(evt.get("killer_sid", ""))
+        for dt in range(-self._TICK_MATCH_WINDOW, self._TICK_MATCH_WINDOW + 1):
+            entry = death_flags.get((kill_tick + dt, killer_sid))
+            if entry is not None:
+                return entry
+        return None
+
+    def _penetrated_kills(self, demo_path, events):
+        if not os.path.isfile(demo_path):
+            return [], self._non_kill_only(events)
+        if demo_path not in self._dp2_cache:
+            self._dp2_parse_demo(demo_path, {"death", "fire"})
+        with self._dp2_cache_lock:
+            data = self._dp2_cache.get(demo_path, {})
+        if "fire" not in set(data.get("_sections", set())):
+            self._dp2_parse_demo(demo_path, {"fire"})
+            with self._dp2_cache_lock:
+                data = self._dp2_cache.get(demo_path, {})
+        death_flags = data.get("death_flags", {})
+        if not death_flags:
+            return [], self._non_kill_only(events)
+        non_kill = [e for e in events if e.get("type") != "kill"]
+        penetrated = []
+        for evt in events:
+            if evt.get("type") != "kill":
+                continue
+            entry = self._death_flags_for_kill(death_flags, evt)
+            val = entry.get("penetrated") if entry else None
+            if val is not None and int(val) >= 1:
+                penetrated.append(evt)
+        return penetrated, non_kill
+
     def _wall_bang_dp2_filter(self, demo_path, events, cfg):
-        """Wallbang via dp2 — penetrated > 0 in player_death event."""
-        return self._death_flag_filter(demo_path, events, cfg, "penetrated", 1)
+        penetrated, non_kill = self._penetrated_kills(demo_path, events)
+        if not penetrated:
+            return non_kill
+        groups = defaultdict(list)
+        for evt in penetrated:
+            key = (
+                int(evt.get("tick", 0)),
+                str(evt.get("killer_sid", "")),
+                self._weapon_suffix_key(evt.get("weapon", "")),
+            )
+            groups[key].append(evt)
+        collateral_evt_ids = {
+            id(evt)
+            for g in groups.values() if len(g) >= 2
+            for evt in g
+        }
+        wallbang_kills = [evt for evt in penetrated if id(evt) not in collateral_evt_ids]
+        return wallbang_kills + non_kill
 
     def _airborne_dp2_filter(self, demo_path, events, cfg):
         """Airborne killer via dp2 — attackerinair = True in player_death event."""
@@ -5265,12 +5332,30 @@ class App(tk.Tk):
         return self._death_flag_filter(demo_path, events, cfg, "attackerblind", True)
 
     def _collateral_dp2_filter(self, demo_path, events, cfg):
-        """Collateral / noscope via dp2 — penetrated >= 1 like wallbang but
-        this is specifically a bullet-through-body collateral.
-        CS2 sets penetrated=1 for both wallbang and through-body kills;
-        we use it as the best available proxy for collateral.
-        """
-        return self._death_flag_filter(demo_path, events, cfg, "penetrated", 1)
+        penetrated, non_kill = self._penetrated_kills(demo_path, events)
+        if not penetrated:
+            return non_kill
+        with self._dp2_cache_lock:
+            data = self._dp2_cache.get(demo_path, {})
+        fire_ticks = data.get("fire_ticks", {})
+        groups = defaultdict(list)
+        for evt in penetrated:
+            key = (
+                int(evt.get("tick", 0)),
+                str(evt.get("killer_sid", "")),
+                self._weapon_suffix_key(evt.get("weapon", "")),
+            )
+            groups[key].append(evt)
+        collateral_kills = []
+        for (tick, killer_sid, wpn_s), g in groups.items():
+            if len(g) < 2:
+                continue
+            shots = fire_ticks.get((killer_sid, wpn_s), [])
+            near_shots = sum(1 for t in shots if abs(int(t) - tick) <= self._TICK_MATCH_WINDOW)
+            if near_shots != 1:
+                continue
+            collateral_kills.extend(g)
+        return collateral_kills + non_kill
 
     def _apply_high_velocity_to_events(self, evts, cfg):
         return self._apply_filter_to_events(
@@ -5328,6 +5413,16 @@ class App(tk.Tk):
     @staticmethod
     def _non_kill_only(events):
         return [e for e in events if e.get("type") != "kill"]
+
+    @staticmethod
+    def _weapon_suffix_key(weapon_raw: str) -> str:
+        w = str(weapon_raw or "").lower().strip()
+        mapped = CSDM_TO_DP2_WEAPON.get(w)
+        if mapped:
+            return mapped[7:] if mapped.startswith("weapon_") else mapped
+        if w.startswith("weapon_"):
+            w = w[7:]
+        return w.replace(" ", "").replace("-", "").replace("_", "")
 
     def _apply_global_filter_gate_events(self, events, cfg):
         active_keys = [k for k, *_ in self._FILTER_BADGE_DEFS if cfg.get(k)]
@@ -8189,29 +8284,47 @@ class App(tk.Tk):
     def _build_json(self, demo_path, sequences, cfg):
         # In multi-player, sid = first SID (JSON compat), but we determine
         # the "owner" of each event dynamically from killer_sid/victim_sid.
-        sids_active = set(self._get_sids(cfg))
-        primary_sid = cfg.get("steam_id") or (next(iter(sids_active)) if sids_active else "")
+        sids_active_list = []
+        for _sid in self._get_sids(cfg):
+            _sid = str(_sid or "")
+            if _sid and _sid not in sids_active_list:
+                sids_active_list.append(_sid)
+        sids_active = set(sids_active_list)
+        primary_sid = str(cfg.get("steam_id") or "")
+        if primary_sid not in sids_active:
+            primary_sid = sids_active_list[0] if sids_active_list else primary_sid
         tickrate = cfg.get("tickrate", 64)
         perspective = cfg.get("perspective", "killer")
-        recsys = cfg.get("recsys", "HLAE")
+        recsys = self._normalize_recsys(cfg.get("recsys", "HLAE"))
 
         victim_pre_s = cfg.get("victim_pre_s", 2)
         victim_pre_ticks = max(0, int(victim_pre_s) * tickrate)
 
+        def _seq_anchor_sid(seq):
+            sorted_evts = sorted(seq["events"], key=lambda e: e["tick"])
+            for e in sorted_evts:
+                ks = str(e.get("killer_sid") or "")
+                if ks in sids_active:
+                    return ks
+            for e in sorted_evts:
+                vs = str(e.get("victim_sid") or "")
+                if vs in sids_active:
+                    return vs
+            return primary_sid
+
         def _build_cams_killer(seq):
-            """Killer mode: camera on our player, switches to the killer at each event."""
+            """Killer mode: camera anchored on first relevant active player, switches to active killer events."""
             sorted_evts = sorted(seq["events"], key=lambda e: e["tick"])
             cam_ticks = build_camera_ticks(seq, tickrate)
+            anchor_sid = _seq_anchor_sid(seq)
             cams = []
             for t in cam_ticks:
-                target = primary_sid
+                target = anchor_sid
                 for e in sorted_evts:
                     if e["tick"] <= t:
                         ks = e.get("killer_sid")
                         if ks in sids_active:
                             target = ks
-                        elif not target:
-                            target = primary_sid
                 cams.append({"tick": t, "playerSteamId": target,
                              "playerName": self._player_names.get(target, "")})
             return cams
@@ -8227,7 +8340,7 @@ class App(tk.Tk):
             )
 
             # Determine the single camera target for the whole sequence
-            target_sid = primary_sid
+            target_sid = _seq_anchor_sid(seq)
             if sorted_evts:
                 first_ev = sorted_evts[0]
                 if first_ev.get("type") == "death" and first_ev.get("victim_sid") in sids_active:
@@ -8281,13 +8394,7 @@ class App(tk.Tk):
             sorted_timeline = sorted(deduped.items())
 
             # Initial target = our killer (or our player)
-            first_ev = sorted_evts[0]
-            if first_ev.get("type") == "death" and first_ev.get("victim_sid") in sids_active:
-                initial_sid = first_ev["victim_sid"]
-            elif first_ev.get("killer_sid") in sids_active:
-                initial_sid = first_ev["killer_sid"]
-            else:
-                initial_sid = primary_sid
+            initial_sid = _seq_anchor_sid(seq)
 
             cam_ticks = build_camera_ticks(seq, tickrate)
             cams = []
@@ -8327,7 +8434,7 @@ class App(tk.Tk):
             players_opts = []
             seen_opts = set()
             # Active players first, then other SIDs in the sequence
-            ordered = list(sids_active) + sorted(all_seq_sids - sids_active)
+            ordered = list(sids_active_list) + sorted(all_seq_sids - sids_active)
             # In victim mode, camera-target SIDs must have showKill:true
             # otherwise CSDM ignores the camera switch
             cam_target_sids = {c["playerSteamId"] for c in cams if c.get("playerSteamId")}
@@ -8342,14 +8449,14 @@ class App(tk.Tk):
                 is_cam_target = psid in cam_target_sids
 
                 if perspective == "killer":
-                    show = is_our or is_killer
-                    hi   = is_our
+                    show = is_our or is_killer or is_cam_target
+                    hi   = is_cam_target or (is_our and not cam_target_sids)
                 elif perspective == "victim":
                     show = is_our or is_killer or is_cam_target
-                    hi   = is_our
+                    hi   = is_cam_target or (is_our and not cam_target_sids)
                 else:  # both
                     show = True
-                    hi   = is_our
+                    hi   = is_cam_target or is_our
 
                 players_opts.append({"steamId": psid, "playerName": pname,
                                      "showKill": show, "highlightKill": hi,
@@ -8398,7 +8505,7 @@ class App(tk.Tk):
             "demoPath": os.path.abspath(demo_path),
             "outputFolderPath": od,
             "encoderSoftware": cfg.get("encoder", "FFmpeg"),
-            "recordingSystem": cfg.get("recsys", "HLAE"),
+            "recordingSystem": recsys,
             "recordingOutput": "video",
             "framerate": cfg.get("framerate", 60),
             "width": cfg.get("width", 1920),
@@ -8421,7 +8528,7 @@ class App(tk.Tk):
             },
             "sequences": seqs,
         }
-        if hlae_options:
+        if recsys == "HLAE":
             out["hlaeOptions"] = hlae_options
         return out
 
@@ -8435,19 +8542,24 @@ class App(tk.Tk):
     # "error-corrected", "errorless", etc.
     ALL_ERR = RETRYABLE + FATAL + ["error:", "Error:"]
 
-    def _start_cs2_minimize_watcher(self):
-        """Start a thread that waits for the CS2 window and minimizes it once.
-        Requires pywin32; returns silently without it."""
+    def _start_cs2_send_to_back_watcher(self):
+        """Start a thread that waits for the CS2 window and sends it behind all other windows.
+
+        Uses SetWindowPos(HWND_BOTTOM) which places the window at the bottom of the
+        Z-order without minimizing — CS2 keeps running normally, the desktop simply
+        stays on top. No taskbar icon state change, no pause, no interruption.
+        Requires pywin32; returns silently without it.
+        """
         def _watch():
             try:
                 import win32gui
                 import win32con
             except ImportError:
-                self._alog("  ℹ cs2_minimize: pywin32 not installed — option ignored.", "dim")
+                self._alog("  ℹ cs2_send_to_back: pywin32 not installed — option ignored.", "dim")
                 return
 
             CS2_TITLES = ("Counter-Strike 2", "cs2", "CS2")
-            deadline = time.time() + 60  # 60s timeout to find CS2
+            deadline = time.time() + 60  # 60s timeout
 
             def _find_cs2():
                 found = []
@@ -8460,25 +8572,28 @@ class App(tk.Tk):
                 win32gui.EnumWindows(_cb, None)
                 return found
 
-            # Phase 1: wait for CS2 (fast polling 100ms)
             first_seen = None
             while time.time() < deadline and self._running:
                 hwnds = _find_cs2()
                 for hwnd in hwnds:
                     try:
-                        win32gui.ShowWindow(hwnd, win32con.SW_MINIMIZE)
+                        # HWND_BOTTOM (1): place at bottom of Z-order — behind all others.
+                        # SWP_NOMOVE | SWP_NOSIZE: don't touch position or size.
+                        # SWP_NOACTIVATE: don't give it focus.
+                        win32gui.SetWindowPos(
+                            hwnd,
+                            win32con.HWND_BOTTOM,
+                            0, 0, 0, 0,
+                            win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE
+                        )
                         if first_seen is None:
-                            self._alog("  🗕 CS2 minimized.", "dim")
+                            self._alog("  🔙 CS2 sent to back.", "dim")
                             first_seen = time.time()
                     except Exception:
                         pass
                 if first_seen:
                     break
                 time.sleep(0.1)
-
-            if not first_seen:
-                return  # CS2 not found within timeout
-            # CS2 minimized once — thread stops.
 
         threading.Thread(target=_watch, daemon=True).start()
 
@@ -8487,9 +8602,9 @@ class App(tk.Tk):
         try:
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           text=True, encoding="utf-8", errors="replace", bufsize=1)
-            # Start CS2 minimize watcher if the option is enabled
-            if getattr(self, "v", {}) and self.v.get("cs2_minimize") and self.v["cs2_minimize"].get():
-                self._start_cs2_minimize_watcher()
+            # Start CS2 send-to-back watcher if the option is enabled
+            if getattr(self, "v", {}) and self.v.get("cs2_send_to_back") and self.v["cs2_send_to_back"].get():
+                self._start_cs2_send_to_back_watcher()
             for line in iter(self._proc.stdout.readline, ""):
                 line = line.rstrip("\n\r")
                 if not line:
@@ -9373,7 +9488,8 @@ class App(tk.Tk):
         self._alog(f"Player(s): {player_str}", "info")
         self._alog(f"Video: {cfg['width']}x{cfg['height']}@{cfg['framerate']}fps CRF={cfg['crf']} {cfg['video_codec']} {cfg['video_container']}", "info")
         tag_str = f" | Tag: \U0001f3f7 {tag_name}" if tag_enabled else ""
-        recsys = cfg.get("recsys", "HLAE")
+        recsys = self._normalize_recsys(cfg.get("recsys", "HLAE"))
+        cfg["recsys"] = recsys
         hlae_info = ""
         if recsys == "HLAE":
             fov = cfg.get("hlae_fov", 90)
@@ -9650,9 +9766,14 @@ class App(tk.Tk):
             for si, seq in enumerate(seqs, 1):
                 dur_ticks = seq["end_tick"] - seq["start_tick"]
                 dur_s = dur_ticks / tickrate if tickrate else 0
+                _cams = (cj.get("sequences", [{}])[si - 1].get("playerCameras", [])
+                         if si - 1 < len(cj.get("sequences", [])) else [])
+                _cam0 = _cams[0] if _cams else {}
+                _sid0 = _cam0.get("playerSteamId", "")
+                _name0 = _cam0.get("playerName", "")
                 self._alog(
                     f"  seq {si}/{len(seqs)}  tick {seq['start_tick']}→{seq['end_tick']}"
-                    f"  ({dur_s:.1f}s)", "dim")
+                    f"  ({dur_s:.1f}s)  cam:{_name0 or '?'}({_sid0 or '-'})", "dim")
             self._alog(
                 f"  RecSys: {cfg.get('recsys','HLAE')} | "
                 f"TrueView: {'ON' if cfg.get('true_view') else 'OFF'} | "
