@@ -5,6 +5,15 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v122]
+### Added
+
+- **Kill filters quick action — "Unselect all"**:
+  added a button in the Kill filters logic header to disable all active kill/situation modifiers at once and clear all `★ Must` flags in one click.
+- **Version bump**: script version moved to `v122`.
+
+---
+
 ## [v121]
 ### Changed
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v121"""
+"""CSDM Batch Clips Generator v122"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v121"
+APP_VERSION = "v122"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -2881,6 +2881,13 @@ class App(tk.Tk):
                          command=self._on_kill_logic_change)
             _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
             add_tip(_rb, _logic_tip_kill)
+        _clear_kf_btn = tk.Button(
+            _kill_logic_hdr, text="Unselect all", command=self._clear_kill_filters,
+            font=FONT_SM, bg=BG3, fg=MUTED, activebackground=BORDER, activeforeground=TEXT,
+            relief="flat", bd=0, padx=8, pady=2, cursor="hand2"
+        )
+        _clear_kf_btn.pack(side="right")
+        add_tip(_clear_kf_btn, "Disable all kill/situation modifiers and clear all ★ Must flags.")
         self._on_kill_logic_change()
 
         _MODS = [
@@ -4382,6 +4389,18 @@ class App(tk.Tk):
         self._on_logic_mode_change("mods")
         self._on_logic_mode_change("dp2")
         self._refresh_hs_lock_state()
+
+    def _clear_kill_filters(self):
+        keys = [k for k, *_ in self._FILTER_BADGE_DEFS]
+        for k in keys:
+            v = self.v.get(k)
+            if v is not None:
+                v.set(False)
+            rv = self.v.get(f"{k}_req")
+            if rv is not None:
+                rv.set(False)
+        self._refresh_hs_lock_state()
+        self._log_flash("  ✓ All kill/situation filters unselected.", "ok")
 
     @staticmethod
     def _cfg_scalar(cfg, key, default=None):
