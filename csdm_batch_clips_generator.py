@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v123"""
+"""CSDM Batch Clips Generator v126"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v123"
+APP_VERSION = "v126"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -455,14 +455,11 @@ DEFAULT_CONFIG = {
     "headshots_mode": "all",
     "teamkills_mode": "include",
     "include_suicides": True,   # include suicides (weapon world/suicide/world_entity)
-    # Kill modifiers — logic mode per category
-    # "any"   = OR  (at least one must match)
-    # "all"   = AND (every checked filter must match)
-    # "mixed" = required filters must all match AND at least one optional filter matches
-    "kill_mod_logic_mods": "any",   # Mods section (DB boolean columns)
-    "kill_mod_logic_dp2":  "any",   # demoparser2 modifiers
-    "kill_mod_logic_db":   "any",   # DB post-filter modifiers (entry, ace, multi, bully, eco)
-    # Per-filter "required" flags — only active when category logic == "mixed"
+    # Kill modifiers logic is fixed to "mixed" (required + optional)
+    "kill_mod_logic_mods": "mixed",   # internal compatibility key
+    "kill_mod_logic_dp2":  "mixed",   # internal compatibility key
+    "kill_mod_logic_db":   "mixed",   # internal compatibility key
+    # Per-filter "required" flags
     "kill_mod_through_smoke_req":  False,
     "kill_mod_no_scope_req":       False,
     "kill_mod_wall_bang_req":      False,
@@ -1712,6 +1709,9 @@ class App(tk.Tk):
         cfg["steam_id"]    = self.player_search.get_steam_id()    # compat
         cfg["player_name"] = self.player_search.get_name()
         cfg["active_tags"] = self._get_active_tag_names()         # names of checked tags
+        cfg["kill_mod_logic_mods"] = "mixed"
+        cfg["kill_mod_logic_dp2"] = "mixed"
+        cfg["kill_mod_logic_db"] = "mixed"
         return cfg
 
     def _auto_save(self):
@@ -2867,20 +2867,18 @@ class App(tk.Tk):
         # Store the radio buttons container so ONE TAP / TROIS TAP can disable it
         self._hs_row = hs_row
 
-        # ── KILL FILTERS LOGIC (shared for Mods + demoparser2) ───────────────
+        # ── KILL FILTERS (fixed required+optional logic) ──────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
         _kill_logic_hdr = tk.Frame(sec, bg=BG2)
         _kill_logic_hdr.pack(fill="x", pady=(0, 4))
-        mlabel(_kill_logic_hdr, "Kill filters logic (Mods + demoparser2):").pack(side="left")
-        _logic_tip_kill = (
-            "AT LEAST ONE (OR): keep kills matching at least one enabled kill filter.\n"
-            "ALL AT ONCE (AND): keep kills matching every enabled kill filter.\n"
-            "MIXED: ★ Must filters must all match, plus at least one optional filter.")
-        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE"), ("mixed", "MIXED")):
-            _rb = hradio(_kill_logic_hdr, _ll, self.v["kill_mod_logic_dp2"], _lv,
-                         command=self._on_kill_logic_change)
-            _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
-            add_tip(_rb, _logic_tip_kill)
+        mlabel(_kill_logic_hdr, "Kill filters (Mods + demoparser2):").pack(side="left")
+        _logic_lbl = mlabel(_kill_logic_hdr, "  ★ Must = required, others = optional")
+        _logic_lbl.pack(side="left", padx=(8, 0))
+        add_tip(_logic_lbl,
+                "Fixed logic:\n"
+                "all ★ Must filters must match,\n"
+                "plus at least one enabled non-★ filter must match globally.\n"
+                "If no non-★ filter is enabled, only ★ Must filters are required.")
         _clear_kf_btn = tk.Button(
             _kill_logic_hdr, text="Unselect all", command=self._clear_kill_filters,
             font=FONT_SM, bg=BG3, fg=MUTED, activebackground=BORDER, activeforeground=TEXT,
@@ -2910,7 +2908,7 @@ class App(tk.Tk):
             add_tip(_cb, tip)
             _must_cb = hchk(row, "★ Must", self.v[f"{key}_req"])
             self._must_widgets["mods"].append(_must_cb)
-            add_tip(_must_cb, "In MIXED mode: this filter is required (must match).\nOthers without ★ are optional (at least one must match).")
+            add_tip(_must_cb, "Required filter (must match).\nOthers without ★ are optional (at least one optional must match).")
             self._wire_enable_must(self.v[key], self.v[f"{key}_req"])
         self.after(50, lambda: self._on_logic_mode_change("mods"))
 
@@ -2954,7 +2952,7 @@ class App(tk.Tk):
             add_tip(_cb, tip)
             _must_cb = hchk(row, "★ Must", self.v[f"{key}_req"])
             self._must_widgets["dp2"].append(_must_cb)
-            add_tip(_must_cb, "In MIXED mode: this filter is required (must match).")
+            add_tip(_must_cb, "Required filter (must match).")
             self._wire_enable_must(self.v[key], self.v[f"{key}_req"])
             dp2_badge(row).pack(side="left", padx=(8, 0))
 
@@ -2977,7 +2975,7 @@ class App(tk.Tk):
         _ts_cb.pack(side="left", padx=(4, 0))
         _ts_must = hchk(trois_row, "★ Must", self.v["kill_mod_trois_shot_req"])
         self._must_widgets["dp2"].append(_ts_must)
-        add_tip(_ts_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_ts_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_trois_shot"], self.v["kill_mod_trois_shot_req"])
         _nts_cb = hchk(trois_row, "Exclude", self.v["kill_mod_no_trois_shot"],
                        command=self._on_no_trois_shot_toggle)
@@ -3002,7 +3000,7 @@ class App(tk.Tk):
         _tt_cb.pack(side="left", padx=(4, 0))
         _tt_must = hchk(tt_row, "★ Must", self.v["kill_mod_trois_tap_req"])
         self._must_widgets["dp2"].append(_tt_must)
-        add_tip(_tt_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_tt_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_trois_tap"], self.v["kill_mod_trois_tap_req"])
         dp2_badge(tt_row).pack(side="left", padx=(8, 0))
 
@@ -3019,7 +3017,7 @@ class App(tk.Tk):
         _ot_cb.pack(side="left", padx=(4, 0))
         _ot_must = hchk(ot_row, "★ Must", self.v["kill_mod_one_tap_req"])
         self._must_widgets["dp2"].append(_ot_must)
-        add_tip(_ot_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_ot_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_one_tap"], self.v["kill_mod_one_tap_req"])
         dp2_badge(ot_row).pack(side="left", padx=(8, 0))
 
@@ -3037,7 +3035,7 @@ class App(tk.Tk):
         _st_cb.pack(side="left", padx=(4, 0))
         _st_must = hchk(st_row, "★ Must", self.v["kill_mod_spray_transfer_req"])
         self._must_widgets["dp2"].append(_st_must)
-        add_tip(_st_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_st_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_spray_transfer"], self.v["kill_mod_spray_transfer_req"])
         dp2_badge(st_row).pack(side="left", padx=(8, 0))
 
@@ -3071,7 +3069,7 @@ class App(tk.Tk):
         _hv_enable.pack(side="left", padx=(4, 0))
         _hv_must = hchk(hv_row, "★ Must", self.v["kill_mod_high_velocity_req"])
         self._must_widgets["dp2"].append(_hv_must)
-        add_tip(_hv_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_hv_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_high_velocity"], self.v["kill_mod_high_velocity_req"])
 
         _os_cb = hchk(_hv_inner, "One-shot", self.v["kill_mod_hv_one_shot"])
@@ -3096,7 +3094,7 @@ class App(tk.Tk):
         hchk(fl_row, "Enable", self.v["kill_mod_flick"]).pack(side="left", padx=(4, 0))
         _fl_must = hchk(fl_row, "★ Must", self.v["kill_mod_flick_req"])
         self._must_widgets["dp2"].append(_fl_must)
-        add_tip(_fl_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_fl_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_flick"], self.v["kill_mod_flick_req"])
         mlabel(fl_row, "  Min angle:").pack(side="left", padx=(8, 0))
         sentry(fl_row, self.v["kill_mod_flick_deg"], width=4).pack(side="left", padx=(4, 0), ipady=4)
@@ -3114,26 +3112,23 @@ class App(tk.Tk):
         hchk(sv_row, "Enable", self.v["kill_mod_sauveur"]).pack(side="left", padx=(4, 0))
         _sv_must = hchk(sv_row, "★ Must", self.v["kill_mod_sauveur_req"])
         self._must_widgets["dp2"].append(_sv_must)
-        add_tip(_sv_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_sv_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_sauveur"], self.v["kill_mod_sauveur_req"])
         dp2_badge(sv_row).pack(side="left", padx=(8, 0))
         self.after(50, lambda: self._on_logic_mode_change("dp2"))
 
-        # ── SITUATION ─────────────────────────────────────────────────────────
+        # ── SITUATION (fixed required+optional logic) ────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
         _sit_hdr = tk.Frame(sec, bg=BG2)
         _sit_hdr.pack(fill="x", pady=(0, 4))
         mlabel(_sit_hdr, "Situation (DB + Clutch):").pack(side="left")
-        _logic_tip_db = (
-            "Applied after kill filters.\n"
-            "AT LEAST ONE (OR): keep kills matching at least one enabled situation modifier.\n"
-            "ALL AT ONCE (AND): keep kills matching every enabled situation modifier.\n"
-            "MIXED: ★ Must situation modifiers must all match, plus at least one optional matches.")
-        for _lv, _ll in (("any", "AT LEAST ONE"), ("all", "ALL AT ONCE"), ("mixed", "MIXED")):
-            _rb = hradio(_sit_hdr, _ll, self.v["kill_mod_logic_db"], _lv,
-                         command=lambda *_, cat="db": self._on_logic_mode_change(cat))
-            _rb.pack(side="left", padx=(10 if _lv == "any" else 4, 0))
-            add_tip(_rb, _logic_tip_db)
+        _sit_logic_lbl = mlabel(_sit_hdr, "  ★ Must = required, others = optional")
+        _sit_logic_lbl.pack(side="left", padx=(8, 0))
+        add_tip(_sit_logic_lbl,
+                "Applied after kill filters.\n"
+                "Fixed logic: all ★ Must situation filters must match,\n"
+                "plus at least one enabled non-★ filter must match globally.\n"
+                "If no non-★ filter is enabled, only ★ Must filters are required.")
         self._must_widgets["db"] = []
 
         # ── ENTRY FRAG ────────────────────────────────────────────────────────
@@ -3145,7 +3140,7 @@ class App(tk.Tk):
         hchk(ef_row, "Enable", self.v["kill_mod_entry_frag"]).pack(side="left", padx=(4, 0))
         _ef_must = hchk(ef_row, "★ Must", self.v["kill_mod_entry_frag_req"])
         self._must_widgets["db"].append(_ef_must)
-        add_tip(_ef_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_ef_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_entry_frag"], self.v["kill_mod_entry_frag_req"])
 
         # ── ACE ───────────────────────────────────────────────────────────────
@@ -3157,7 +3152,7 @@ class App(tk.Tk):
         hchk(ac_row, "Enable", self.v["kill_mod_ace"]).pack(side="left", padx=(4, 0))
         _ac_must = hchk(ac_row, "★ Must", self.v["kill_mod_ace_req"])
         self._must_widgets["db"].append(_ac_must)
-        add_tip(_ac_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_ac_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_ace"], self.v["kill_mod_ace_req"])
 
         # ── MULTI-KILL ────────────────────────────────────────────────────────
@@ -3169,7 +3164,7 @@ class App(tk.Tk):
         hchk(mk_row, "Enable", self.v["kill_mod_multi_kill"]).pack(side="left", padx=(4, 0))
         _mk_must = hchk(mk_row, "★ Must", self.v["kill_mod_multi_kill_req"])
         self._must_widgets["db"].append(_mk_must)
-        add_tip(_mk_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_mk_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_multi_kill"], self.v["kill_mod_multi_kill_req"])
         mlabel(mk_row, "  Min kills:").pack(side="left", padx=(8, 0))
         scombo(mk_row, self.v["kill_mod_multi_kill_n"], [2, 3, 4, 5], 3).pack(side="left", padx=(4, 0))
@@ -3189,7 +3184,7 @@ class App(tk.Tk):
         hchk(bo_row, "Enable", self.v["kill_mod_bourreau"]).pack(side="left", padx=(4, 0))
         _bo_must = hchk(bo_row, "★ Must", self.v["kill_mod_bourreau_req"])
         self._must_widgets["db"].append(_bo_must)
-        add_tip(_bo_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_bo_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_bourreau"], self.v["kill_mod_bourreau_req"])
         mlabel(bo_row, "  From kill #:").pack(side="left", padx=(8, 0))
         scombo(bo_row, self.v["kill_mod_bourreau_n"], [2, 3, 4, 5], 3).pack(side="left", padx=(4, 0))
@@ -3206,7 +3201,7 @@ class App(tk.Tk):
         hchk(eco_row, "Enable", self.v["kill_mod_eco_frag"]).pack(side="left", padx=(4, 0))
         _eco_must = hchk(eco_row, "★ Must", self.v["kill_mod_eco_frag_req"])
         self._must_widgets["db"].append(_eco_must)
-        add_tip(_eco_must, "In MIXED mode: this filter is required (must match).")
+        add_tip(_eco_must, "Required filter (must match).")
         self._wire_enable_must(self.v["kill_mod_eco_frag"], self.v["kill_mod_eco_frag_req"])
         self.after(50, lambda: self._on_logic_mode_change("db"))
         self._install_hs_lock_watchers()
@@ -4367,29 +4362,22 @@ class App(tk.Tk):
         self._refresh_hs_lock_state()
 
     def _on_logic_mode_change(self, category: str, *_):
-        """Show ★ Must toggles only when the category's logic mode is 'mixed'.
-
-        Called by each logic radio command and at tab-build time (after(50,...)).
-        DRY: one method handles all three categories via the _must_widgets dict.
-        """
-        logic_key = f"kill_mod_logic_{category}"
-        is_mixed = self.v.get(logic_key, tk.StringVar()).get() == "mixed"
+        """Ensure ★ Must toggles are visible (fixed required+optional logic)."""
         for widget in self._must_widgets.get(category, []):
             try:
-                if is_mixed:
-                    widget.pack(side="left", padx=(8, 0))
-                else:
-                    widget.pack_forget()
+                widget.pack(side="left", padx=(8, 0))
             except Exception:
                 pass
         if category in ("mods", "dp2"):
             self._refresh_hs_lock_state()
 
     def _on_kill_logic_change(self, *_):
-        logic = self.v["kill_mod_logic_dp2"].get()
-        self.v["kill_mod_logic_mods"].set(logic)
+        self.v["kill_mod_logic_mods"].set("mixed")
+        self.v["kill_mod_logic_dp2"].set("mixed")
+        self.v["kill_mod_logic_db"].set("mixed")
         self._on_logic_mode_change("mods")
         self._on_logic_mode_change("dp2")
+        self._on_logic_mode_change("db")
         self._refresh_hs_lock_state()
 
     def _clear_kill_filters(self):
@@ -4424,27 +4412,13 @@ class App(tk.Tk):
         if "kill_mod_one_tap" not in active_dp2:
             return False
 
-        logic = str(self._cfg_scalar(cfg, "kill_mod_logic_dp2", "any") or "any")
-        if logic == "all":
+        req = [k for k in active_dp2 if bool(self._cfg_scalar(cfg, f"{k}_req", False))]
+        opt = [k for k in active_dp2 if not bool(self._cfg_scalar(cfg, f"{k}_req", False))]
+        if "kill_mod_one_tap" in req:
             return True
-
-        if logic == "mixed":
-            req = [k for k in active_dp2 if bool(self._cfg_scalar(cfg, f"{k}_req", False))]
-            opt = [k for k in active_dp2 if not bool(self._cfg_scalar(cfg, f"{k}_req", False))]
-            if "kill_mod_one_tap" in req:
-                return True
-            if "kill_mod_one_tap" in opt and len(opt) == 1:
-                return True
-            return False
-
-        if not (len(active_dp2) == 1 and active_dp2[0] == "kill_mod_one_tap"):
-            return False
-
-        mods_any = str(self._cfg_scalar(cfg, "kill_mod_logic_mods", "any") or "any") == "any"
-        mods_active = any(bool(self._cfg_scalar(cfg, k, False)) for k in self._SQL_MOD_KEYS)
-        if mods_any and mods_active:
-            return False
-        return True
+        if "kill_mod_one_tap" in opt and len(opt) == 1:
+            return True
+        return False
 
     def _refresh_hs_lock_state(self):
         try:
@@ -4550,7 +4524,7 @@ class App(tk.Tk):
         passed through unchanged (no weapon restriction enforced in UI anymore).
         """
         if not os.path.isfile(demo_path):
-            return events
+            return self._non_kill_only(events)
 
         if demo_path not in self._dp2_cache:
             self._dp2_parse_demo(demo_path)
@@ -4858,7 +4832,7 @@ class App(tk.Tk):
         (Headshot is pre-guaranteed by the DB query when kill_mod_one_tap is enabled.)
         """
         if not os.path.isfile(demo_path):
-            return events
+            return self._non_kill_only(events)
 
         # Ensure parsed — no-op if already cached
         if demo_path not in self._dp2_cache:
@@ -4933,7 +4907,7 @@ class App(tk.Tk):
         Snipers, auto-snipers, shotguns, non-CZ pistols are excluded.
         """
         if not os.path.isfile(demo_path):
-            return events
+            return self._non_kill_only(events)
 
         if demo_path not in self._dp2_cache:
             self._dp2_parse_demo(demo_path)
@@ -5043,7 +5017,7 @@ class App(tk.Tk):
         Default 100 u/s — above walking speed, catches any active peek.
         """
         if not os.path.isfile(demo_path):
-            return events
+            return self._non_kill_only(events)
         if demo_path not in self._dp2_cache:
             self._dp2_parse_demo(demo_path)
         with self._dp2_cache_lock:
@@ -5075,8 +5049,6 @@ class App(tk.Tk):
             all_entries.sort(key=lambda r: r[0])
 
             if not all_entries:
-                # No fire data — pass through (cannot evaluate)
-                filtered.append(evt)
                 continue
 
             # ── Find the kill shot ─────────────────────────────────────────
@@ -5087,8 +5059,6 @@ class App(tk.Tk):
                         shot_entry = (ftick, acc, scoped, vel)
 
             if shot_entry is None:
-                # No matching shot found — pass through
-                filtered.append(evt)
                 continue
 
             shot_tick = shot_entry[0]
@@ -5139,15 +5109,14 @@ class App(tk.Tk):
         Uses view_angles cache populated from player_death events.
         """
         if not os.path.isfile(demo_path):
-            return events
+            return self._non_kill_only(events)
         if demo_path not in self._dp2_cache:
             self._dp2_parse_demo(demo_path)
         with self._dp2_cache_lock:
             data = self._dp2_cache.get(demo_path, {})
         view_angles = data.get("view_angles", {})
         if not view_angles:
-            # No data — pass through unchanged (degraded gracefully)
-            return events
+            return self._non_kill_only(events)
 
         min_deg = max(1.0, float(cfg.get("kill_mod_flick_deg", 50)))
         LOOK_BACK = 32  # ticks to look back for prior angle (~0.5s)
@@ -5191,14 +5160,14 @@ class App(tk.Tk):
         as the active player. Requires hurt_index from player_death parse.
         """
         if not os.path.isfile(demo_path):
-            return events
+            return self._non_kill_only(events)
         if demo_path not in self._dp2_cache:
             self._dp2_parse_demo(demo_path)
         with self._dp2_cache_lock:
             data = self._dp2_cache.get(demo_path, {})
         hurt_index = data.get("hurt_index", {})
         if not hurt_index:
-            return events
+            return self._non_kill_only(events)
 
         SAUVEUR_WINDOW = 128  # ~2s — the enemy was shooting at a teammate recently
 
@@ -5249,7 +5218,7 @@ class App(tk.Tk):
         (graceful degradation — same behaviour as other dp2 filters).
         """
         if not os.path.isfile(demo_path):
-            return events
+            return self._non_kill_only(events)
         if demo_path not in self._dp2_cache:
             self._dp2_parse_demo(demo_path)
         with self._dp2_cache_lock:
@@ -5257,7 +5226,7 @@ class App(tk.Tk):
         death_flags = data.get("death_flags", {})
 
         if not death_flags:
-            return events  # degrade gracefully
+            return self._non_kill_only(events)
 
         filtered = []
         for evt in events:
@@ -5274,8 +5243,6 @@ class App(tk.Tk):
                     val = entry.get(flag_name)
                     break
             if val is None:
-                # Flag absent for this kill — pass through (can't determine)
-                filtered.append(evt)
                 continue
             if isinstance(threshold, bool):
                 if bool(val) == threshold:
@@ -5353,18 +5320,43 @@ class App(tk.Tk):
 
     @staticmethod
     def _split_required_optional(cfg, keys: list) -> tuple:
-        """Split a list of active filter cfg_keys into (required, optional) for mixed mode.
-
-        A key is "required" when its companion `<key>_req` flag is True in cfg.
-        Returns two lists — callers intersect required sets and union optional sets,
-        then intersect the two results.
-
-        Used by all three filter engines (SQL mods, dp2, DB postfilters) so the
-        mixed-mode logic lives in exactly one place.
-        """
+        """Split active filter cfg_keys into (required, optional) from ★ Must flags."""
         required = [k for k in keys if cfg.get(f"{k}_req", False)]
         optional = [k for k in keys if not cfg.get(f"{k}_req", False)]
         return required, optional
+
+    @staticmethod
+    def _non_kill_only(events):
+        return [e for e in events if e.get("type") != "kill"]
+
+    def _apply_global_filter_gate_events(self, events, cfg):
+        active_keys = [k for k, *_ in self._FILTER_BADGE_DEFS if cfg.get(k)]
+        if not active_keys:
+            return events
+        req_keys, opt_keys = self._split_required_optional(cfg, active_keys)
+        req_set = set(req_keys)
+        opt_set = set(opt_keys)
+        non_kill = [e for e in events if e.get("type") != "kill"]
+        kept = []
+        for e in events:
+            if e.get("type") != "kill":
+                continue
+            matched = set(e.get("_mf") or set())
+            if req_set and not req_set.issubset(matched):
+                continue
+            if opt_set and not (matched & opt_set):
+                continue
+            kept.append(e)
+        result = kept + non_kill
+        return result if result else None
+
+    def _apply_global_filter_gate_dict(self, evts, cfg):
+        out = {}
+        for dp, events in evts.items():
+            gated = self._apply_global_filter_gate_events(events, cfg)
+            if gated:
+                out[dp] = gated
+        return out
 
     def _apply_filter_to_events(self, evts, cfg, cfg_key, filter_fn, label):
         """Apply a per-demo filter function to all demos in evts.
@@ -6913,15 +6905,15 @@ class App(tk.Tk):
         return [(f" [{lbl}]", "badge_filter") for lbl in active]
 
     def _build_filter_header_parts(self, cfg):
-        """Return a list of grouped filter strings for the preview header Filters: line.
+        """Return grouped filter strings for the preview header Filters: line.
 
-        Groups active filters by category (Mods / dp2 / DB), each prefixed with its
-        logic mode.  Returns [] when no kill filter is active.
+        Groups active filters by category (Mods / dp2 / Situation) and shows ★
+        for required filters. Returns [] when no kill filter is active.
         """
         _CAT_META = {
-            "mods": ("Mods",  "kill_mod_logic_mods"),
-            "dp2":  ("dp2",   "kill_mod_logic_dp2"),
-            "db":   ("Situation", "kill_mod_logic_db"),
+            "mods": "Mods",
+            "dp2": "dp2",
+            "db": "Situation",
         }
         groups: dict = {}  # category → [label, ...]
         for k, lbl, cat in self._FILTER_BADGE_DEFS:
@@ -6932,26 +6924,13 @@ class App(tk.Tk):
             lbls_raw = groups.get(cat)
             if not lbls_raw:
                 continue
-            cat_name, logic_key = _CAT_META[cat]
-            logic_val = cfg.get(logic_key, "any")
-            if logic_val == "all":
-                logic_str = "ALL"
-            elif logic_val == "mixed":
-                logic_str = "MIXED"
-            else:
-                logic_str = "ANY"
-
-            if logic_val == "mixed":
-                # Show ★ prefix on required filters
-                lbls = []
-                for k, lbl, c in self._FILTER_BADGE_DEFS:
-                    if c == cat and cfg.get(k):
-                        prefix = "★ " if cfg.get(f"{k}_req", False) else ""
-                        lbls.append(f"{prefix}{lbl}")
-            else:
-                lbls = lbls_raw
-
-            parts.append(f"{cat_name} [{logic_str}]: {' · '.join(lbls)}")
+            cat_name = _CAT_META[cat]
+            lbls = []
+            for k, lbl, c in self._FILTER_BADGE_DEFS:
+                if c == cat and cfg.get(k):
+                    prefix = "★ " if cfg.get(f"{k}_req", False) else ""
+                    lbls.append(f"{prefix}{lbl}")
+            parts.append(f"{cat_name}: {' · '.join(lbls or lbls_raw)}")
         return parts
 
     def _build_clip_badges(self, events, cfg):
@@ -7247,12 +7226,7 @@ class App(tk.Tk):
                                 req_keys = [k for k, _ in _key_clause if cfg.get(f"{k}_req", False)]
                                 opt_clauses = [c for k, c in _key_clause if not cfg.get(f"{k}_req", False)]
                                 req_clauses = [c for k, c in _key_clause if cfg.get(f"{k}_req", False)]
-                                parts = req_clauses[:]
-                                if opt_clauses:
-                                    parts.append("(" + " OR ".join(opt_clauses) + ")")
-                                if parts:
-                                    modsql = " AND (" + " AND ".join(parts) + ")"
-                                elif req_clauses:
+                                if req_clauses:
                                     modsql = " AND (" + " AND ".join(req_clauses) + ")"
                             else:
                                 modsql = " AND (" + " OR ".join(mod_clauses) + ")"
@@ -7630,28 +7604,14 @@ class App(tk.Tk):
                 active_db_keys = [k for k, _ in per_mod_sigs]
                 req_keys, opt_keys = self._split_required_optional(cfg, active_db_keys)
                 req_sets = [s for k, s in per_mod_sigs if k in req_keys]
-                opt_sets = [s for k, s in per_mod_sigs if k in opt_keys]
-                # Required: all must match → intersect
                 if req_sets:
                     req_sigs = req_sets[0].intersection(*req_sets[1:]) if len(req_sets) > 1 else set(req_sets[0])
                 else:
-                    req_sigs = None  # no required → no restriction from req side
-                # Optional: at least one → union (or unrestricted if none checked)
-                if opt_sets:
-                    opt_sigs: set = set()
-                    for s in opt_sets:
-                        opt_sigs |= s
-                else:
-                    opt_sigs = None  # no optionals → no restriction from opt side
-                # Combine: must satisfy all required AND at least one optional
-                if req_sigs is not None and opt_sigs is not None:
-                    keep_sigs = req_sigs & opt_sigs
-                elif req_sigs is not None:
+                    req_sigs = None
+                if req_sigs is not None:
                     keep_sigs = req_sigs
-                elif opt_sigs is not None:
-                    keep_sigs = opt_sigs
                 else:
-                    keep_sigs = set()
+                    keep_sigs = {(e["tick"], str(e.get("killer_sid",""))) for e in kill_events}
             elif logic_and and len(per_mod_sigs) > 1:
                 sig_sets = [s for _, s in per_mod_sigs]
                 keep_sigs = sig_sets[0].intersection(*sig_sets[1:])
@@ -8742,6 +8702,7 @@ class App(tk.Tk):
             # Apply demoparser2 modifiers before preview (shared helper handles AND/OR logic).
             t0 = time.time()
             evts = self._apply_dp2_filters_to_events(evts, cfg)
+            evts = self._apply_global_filter_gate_dict(evts, cfg)
             t_filters = time.time() - t0
             t_total = time.time() - t0_total
             timings = {
@@ -9199,23 +9160,18 @@ class App(tk.Tk):
             else:
                 req_sigs = None
 
-            # Optional: at least one → OR union
+            # Optional: collect matches for global OR gate; do not narrow here
             if opt_active:
                 opt_s2k, non_kill = _run_or(opt_active)
-                opt_sigs = frozenset(opt_s2k.keys())
             else:
                 opt_s2k, non_kill = {}, [e for e in events if e.get("type") != "kill"]
-                opt_sigs = None
-
-            # Combine: intersect required and optional sig sets
-            if req_sigs is not None and opt_sigs is not None:
-                keep_sigs = req_sigs & opt_sigs
-            elif req_sigs is not None:
+            if req_sigs is not None:
                 keep_sigs = req_sigs
-            elif opt_sigs is not None:
-                keep_sigs = opt_sigs
             else:
-                keep_sigs = frozenset()
+                keep_sigs = frozenset(
+                    (e["tick"], str(e.get("killer_sid", "")))
+                    for e in events if e.get("type") == "kill"
+                )
 
             # Build merged _mf: stamp req keys + optional matched keys
             kept_kills = []
@@ -9231,7 +9187,7 @@ class App(tk.Tk):
                     kept_kills.append(e)
             result = kept_kills + non_kill
             if not result:
-                self._alog("  ⏭ SKIP: 0 kills after dp2 MIXED filters in this demo", "dim")
+                self._alog("  ⏭ SKIP: 0 kills after dp2 required filters in this demo", "dim")
                 return None
             return result
 
@@ -9371,17 +9327,11 @@ class App(tk.Tk):
 
             if req_result is None and opt_result is None:
                 return evts
-            if req_result is None:
-                return opt_result
+            base = req_result if req_result is not None else evts
             if opt_result is None:
-                return req_result
-
-            # Intersect: keep demos and kills present in BOTH results
+                return base
             merged = {}
-            for dp in set(req_result.keys()) & set(opt_result.keys()):
-                req_sigs = frozenset((e["tick"], str(e.get("killer_sid", "")))
-                                     for e in req_result.get(dp, []) if e.get("type") == "kill")
-                original = evts.get(dp, [])
+            for dp, original in base.items():
                 non_kill = [e for e in original if e.get("type") != "kill"]
                 kept = []
                 opt_sig_mf = {
@@ -9392,10 +9342,11 @@ class App(tk.Tk):
                     if e.get("type") != "kill":
                         continue
                     sig = (e["tick"], str(e.get("killer_sid", "")))
-                    if sig in req_sigs and sig in opt_sig_mf:
-                        combined_mf = set(req_keys) | opt_sig_mf.get(sig, set())
+                    combined_mf = set(req_keys)
+                    combined_mf |= opt_sig_mf.get(sig, set())
+                    if combined_mf:
                         e["_mf"] = (e["_mf"] | combined_mf) if e.get("_mf") else combined_mf
-                        kept.append(e)
+                    kept.append(e)
                 if kept or non_kill:
                     merged[dp] = kept + non_kill
             return merged
@@ -9597,6 +9548,7 @@ class App(tk.Tk):
                             self._preparse_dp2(cfg, list(_fe.keys()))
                             # Apply dp2 modifiers via shared helper (handles AND/OR logic)
                             _fe = self._apply_dp2_filters_to_events(_fe, cfg)
+                            _fe = self._apply_global_filter_gate_dict(_fe, cfg)
                             self.after(0, lambda: self._show_preview(_fe, cfg))
                         threading.Thread(target=_bg, daemon=True).start()
                     self.after(0, _redo)
@@ -9627,6 +9579,7 @@ class App(tk.Tk):
             # ── demoparser2 kill modifiers ─────────────────────────────────────
             t0_dp2 = time.time()
             events = self._apply_dp2_modifiers(dp, events, cfg)
+            events = self._apply_global_filter_gate_events(events, cfg) if events else None
             t_dp2 = time.time() - t0_dp2
             if events is None:
                 summary.append((Path(dp).name, "SKIP", 0, 0, "0 kills after filter"))

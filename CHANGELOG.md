@@ -5,6 +5,48 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v126]
+### Fixed
+
+- **Per-demo filter badges now reflect actual matched reasons instead of pass-through noise**:
+  dp2 filters no longer mark kills as matched when required dp2 evidence is missing.
+- **Fail-closed matching for dp2 reason tagging**:
+  when a dp2 source is unavailable for a filter (missing file/cache/flag data), kill events are no longer passed through as implicit matches for that filter.
+- **Affected filters**:
+  TROIS SHOT, ONE TAP, SPRAY TRANSFER, FERRARI PEEK, FLICK, SAVIOR, and player_death-flag filters (WALLBANG/AIRBORNE/BLIND/COLLATERAL) now avoid false-positive tagging.
+- **Version bump**: script version moved to `v126`.
+
+---
+
+## [v125]
+### Fixed
+
+- **Global non-★ OR semantics restored for kill filters**:
+  when no filter is marked `★ Must`, checked filters now behave as global `AT LEAST ONE` across categories, so adding a filter expands (or keeps) results instead of unexpectedly narrowing them.
+- **Required filters remain strict**:
+  all enabled `★ Must` filters are enforced as hard requirements.
+- **Pipeline consistency (preview/run)**:
+  query, dp2, and DB postfilter stages now tag matches and defer final optional gating to a shared global gate so behavior is consistent and DRY across preview and batch worker.
+- **Version bump**: script version moved to `v125`.
+
+---
+
+## [v124]
+### Changed
+
+- **Removed logic mode selectors from UI**:
+  `AT LEAST ONE / ALL AT ONCE / MIXED` controls are removed for kill filters and situation filters.
+- **Fixed logic model is now always required+optional**:
+  each section now uses one behavior by default:
+  all `★ Must` filters must match, plus at least one enabled optional filter must match (or only required filters when no optional is enabled).
+- **Kept quick reset action**:
+  `Unselect all` remains available and still clears both filter enables and `★ Must` flags.
+- **Config/runtime normalization**:
+  internal logic keys are normalized to `mixed` during config collection to avoid drift from old saved values.
+- **Version bump**: script version moved to `v124`.
+
+---
+
 ## [v123]
 ### Fixed
 

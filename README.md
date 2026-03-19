@@ -92,19 +92,16 @@ An independent `🎯 Headshots` tri-state radio alongside Suicides and TK — no
 
 ## Kill modifier logic
 
-The UI uses two logic selectors:
-- **Kill filters logic** (shared by Mods + demoparser2)
-- **Situation logic** (DB + Clutch section, applied after kill filters)
+The UI now uses one fixed logic model for both layers:
+- **Kill filters** (Mods + demoparser2)
+- **Situation filters** (DB + Clutch section, applied after kill filters)
 
-| Mode | Behaviour |
-|---|---|
-| **AT LEAST ONE** | OR — a kill is kept if it matches any one checked modifier |
-| **ALL AT ONCE** | AND — a kill must match every checked modifier simultaneously |
-| **MIXED** | Required (★ Must) modifiers must ALL match, AND at least one optional modifier must match |
+Global matching rule:
+- all enabled `★ Must` filters must match
+- plus at least one enabled non-`★ Must` filter must match
+- if no non-`★ Must` filter is enabled, only required (`★ Must`) filters are enforced
 
-**MIXED mode example:** WALLBANG as ★ Must + SMOKE + BLIND as optional → clips that are wallbangs AND either through smoke or blind. In MIXED mode each filter row shows a **★ Must** checkbox that is hidden in the other modes.
-
-Kill logic and Situation logic are independent and composable.
+Example: `SMOKE` only → only smoke clips. `SMOKE + WALLBANG` (both non-★) → clips matching at least one of them.
 
 ---
 
