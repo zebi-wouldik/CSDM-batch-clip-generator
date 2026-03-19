@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v107"""
+"""CSDM Batch Clips Generator v109"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v107"
+APP_VERSION = "v109"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -331,8 +331,9 @@ DEFAULT_CONFIG = {
     "victim_pre_s": 2,
     # Clip recording order
     "clip_order": "chrono",    # "chrono" | "random"
-    # Headshot filter
-    "headshots_only": False,
+    # Headshot filter — independent of kill-mod logic
+    # "all" = include all kills  |  "only" = headshots only  |  "exclude" = non-headshots only
+    "headshots_mode": "all",
     "teamkills_mode": "include",
     "include_suicides": True,   # include suicides (weapon world/suicide/world_entity)
     # Kill modifiers — logic mode per category
@@ -422,7 +423,7 @@ PRESET_CATEGORIES = {
 PRESET_KEYS = {
     "full": None,
     "player": ["steam_id", "player_name", "events", "weapons", "date_from", "date_to",
-               "perspective", "victim_pre_s", "headshots_only", "include_suicides", "teamkills_mode",
+               "perspective", "victim_pre_s", "headshots_mode", "include_suicides", "teamkills_mode",
                "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
                "kill_mod_through_smoke", "kill_mod_no_scope", "kill_mod_wall_bang",
                "kill_mod_airborne", "kill_mod_assisted_flash", "kill_mod_collateral",
@@ -508,7 +509,12 @@ def load_config():
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 saved = json.load(f)
-            cfg = DEFAULT_CONFIG.copy(); cfg.update(saved); return cfg
+            cfg = DEFAULT_CONFIG.copy()
+            cfg.update(saved)
+            # Backward compat: old headshots_only bool → headshots_mode
+            if "headshots_only" in saved and "headshots_mode" not in saved:
+                cfg["headshots_mode"] = "only" if saved["headshots_only"] else "all"
+            return cfg
         except Exception:
             pass
     return DEFAULT_CONFIG.copy()
@@ -1365,7 +1371,8 @@ class App(tk.Tk):
                      "assemble_output", "video_preset", "teamkills_mode", "phys_ragdoll_scale",
                      "cs2_cfg_dir",
                      "clutch_clip_mode",
-                     "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db"]
+                     "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
+                     "headshots_mode"]
         int_keys = ["before", "after", "tickrate", "width", "height", "framerate", "crf", "audio_bitrate",
                      "death_notices_duration", "retry_count", "retry_delay", "delay_between_demos",
                      "hlae_fov", "hlae_slow_motion",
@@ -1378,7 +1385,7 @@ class App(tk.Tk):
                       "concatenate_sequences", "subfolder_per_demo", "true_view", "tag_enabled",
                       "hlae_afx_stream", "hlae_no_spectator_ui",
                       "hlae_fix_scope_fov", "hlae_workshop_download",
-                      "headshots_only", "include_suicides", "show_xray",
+                      "include_suicides", "show_xray",
                       "kill_mod_through_smoke", "kill_mod_no_scope", "kill_mod_wall_bang",
                       "kill_mod_airborne", "kill_mod_assisted_flash", "kill_mod_collateral",
                       "kill_mod_trois_shot", "kill_mod_no_trois_shot", "kill_mod_trois_tap",
@@ -1540,6 +1547,12 @@ class App(tk.Tk):
     def _apply_config(self, cfg, keys=None):
         for k, val in cfg.items():
             if keys and k not in keys:
+                continue
+            # Backward compat: old bool headshots_only → headshots_mode
+            if k == "headshots_only":
+                if val and "headshots_mode" not in cfg:
+                    if "headshots_mode" in self.v:
+                        self.v["headshots_mode"].set("only")
                 continue
             if k in self.v:
                 if k == "encoder" and val not in ENCODER_OPTIONS:
@@ -2644,7 +2657,7 @@ class App(tk.Tk):
         sec = Sec(p, "KILL FILTERS")
         sec.pack(fill="x", pady=(0, 10))
 
-        # ── SUICIDES / TK ─────────────────────────────────────────────────────
+        # ── SUICIDES / TK / HS ───────────────────────────────────────────────
         tk_row = tk.Frame(sec, bg=BG2)
         tk_row.pack(fill="x")
         _sui_cb = hchk(tk_row, "Suicides", self.v["include_suicides"])
@@ -2660,6 +2673,23 @@ class App(tk.Tk):
             _rb.pack(side="left", padx=(4, 0))
             add_tip(_rb, tip)
 
+        # HS filter — its own row, independent of the Mods ANY/ALL logic
+        hs_row = tk.Frame(sec, bg=BG2)
+        hs_row.pack(fill="x", pady=(4, 0))
+        _hs_lbl = mlabel(hs_row, "🎯 Headshots:")
+        _hs_lbl.pack(side="left")
+        add_tip(_hs_lbl,
+                "All = include all kills regardless of headshot status.\n"
+                "Only = keep headshot kills only (is_headshot column).\n"
+                "Exclude = keep non-headshot kills only.\n"
+                "⚠ ONE TAP and TROIS TAP force 'Only' when enabled.")
+        for lbl, val in [("All", "all"), ("Only", "only"), ("Exclude", "exclude")]:
+            _rb = hradio(hs_row, lbl, self.v["headshots_mode"], val,
+                         command=self._on_headshots_mode_change)
+            _rb.pack(side="left", padx=(8 if val == "all" else 4, 0))
+        # Store the radio buttons container so ONE TAP / TROIS TAP can disable it
+        self._hs_row = hs_row
+
         # ── MODS ──────────────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
         _mods_hdr = tk.Frame(sec, bg=BG2)
@@ -2673,8 +2703,6 @@ class App(tk.Tk):
             add_tip(_rb, _logic_tip_mods)
 
         _MODS = [
-            ("headshots_only",          "🎯 HS ONLY:",        None,
-             "Only captures headshot kills (is_headshot column)."),
             ("kill_mod_through_smoke",  "💨 SMOKE:",          "kill_mod_through_smoke",
              "Kill through a smoke grenade"),
             ("kill_mod_no_scope",       "🔭 NO-SCOPE:",       "kill_mod_no_scope",
@@ -2696,14 +2724,9 @@ class App(tk.Tk):
             _lbl = mlabel(row, label)
             _lbl.pack(side="left")
             add_tip(_lbl, tip)
-            if key == "headshots_only":
-                self._hs_cb = hchk(row, "Enable", self.v[key])
-                self._hs_cb.pack(side="left", padx=(4, 0))
-                add_tip(self._hs_cb, tip)
-            else:
-                _cb = hchk(row, "Enable", self.v[key])
-                _cb.pack(side="left", padx=(4, 0))
-                add_tip(_cb, tip)
+            _cb = hchk(row, "Enable", self.v[key])
+            _cb.pack(side="left", padx=(4, 0))
+            add_tip(_cb, tip)
 
         # ── demoparser2 modifiers ─────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
@@ -4033,13 +4056,32 @@ class App(tk.Tk):
             self.v["kill_mod_trois_tap"].set(True)
             self._engage_trois_tap()
             return
+        if active:
+            self._lock_hs_to_only()
+        else:
+            if not self.v["kill_mod_trois_tap"].get():
+                self._unlock_hs()
+
+    def _on_headshots_mode_change(self, *_):
+        """Called when the user manually changes the HS radio — no-op if locked."""
+        pass  # The radio var updates itself; lock is enforced by widget state
+
+    def _lock_hs_to_only(self):
+        """Force headshots_mode to 'only' and disable the HS radio buttons."""
         try:
-            if active:
-                self.v["headshots_only"].set(True)
-                self._hs_cb.config(state="disabled")
-            else:
-                if not self.v["kill_mod_trois_tap"].get():
-                    self._hs_cb.config(state="normal")
+            self.v["headshots_mode"].set("only")
+            for w in self._hs_row.winfo_children():
+                if isinstance(w, tk.Radiobutton):
+                    w.config(state="disabled")
+        except Exception:
+            pass
+
+    def _unlock_hs(self):
+        """Re-enable the HS radio buttons."""
+        try:
+            for w in self._hs_row.winfo_children():
+                if isinstance(w, tk.Radiobutton):
+                    w.config(state="normal")
         except Exception:
             pass
 
@@ -4078,19 +4120,12 @@ class App(tk.Tk):
 
     def _engage_trois_tap(self):
         """Apply side-effects of TROIS TAP becoming active (HS lock only)."""
-        try:
-            self.v["headshots_only"].set(True)
-            self._hs_cb.config(state="disabled")
-        except Exception:
-            pass
+        self._lock_hs_to_only()
 
     def _disengage_trois_tap(self):
-        """Undo side-effects of TROIS TAP (release HS lock)."""
-        try:
-            if not self.v["kill_mod_one_tap"].get():
-                self._hs_cb.config(state="normal")
-        except Exception:
-            pass
+        """Undo side-effects of TROIS TAP (release HS lock if ONE TAP also off)."""
+        if not self.v["kill_mod_one_tap"].get():
+            self._unlock_hs()
 
 
     def _trois_shot_filter(self, demo_path, events, cfg):
@@ -4777,11 +4812,25 @@ class App(tk.Tk):
             evts, cfg, "kill_mod_sauveur",
             self._sauveur_filter, "🛡 SAVIOR")
 
+    @staticmethod
+    def _stamp_mf(events, cfg_key):
+        """Add cfg_key to the _mf (matched-filters) set on every kill event in events."""
+        for e in events:
+            if e.get("type") == "kill":
+                mf = e.get("_mf")
+                if mf is None:
+                    e["_mf"] = {cfg_key}
+                else:
+                    mf.add(cfg_key)
+
     def _apply_filter_to_events(self, evts, cfg, cfg_key, filter_fn, label):
         """Apply a per-demo filter function to all demos in evts.
 
         Skips if cfg_key is falsy. Returns a new {demo_path: events} dict
         with empty-demo paths removed.
+
+        Surviving kill events are tagged with cfg_key in their _mf (matched filters)
+        set so that clip badges can show exactly which filter each clip triggered.
         """
         if not cfg.get(cfg_key):
             return evts
@@ -4794,6 +4843,7 @@ class App(tk.Tk):
                 f"  {label} [{Path(dp).name}] : {n_before} kills → {n_after}",
                 "info" if n_after else "dim")
             if filtered:
+                self._stamp_mf(filtered, cfg_key)
                 result[dp] = filtered
         return result
 
@@ -5984,7 +6034,6 @@ class App(tk.Tk):
     # Used by _build_filter_badges (per-clip) and _build_filter_header_parts (preview header).
     _FILTER_BADGE_DEFS = [
         # Mods
-        ("headshots_only",          "🎯 HS",           "mods"),
         ("kill_mod_through_smoke",  "💨 SMOKE",         "mods"),
         ("kill_mod_no_scope",       "🔭 NOSCOPE",       "mods"),
         ("kill_mod_wall_bang",      "🧱 WALLBANG",      "mods"),
@@ -6009,12 +6058,27 @@ class App(tk.Tk):
         ("kill_mod_eco_frag",       "💰 ECO",            "db"),
     ]
 
-    def _build_filter_badges(self, cfg):
-        """Return a list of (text, tag) badge tuples for every active kill filter.
+    def _build_filter_badges(self, cfg, events=None):
+        """Return (text, tag) badge tuples for kill filters that matched this clip.
 
-        Emits one compact badge per active filter key.  Returns [] when no filter is active.
-        Used by _build_clip_badges to append filter context after the content badge.
+        When events are provided (clip-level), reads the union of _mf sets from
+        all kill events — reflecting exactly which filter(s) each kill triggered.
+
+        Falls back to all active filters from cfg when no event has _mf (e.g. when
+        no kill filter was active or events come from paths that don't tag _mf).
         """
+        if events is not None:
+            # Collect the union of all _mf sets across kill events in this clip
+            matched: set = set()
+            for e in events:
+                if e.get("type") == "kill":
+                    matched |= (e.get("_mf") or set())
+            if matched:
+                # Emit badges in _FILTER_BADGE_DEFS order for consistency
+                return [(f" [{lbl}]", "badge_filter")
+                        for k, lbl, _cat in self._FILTER_BADGE_DEFS if k in matched]
+
+        # Fallback: no _mf data — emit all active filters from cfg
         active = [lbl for k, lbl, _cat in self._FILTER_BADGE_DEFS if cfg.get(k)]
         return [(f" [{lbl}]", "badge_filter") for lbl in active]
 
@@ -6096,7 +6160,7 @@ class App(tk.Tk):
             badges.append((" [?]", "badge_safe"))
 
         # ── Active kill filter badges (appended after content) ─────────────
-        badges.extend(self._build_filter_badges(cfg))
+        badges.extend(self._build_filter_badges(cfg, events))
 
         return badges
 
@@ -6225,10 +6289,12 @@ class App(tk.Tk):
                 kills_on = cfg["events_kills"]
                 deaths_on = cfg["events_deaths"]
                 weapons = cfg["weapons"]
-                # ONE TAP and TROIS TAP require mandatory headshot in DB
-                headshots_only = (cfg.get("headshots_only", False)
-                                  or cfg.get("kill_mod_one_tap", False)
-                                  or cfg.get("kill_mod_trois_tap", False))
+                # Resolve headshots_mode — ONE TAP / TROIS TAP force "only"
+                _hsmode = cfg.get("headshots_mode", "all")
+                if cfg.get("kill_mod_one_tap") or cfg.get("kill_mod_trois_tap"):
+                    _hsmode = "only"
+                headshots_only   = (_hsmode == "only")
+                headshots_exclude = (_hsmode == "exclude")
                 _tkmode = cfg.get("teamkills_mode", "include")
                 include_teamkills = (_tkmode != "exclude")
                 teamkills_only    = (_tkmode == "only")
@@ -6236,10 +6302,12 @@ class App(tk.Tk):
                 # Headshot column (optional)
                 hc = self._find_col("kills", ["is_headshot", "headshot", "is_hs", "hs"])
                 hsql = ""
-                if headshots_only and hc:
+                if (headshots_only or headshots_exclude) and not hc:
+                    self._alog("⚠ Headshots filter: column not found in kills — filter ignored.", "warn")
+                elif headshots_only and hc:
                     hsql = f' AND k."{hc}" = TRUE'
-                elif headshots_only and not hc:
-                    self._alog("⚠ Headshots only: column not found in kills — filter ignored.", "warn")
+                elif headshots_exclude and hc:
+                    hsql = f' AND k."{hc}" = FALSE'
 
                 tkc_k = self._find_col("kills", ["killer_team_name", "killer_side", "killer_team"])
                 tkc_v = self._find_col("kills", ["victim_team_name", "victim_side", "victim_team"])
@@ -6374,6 +6442,21 @@ class App(tk.Tk):
                         extra += f',k."{dtc}"'
                         enames.append("dt")
 
+                    # Fetch each resolved SQL-mod boolean column so we can tag
+                    # _mf (matched filters) precisely per event row.
+                    # _mod_extra: list of (cfg_key, col_name) for resolved active mods
+                    _mod_extra: list = []
+                    for mod_key in active_mods:
+                        col = self._find_col("kills", _MOD_COLS[mod_key])
+                        if col:
+                            extra += f',k."{col}"'
+                            enames.append(f"_mod_{mod_key}")
+                            _mod_extra.append((mod_key, f"_mod_{mod_key}"))
+                    # headshots_mode tag key — fetched if hc is available
+                    if headshots_only and hc:
+                        extra += f',k."{hc}"'
+                        enames.append("_hs")
+
                     date_sel = f',m."{date_col}"' if date_col else ""
                     sql = (f'SELECT m."{dc}",k."{tc}",m."{mkm}"{date_sel}{extra} FROM kills k '
                            f'JOIN matches m ON m."{mkm}"=k."{mkk}" '
@@ -6414,9 +6497,20 @@ class App(tk.Tk):
                             continue
                         if et == "death" and not deaths_on:
                             continue
-                        results.setdefault(dp, []).append(
-                            {"tick": event_tick, "type": et, "weapon": weapon_raw,
-                             "killer_sid": killer_sid, "victim_sid": victim_sid})
+
+                        # Build _mf: set of cfg_key strings that matched for this row
+                        _mf: set = set()
+                        for mod_key, en in _mod_extra:
+                            if ex.get(en):
+                                _mf.add(mod_key)
+                        if headshots_only and ex.get("_hs"):
+                            _mf.add("headshots_mode")
+
+                        evt = {"tick": event_tick, "type": et, "weapon": weapon_raw,
+                               "killer_sid": killer_sid, "victim_sid": victim_sid}
+                        if _mf:
+                            evt["_mf"] = _mf
+                        results.setdefault(dp, []).append(evt)
 
                 if cfg["events_rounds"] and self._db_schema.get("rounds"):
                     rtc = self._find_col("rounds",
@@ -6572,10 +6666,10 @@ class App(tk.Tk):
                 rk = _round_key(e)
                 all_kills_by_round.setdefault(rk, []).append(e)
 
-            # Each active modifier collects its own sig set.
+            # Each active modifier collects its own sig set, paired with its cfg_key.
             # OR mode  → union  all sets.
             # AND mode → intersect all sets (a kill must appear in every set).
-            per_mod_sigs: list = []  # one set per active modifier
+            per_mod_sigs: list = []  # list of (cfg_key, set_of_sigs)
 
             # ── Entry Frag ────────────────────────────────────────────────
             if do_entry:
@@ -6585,7 +6679,7 @@ class App(tk.Tk):
                     for e in r_kills:
                         if e["tick"] == first_tick and str(e.get("killer_sid","")) in sids_set:
                             _sigs.add((e["tick"], str(e.get("killer_sid",""))))
-                per_mod_sigs.append(_sigs)
+                per_mod_sigs.append(("kill_mod_entry_frag", _sigs))
 
             # ── Ace ────────────────────────────────────────────────────────
             if do_ace:
@@ -6595,7 +6689,7 @@ class App(tk.Tk):
                     if len(victims) >= 5:
                         for e in r_kills:
                             _sigs.add((e["tick"], str(e.get("killer_sid",""))))
-                per_mod_sigs.append(_sigs)
+                per_mod_sigs.append(("kill_mod_ace", _sigs))
 
             # ── Multi-Kill (Triple / Quadra) ───────────────────────────────
             if do_multi:
@@ -6613,7 +6707,7 @@ class App(tk.Tk):
                     if span <= max_ticks:
                         for e in r_kills:
                             _sigs.add((e["tick"], str(e.get("killer_sid",""))))
-                per_mod_sigs.append(_sigs)
+                per_mod_sigs.append(("kill_mod_multi_kill", _sigs))
 
             # ── BULLY ──────────────────────────────────────────────────────
             if do_bour:
@@ -6634,7 +6728,7 @@ class App(tk.Tk):
                     pair_seen[(ks, vs)] += 1
                     if pair_count[(ks, vs)] >= bour_n and pair_seen[(ks, vs)] >= bour_n:
                         _sigs.add((e["tick"], ks))
-                per_mod_sigs.append(_sigs)
+                per_mod_sigs.append(("kill_mod_bourreau", _sigs))
 
             # ── Eco-Frag ───────────────────────────────────────────────────
             if do_eco:
@@ -6649,22 +6743,37 @@ class App(tk.Tk):
                         continue
                     if vw in FULL_BUY:
                         _sigs.add((e["tick"], str(e.get("killer_sid",""))))
-                per_mod_sigs.append(_sigs)
+                per_mod_sigs.append(("kill_mod_eco_frag", _sigs))
 
             # ── Combine per-modifier sets ──────────────────────────────────
             if not per_mod_sigs:
                 continue
-            if logic_and and len(per_mod_sigs) > 1:
+            sig_sets = [s for _, s in per_mod_sigs]
+            if logic_and and len(sig_sets) > 1:
                 # AND: intersection — kill must satisfy every active modifier
-                keep_sigs = per_mod_sigs[0].intersection(*per_mod_sigs[1:])
+                keep_sigs = sig_sets[0].intersection(*sig_sets[1:])
             else:
                 # OR: union — kill qualifies if it satisfies at least one
                 keep_sigs: set = set()
-                for s in per_mod_sigs:
+                for s in sig_sets:
                     keep_sigs |= s
 
-            kept_kills = [e for e in kill_events
-                          if (e["tick"], str(e.get("killer_sid",""))) in keep_sigs]
+            # Build sig → set_of_matched_cfg_keys for _mf tagging
+            sig_to_keys: dict = {}
+            for fkey, fset in per_mod_sigs:
+                for sig in fset:
+                    if sig in keep_sigs:
+                        sig_to_keys.setdefault(sig, set()).add(fkey)
+
+            kept_kills = []
+            for e in kill_events:
+                sig = (e["tick"], str(e.get("killer_sid","")))
+                if sig in keep_sigs:
+                    matched = sig_to_keys.get(sig, set())
+                    if matched:
+                        existing = e.get("_mf") or set()
+                        e["_mf"] = existing | matched
+                    kept_kills.append(e)
 
             if kept_kills or non_kill:
                 filtered[dp] = kept_kills + non_kill
@@ -7769,12 +7878,15 @@ class App(tk.Tk):
         # Active kill filters — grouped by category, derived from shared definition table
         _kf_parts = self._build_filter_header_parts(cfg)
 
-        # TK / suicides
+        # TK / suicides / HS
         _tkm = cfg.get("teamkills_mode", "include")
         _misc = []
         if _tkm == "exclude":  _misc.append("🚫 TK")
         elif _tkm == "only":   _misc.append("⚔ TK only")
         if not cfg.get("include_suicides", True): _misc.append("🚫 suicides")
+        _hsm = cfg.get("headshots_mode", "all")
+        if _hsm == "only":    _misc.append("🎯 HS only")
+        elif _hsm == "exclude": _misc.append("🎯 no HS")
         if _misc: _kf_parts.append(" · ".join(_misc))
 
         if _kf_parts:
@@ -8024,21 +8136,49 @@ class App(tk.Tk):
             err_msg = errs[0] if errs else f"code {rc}"
             self._alog(f"  ✗ Assembly failed: {err_msg}", "err")
 
+
+    # ── dp2 filter definition table ────────────────────────────────────────
+    # Single source of truth for every demoparser2 kill modifier.
+    # Each row: (cfg_key, filter_fn_attr, apply_fn_attr, log_label, result_label, skip_label)
+    #
+    # filter_fn_attr  — per-demo filter method name (used by _apply_dp2_modifiers worker path)
+    # apply_fn_attr   — dict-level apply method name (used by _apply_dp2_filters_to_events preview path)
+    #
+    # TROIS TAP is NOT listed here — it is always exclusive and handled separately.
+    _DP2_FILTER_DEFS = [
+        ("kill_mod_trois_shot",     "_trois_shot_filter",     "_apply_trois_shot_to_events",
+         "🎲 TROIS SHOT",    "TROIS SHOT",     "0 TROIS SHOT"),
+        ("kill_mod_no_trois_shot",  "_no_trois_shot_filter",  "_apply_no_trois_shot_to_events",
+         "🚫🎲 Exclude",     "precise",        "0 EXCLUDE"),
+        ("kill_mod_one_tap",        "_one_tap_filter",        "_apply_one_tap_to_events",
+         "🎯 ONE TAP",       "one tap",        "0 ONE TAP"),
+        ("kill_mod_spray_transfer", "_spray_transfer_filter", "_apply_spray_transfer_to_events",
+         "🔫 SPRAY",         "spray transfer", "0 SPRAY"),
+        ("kill_mod_high_velocity",  "_high_velocity_filter",  "_apply_high_velocity_to_events",
+         "🏎 FERRARI PEEK",  "counter-strafe", "0 FERRARI PEEK"),
+        ("kill_mod_flick",          "_flick_filter",          "_apply_flick_to_events",
+         "↩ FLICK",          "flick",          "0 FLICK"),
+        ("kill_mod_sauveur",        "_sauveur_filter",        "_apply_sauveur_to_events",
+         "🛡 SAVIOR",        "savior",         "0 SAVIOR"),
+    ]
+
     def _apply_dp2_modifiers(self, dp, events, cfg):
         """Apply active demoparser2 kill modifiers for one demo (batch worker path).
 
         Logic mode (cfg["kill_mod_logic_dp2"]):
           "any" (default/OR): a kill is kept if it passes at least one active filter.
                               Each filter runs independently on the original event list;
-                              results are unioned.
+                              results are unioned. _mf is stamped per-filter per-kill.
           "all"        (AND): a kill must pass every active filter — filters are chained
                               sequentially (each narrows the set further).
+                              _mf is stamped per-filter on each surviving kill.
 
         TROIS TAP is always exclusive and bypasses the logic setting.
+        Derived from _DP2_FILTER_DEFS — add a row there to support a new filter.
 
         Returns the filtered event list, or None if no kills remain (caller skips demo).
         """
-        # TROIS TAP short-circuit — always AND / exclusive
+        # TROIS TAP short-circuit — always exclusive
         if cfg.get("kill_mod_trois_tap"):
             n_before = _count_kills(events)
             events   = self._trois_tap_filter(dp, events, cfg)
@@ -8047,32 +8187,20 @@ class App(tk.Tk):
             if not events:
                 self._alog("  ⏭ SKIP: 0 TROIS TAP in this demo", "dim")
                 return None
+            self._stamp_mf(events, "kill_mod_trois_tap")
             return events
 
-        _DP2_MODS = [
-            ("kill_mod_trois_shot",     self._trois_shot_filter,
-             "🎲 TROIS SHOT",    "TROIS SHOT",     "0 TROIS SHOT"),
-            ("kill_mod_no_trois_shot",  self._no_trois_shot_filter,
-             "🚫🎲 Exclude",     "precise",        "0 EXCLUDE"),
-            ("kill_mod_one_tap",        self._one_tap_filter,
-             "🎯 ONE TAP",       "one tap",        "0 ONE TAP"),
-            ("kill_mod_spray_transfer", self._spray_transfer_filter,
-             "🔫 SPRAY",         "spray transfer", "0 SPRAY"),
-            ("kill_mod_high_velocity",  self._high_velocity_filter,
-             "🏎 FERRARI PEEK",  "counter-strafe", "0 FERRARI PEEK"),
-            ("kill_mod_flick",          self._flick_filter,
-             "↩ FLICK",          "flick",          "0 FLICK"),
-            ("kill_mod_sauveur",        self._sauveur_filter,
-             "🛡 SAVIOR",        "savior",         "0 SAVIOR"),
-        ]
-        active = [(k, fn, ll, rl, sl) for k, fn, ll, rl, sl in _DP2_MODS if cfg.get(k)]
+        active = [(k, getattr(self, fn), ll, rl, sl)
+                  for k, fn, _afn, ll, rl, sl in self._DP2_FILTER_DEFS
+                  if cfg.get(k)]
         if not active:
             return events
 
         logic_and = cfg.get("kill_mod_logic_dp2", "any") == "all"
 
         if logic_and:
-            # AND: chain filters — each pass narrows the surviving set
+            # AND: chain filters — each pass narrows the surviving set.
+            # _stamp_mf per-filter so _mf accumulates all matched keys.
             for cfg_key, filter_fn, log_label, result_label, skip_label in active:
                 n_before = _count_kills(events)
                 events   = filter_fn(dp, events, cfg)
@@ -8083,11 +8211,12 @@ class App(tk.Tk):
                 if not events:
                     self._alog(f"  ⏭ SKIP: {skip_label} in this demo", "dim")
                     return None
+                self._stamp_mf(events, cfg_key)
             return events
         else:
-            # OR: run each filter independently on the original list, union kill sigs
-            non_kill   = [e for e in events if e.get("type") != "kill"]
-            kill_sigs_union: set = set()
+            # OR: run each filter independently, union kill sigs, merge _mf sets.
+            non_kill = [e for e in events if e.get("type") != "kill"]
+            sig_to_keys: dict = {}
             for cfg_key, filter_fn, log_label, result_label, skip_label in active:
                 n_before = _count_kills(events)
                 passed   = filter_fn(dp, events, cfg)
@@ -8097,10 +8226,20 @@ class App(tk.Tk):
                     "info")
                 for e in passed:
                     if e.get("type") == "kill":
-                        kill_sigs_union.add((e["tick"], str(e.get("killer_sid", ""))))
-            kept_kills = [e for e in events
-                          if e.get("type") == "kill"
-                          and (e["tick"], str(e.get("killer_sid", ""))) in kill_sigs_union]
+                        sig = (e["tick"], str(e.get("killer_sid", "")))
+                        sig_to_keys.setdefault(sig, set()).add(cfg_key)
+            kill_sigs_union = set(sig_to_keys.keys())
+            kept_kills = []
+            for e in events:
+                if e.get("type") != "kill":
+                    continue
+                sig = (e["tick"], str(e.get("killer_sid", "")))
+                if sig in kill_sigs_union:
+                    matched = sig_to_keys.get(sig, set())
+                    if matched:
+                        mf = e.get("_mf")
+                        e["_mf"] = (mf | matched) if mf else set(matched)
+                    kept_kills.append(e)
             result = kept_kills + non_kill
             if not result:
                 self._alog("  ⏭ SKIP: 0 kills after dp2 OR filters in this demo", "dim")
@@ -8110,69 +8249,71 @@ class App(tk.Tk):
     def _apply_dp2_filters_to_events(self, evts, cfg):
         """Apply active demoparser2 modifiers to a full {demo_path: events} dict.
 
-        Shared by the Preview path and the tag-redo path so the logic lives in one place.
-        Respects kill_mod_logic_dp2 (any/all) for the OR/AND behaviour.
-        TROIS TAP is always exclusive and bypasses the logic setting.
+        Shared by the Preview path and the tag-redo path.
+        Derived from _DP2_FILTER_DEFS — add a row there to support a new filter.
+        Respects kill_mod_logic_dp2 (any/all).
+        TROIS TAP is always exclusive.
+        _mf is stamped on all surviving kill events via _apply_filter_to_events.
 
         Returns a new dict with empty-demo entries removed.
         """
+        # TROIS TAP — goes through _apply_filter_to_events → _stamp_mf ✓
         if cfg.get("kill_mod_trois_tap"):
             self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
             return self._apply_trois_tap_to_events(evts, cfg)
 
-        _DP2_MODS = [
-            ("kill_mod_trois_shot",     self._apply_trois_shot_to_events,    "🎲 TROIS SHOT"),
-            ("kill_mod_no_trois_shot",  self._apply_no_trois_shot_to_events, "🚫🎲 Exclude"),
-            ("kill_mod_one_tap",        self._apply_one_tap_to_events,       "🎯 ONE TAP"),
-            ("kill_mod_spray_transfer", self._apply_spray_transfer_to_events,"🔫 SPRAY TRANSFER"),
-            ("kill_mod_high_velocity",  self._apply_high_velocity_to_events, "🏎 HIGH VELOCITY"),
-            ("kill_mod_flick",          self._apply_flick_to_events,         "↩ FLICK"),
-            ("kill_mod_sauveur",        self._apply_sauveur_to_events,       "🛡 SAVIOR"),
-        ]
-        active = [(k, fn, ll) for k, fn, ll in _DP2_MODS if cfg.get(k)]
+        active = [(k, getattr(self, afn), ll)
+                  for k, _fn, afn, ll, _rl, _sl in self._DP2_FILTER_DEFS
+                  if cfg.get(k)]
         if not active:
             return evts
 
         logic_and = cfg.get("kill_mod_logic_dp2", "any") == "all"
 
         if logic_and:
-            # AND: chain — each _apply_*_to_events call narrows the dict further
+            # AND: chain — _apply_filter_to_events stamps _mf per-filter ✓
             result = evts
             for cfg_key, apply_fn, log_label in active:
                 self._alog(f"  {log_label} — analyzing demos…", "info")
                 result = apply_fn(result, cfg)
             return result
         else:
-            # OR: run each filter independently, then union per-demo
+            # OR: run each filter independently, union per-demo, merge _mf sets.
             per_filter_results = []
             for cfg_key, apply_fn, log_label in active:
                 self._alog(f"  {log_label} — analyzing demos…", "info")
                 per_filter_results.append(apply_fn(evts, cfg))
 
-            # Merge: for each demo, union the kill (tick, killer_sid) sigs across all filters
-            all_demos = set()
+            all_demos: set = set()
             for r in per_filter_results:
                 all_demos |= set(r.keys())
 
             merged = {}
             for dp in all_demos:
-                # Collect kill sigs from every filter that produced results for this demo
-                kill_sigs_union: set = set()
+                sig_to_mf: dict = {}
                 for r in per_filter_results:
                     for e in r.get(dp, []):
                         if e.get("type") == "kill":
-                            kill_sigs_union.add((e["tick"], str(e.get("killer_sid", ""))))
+                            sig = (e["tick"], str(e.get("killer_sid", "")))
+                            existing = sig_to_mf.get(sig)
+                            sig_to_mf[sig] = (existing | e["_mf"]) if existing else set(e.get("_mf") or set())
 
-                # Use the original event list for this demo to preserve non-kill events
+                kill_sigs_union = set(sig_to_mf.keys())
                 original_events = evts.get(dp, [])
                 non_kill = [e for e in original_events if e.get("type") != "kill"]
-                kept_kills = [e for e in original_events
-                              if e.get("type") == "kill"
-                              and (e["tick"], str(e.get("killer_sid", ""))) in kill_sigs_union]
+                kept_kills = []
+                for e in original_events:
+                    if e.get("type") != "kill":
+                        continue
+                    sig = (e["tick"], str(e.get("killer_sid", "")))
+                    if sig in kill_sigs_union:
+                        mf = sig_to_mf.get(sig)
+                        if mf:
+                            e["_mf"] = (e["_mf"] | mf) if e.get("_mf") else set(mf)
+                        kept_kills.append(e)
                 if kept_kills or non_kill:
                     merged[dp] = kept_kills + non_kill
             return merged
-
 
     def _worker(self, cfg):
         cli = self._resolve_cli(cfg["csdm_exe"])
@@ -8224,8 +8365,11 @@ class App(tk.Tk):
                 "  ⚠ RecSys CS: CS2 replays the demo from tick 0 to reach the target tick.\n"
                 "  Each clip will take as long as the full demo before the event.\n"
                 "  HLAE is strongly recommended for batch recording.", "warn")
-        if cfg.get("headshots_only"):
+        _hsm = cfg.get("headshots_mode", "all")
+        if _hsm == "only":
             self._alog("🎯 Headshots only", "info")
+        elif _hsm == "exclude":
+            self._alog("🎯 Headshots excluded", "info")
         if not cfg.get("include_suicides", True):
             self._alog("🚫 Suicides excluded", "info")
         _tkm = cfg.get("teamkills_mode", "include")

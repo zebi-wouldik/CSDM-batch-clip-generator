@@ -5,7 +5,51 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v107]
+## [v109]
+### Changed
+
+- **Headshots filter redesigned — tri-state, fully independent of Mods logic**:
+  Replaced the old `headshots_only: bool` checkbox (which lived inside the Mods group and was subject to the ANY/ALL toggle) with a dedicated `🎯 Headshots: All / Only / Exclude` radio group on its own row, alongside Suicides and TK — completely separate from the Mods category and its logic selector.
+  - **All** (default) — no headshot filtering.
+  - **Only** — keep headshot kills only (`is_headshot = TRUE`).
+  - **Exclude** — keep non-headshot kills only (`is_headshot = FALSE`).
+  - ONE TAP and TROIS TAP still force `Only` when enabled and lock the radio buttons. They release the lock on disable.
+
+- **New config key `headshots_mode`** (`"all"` | `"only"` | `"exclude"`), replaces `headshots_only: bool`. Stored and restored through existing config persistence.
+
+- **Backward compatibility**: old configs/presets with `headshots_only: true` are automatically migrated to `headshots_mode: "only"` at load time and in `_apply_config`.
+
+- **Preview header** — HS mode is shown on the `Filters:` misc line (`🎯 HS only` / `🎯 no HS`) when active.
+
+- **DRY lock/unlock helpers**: `_lock_hs_to_only()` and `_unlock_hs()` centralise the radio-button disable/enable logic used by ONE TAP, TROIS TAP (`_engage_trois_tap` / `_disengage_trois_tap`).
+
+- **Version bump**: script version moved to `v109`.
+
+---
+
+
+### Changed & Fixed
+
+- **Clip filter badges are now per-kill accurate** — each demo line shows only the filter(s) that the kills in that specific clip actually triggered, not every globally-active filter. Previously `[KILL AK-47] [💨 SMOKE] [🔭 NOSCOPE] [🧱 WALLBANG] … ` appeared on every line regardless of which filter matched. Now only the relevant badge(s) are shown, e.g. `[KILL AK-47] [😵 BLIND]`.
+
+- **`_mf` (matched-filters) tagging implemented across all three filter stages**:
+  - **SQL Mods** (`_query_events`) — each resolved boolean column (smoke, no-scope, wallbang, airborne, victim-flash, attacker-blind, collateral) is fetched alongside the row. `headshots_only` is also tagged via the `is_headshot` column. `_mf` is populated per event at query time with only the keys whose column value is `TRUE` for that row.
+  - **DB postfilters** (`_apply_db_postfilters`) — `per_mod_sigs` now carries `(cfg_key, set)` pairs. A `sig_to_keys` map accumulates which filter(s) each kill sig matched; `_mf` is stamped on kept kills accordingly.
+  - **dp2 filters** — `_stamp_mf` is called on surviving events in every path: `_apply_filter_to_events` (all AND dict-level passes), TROIS TAP short-circuit, AND chain in worker, and OR union in worker.
+
+- **DRY — `_stamp_mf(events, cfg_key)` static helper**: replaces the repeated 3-line `_mf` set-mutation pattern. One definition, three call sites.
+
+- **DRY — `_DP2_FILTER_DEFS` class-level table**: single source of truth for all 7 dp2 filters `(cfg_key, filter_fn_attr, apply_fn_attr, log_label, result_label, skip_label)`. Both `_apply_dp2_modifiers` (worker) and `_apply_dp2_filters_to_events` (preview) derive their active filter lists from it via `getattr(self, attr)`. The two previously separate inline `_DP2_MODS` local lists are gone. Adding a new dp2 filter now requires touching exactly one place.
+
+- **AND chain `_mf` gap fixed** (`_apply_dp2_modifiers`): the AND path in the per-demo worker was calling raw `filter_fn` without stamping `_mf`. It now calls `_stamp_mf(events, cfg_key)` after each step.
+
+- **TROIS TAP `_mf` gap fixed** (`_apply_dp2_modifiers`): the TROIS TAP short-circuit path was not stamping `_mf`. Now stamps `kill_mod_trois_tap` on all surviving events.
+
+- **Version bump**: script version moved to `v108`.
+
+---
+
+
 ### Changed
 
 - **Clip badges — filter context appended after content badge**:
