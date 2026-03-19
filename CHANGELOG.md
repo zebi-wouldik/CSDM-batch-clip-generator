@@ -5,6 +5,106 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v133.3]
+### Fixed
+
+- **Minimize-on-launch behavior reverted**:
+  `cs2_minimize` now triggers on each CSDM game launch (per demo run) instead of once per batch.
+- **No camera/targeting logic changes** in this bump.
+- **Version bump**: script version moved to `v133.3`.
+
+---
+
+## [v133]
+### Fixed
+
+- **Camera/player targeting logic rebuilt for multi-player batches**:
+  active player order is now deterministic and no longer derived from unordered set iteration.
+- **Sequence anchor targeting**:
+  each sequence now anchors camera start to the first relevant active player in that sequence (killer first, then victim), reducing wrong-player focus at clip start.
+- **Player visibility/highlight hardening**:
+  camera target players are now always eligible in `playersOptions` for killer/victim modes.
+- **Run log observability**:
+  per-sequence logs now include the initial camera target (`name(sid)`) for immediate verification.
+- **Version bump**: script version moved to `v133`.
+
+---
+
+## [v132]
+### Fixed
+
+- **Regression rollback in global filter gate**:
+  reverted cross-propagation of filter reasons into `DEATHS` events, which could cause wrong-player focus and early/full-demo-style playback in some runs.
+- **Kill-filter gating restored to kill-event-only enforcement**:
+  required/optional filter matching now gates only kill events while preserving non-kill events as context, matching the pre-regression behavior.
+- **Kept v131 minimize improvement**:
+  `Minimize on launch` still runs once per batch.
+- **Version bump**: script version moved to `v132`.
+
+---
+
+## [v131]
+### Fixed
+
+- **Global filter gate now applies to both KILLS and DEATHS events**:
+  filtered demo/clip inclusion is now based on matched reasons for both frag event types, preventing unfiltered death events from slipping through and causing wrong-player/early-tick clip starts.
+- **Reason propagation for DEATHS**:
+  when a matching KILL carries filter reasons, equivalent DEATH events at the same `(tick, killer_sid)` inherit those reasons for consistent gating and badges.
+- **CS2 minimize behavior during batch**:
+  `Minimize on launch` now triggers once per batch instead of once per demo command, avoiding repeated forced minimization between demos.
+- **Version bump**: script version moved to `v131`.
+
+---
+
+## [v130]
+### Fixed
+
+- **HLAE recording payload hardening**:
+  JSON now always includes `hlaeOptions` when `recordingSystem` is `HLAE`, even when there are no extra args.
+- **Prevents silent fallback-style behavior in HLAE runs**:
+  ensures CSDM receives an explicit HLAE options block for every HLAE clip job.
+- **Version bump**: script version moved to `v130`.
+
+---
+
+## [v129]
+### Fixed
+
+- **Recording system normalization hardening (HLAE vs CS)**:
+  `recsys` values are now normalized at config load, config collect, JSON build, and worker start.
+- **Prevents accidental CS-mode behavior while UI shows HLAE**:
+  malformed/legacy `recsys` values no longer silently bypass HLAE path and no longer risk sending an invalid `recordingSystem` to CSDM.
+- **Version bump**: script version moved to `v129`.
+
+---
+
+## [v128]
+### Fixed
+
+- **Collateral over-detection reduced with stricter same-shot validation**:
+  collateral now requires:
+  - penetrated multi-kill grouping (`killer + tick + weapon`), and
+  - exactly one nearby `weapon_fire` event for that grouped shot window.
+- **Weapon-key normalization for shot-chain matching**:
+  collateral/wallbang grouping now uses normalized weapon suffix keys to align kill events with dp2 `fire_ticks`.
+- **Version bump**: script version moved to `v128`.
+
+---
+
+## [v127]
+### Fixed
+
+- **Wallbang/Collateral semantic split aligned to in-game intent**:
+  - `WALLBANG`: penetrating kill through obstacle context that is not part of a same-shot multi-kill chain.
+  - `COLLATERAL`: penetrating shot chain where the same bullet kills multiple players (grouped by killer+tick+weapon).
+- **Airborne and Blind Fire wording aligned to shot-time semantics**:
+  they now explicitly describe the bullet being fired while airborne/blinded.
+- **DP2 death-flag helper DRY refactor**:
+  shared kill→death-flag lookup now powers wallbang/collateral classification and generic flag filters.
+- **Version bump**: script version moved to `v127`.
+
+---
+
 ## [v126]
 ### Fixed
 
