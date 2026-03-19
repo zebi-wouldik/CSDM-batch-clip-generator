@@ -7,7 +7,6 @@
 [![Python](https://img.shields.io/badge/python-3.10+-3b82f6?style=flat-square&logo=python&logoColor=white)](https://www.python.org/)
 [![CS2](https://img.shields.io/badge/CS2-compatible-f97316?style=flat-square)](https://www.counter-strike.net/)
 [![License](https://img.shields.io/badge/license-do%20what%20you%20want-8b5cf6?style=flat-square)]()
-[![Version](https://img.shields.io/badge/version-v121-22c55e?style=flat-square)]()
 
 </div>
 
