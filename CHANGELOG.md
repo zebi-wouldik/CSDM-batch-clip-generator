@@ -5,6 +5,106 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v104]
+### Changed
+
+- **DRY refactor for demo log entries**:
+  - Added shared log-entry builders for both Preview and Run paths.
+  - `Preview` and `Run` now use the same rendering logic for base line format + badges.
+  - This prevents future drift between the two flows.
+- **Version bump**: script version moved to `v104`.
+
+---
+
+## [v103]
+### Fixed
+
+- **Preview log now shows clip badges**:
+  - Inline indicators (`[KILL FILTER: ...]`, `[CONTAINS: ...]`, `[SAFE]`) are now rendered in **Preview** rows too, not only during batch run.
+  - Badge visibility still follows `Badges: ON/OFF`.
+- **Version bump**: script version moved to `v103`.
+
+---
+
+## [v102]
+### Added & Changed
+
+- **Resizable UI layout controls**:
+  - Added editable UI settings for window width/height and main split percentage.
+  - Added buttons: `Apply`, `Auto`, and `Reset default`.
+  - Added option `Remember current layout` to persist manual window resize and splitter moves.
+- **Persistent layout config keys**:
+  - `ui_window_w`, `ui_window_h`, `ui_split_pct`, `ui_remember_layout`.
+  - Layout is auto-saved through existing config persistence.
+- **Startup behavior updated**:
+  - App now starts using saved window dimensions and saved split ratio.
+- **Version bump**: script version moved to `v102`.
+
+---
+
+## [v101]
+### Added & Changed
+
+- **Log badge indicators for clip entries**:
+  - Each clip line can now show inline, human-readable badges:
+    - `[KILL FILTER: ...]` for active kill-filter matches
+    - `[CONTAINS: ...]` for detected content terms in clip events
+    - `[SAFE]` when no indicator condition is met
+  - Added consistent color coding in the log:
+    - red for kill-filter indicators
+    - amber for contains/warning indicators
+    - green for safe indicators
+- **Collapsible badge mode**:
+  - New log toggle button `Badges: ON/OFF` plus keyboard shortcut `Ctrl+B`.
+  - When OFF, badges are collapsed to reduce log density.
+- **Accessibility/UX improvements**:
+  - Indicator labels are plain text (screen-reader friendly) and keyboard toggleable.
+  - Tooltip explains badge toggle and shortcut.
+- **Version bump**: script version moved to `v101`.
+
+---
+
+## [v100]
+### Changed
+
+- **VirtualDub removed** from the app configuration and UI.
+- **Image export modes removed** (`images`, `images_and_video`): output is now fixed to `video`.
+- **Backward compatibility safety**:
+  - if an old config/preset contains `encoder=VirtualDub`, it is coerced to `FFmpeg`.
+  - if an old config/preset contains non-video `recording_output`, it is coerced to `video`.
+- **Version bump**: script version moved to `v100`.
+
+---
+
+## [v99]
+### Added & Changed
+
+- **CS mode vanilla injection implemented**: CS2 vanilla commands are now injected in CS mode through a managed runtime cfg pipeline instead of being only logged.
+- **New shared injection layer**:
+  - `_common_cs2_injection(cfg)` builds a common set of vanilla launch arguments and console commands shared by HLAE and CS.
+  - Shared section now includes physics/effects commands (`cl_ragdoll_gravity`, `ragdoll_gravity_scale`, `sv_gravity`, `cl_ragdoll_physics_enable`, `violence_hblood`, `r_dynamic`) and window-mode launch flags mapping.
+- **HLAE adapter refactor**:
+  - `_inject_hlae_extra_args(cfg, shared)` now consumes the shared section and appends HLAE-specific options (`hideSpectatorUi`, scope FOV fix, workshop download, custom extra args) in one place.
+  - Keeps `mirv_fov`, `host_timescale`, `afxStream` explicit fields while sharing vanilla commands through `extraArgs`.
+- **CS adapter added**:
+  - `_inject_cs_runtime_cfg(cfg, shared)` writes `csdm_batch_runtime.cfg` into the detected CS2 cfg directory and ensures `autoexec.cfg` executes it via a managed block.
+  - This enables vanilla commands in CS mode at game launch without relying on a non-existent CSDM JSON `csOptions.extraArgs`.
+  - If launch-only options are requested, the app now logs a clear warning that they are not injectable through current CSDM CS JSON.
+- **Steam library autodetection added**:
+  - `_resolve_cs2_cfg_dir(cfg)` resolves CS2 cfg folder from common Steam paths and `libraryfolders.vdf`.
+  - Optional manual override via new config key `cs2_cfg_dir`.
+- **Version bump**: script/doc version moved to `v99`.
+- **Game speed UI refactor**:
+  - `Slow-motion (%)` replaced with **`Game Speed (%)`**.
+  - Direct numeric input now supports `1..1000` with immediate live feedback (`%` + `x` multiplier).
+  - Preset buttons now include >100% values (`125`, `150`, `200`, `500`, `1000`).
+  - Value is sanitized/clamped and persists through existing config autosave.
+- **CFG robustness hardening**:
+  - Added strict parsers (`_cfg_int`, `_cfg_float`, `_cfg_bool`) with fallback + warning logs for invalid values.
+  - Runtime cfg injection no longer crashes on malformed config values.
+
+---
+
 ## [v98]
 ### Fixed & Changed
 

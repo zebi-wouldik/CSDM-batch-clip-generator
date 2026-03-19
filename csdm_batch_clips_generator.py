@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v98"""
+"""CSDM Batch Clips Generator v104"""
 
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
-import subprocess, threading, json, os, tempfile, time, shutil, re, uuid, random
+import subprocess, threading, json, os, tempfile, time, shutil, re, uuid, random, shlex
 import bisect, concurrent.futures
 from collections import defaultdict
 import calendar as cal_mod
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v98"
+APP_VERSION = "v104"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -46,13 +46,39 @@ CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csdm_con
 PRESETS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csdm_presets.json")
 PLAYERS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csdm_players.json")
 ASM_NAMES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "csdm_asm_names.json")
+CSDM_RUNTIME_CFG_NAME = "csdm_batch_runtime.cfg"
+CSDM_RUNTIME_BLOCK_START = "// >>> CSDM_BATCH_RUNTIME START >>>"
+CSDM_RUNTIME_BLOCK_END = "// <<< CSDM_BATCH_RUNTIME END <<<"
 
 EVENTS = ["Kills", "Deaths", "Rounds"]
-ENCODER_OPTIONS = ["FFmpeg", "VirtualDub"]
+ENCODER_OPTIONS = ["FFmpeg"]
 RECSYS_OPTIONS = ["HLAE", "CS"]
-REC_OUTPUT_OPTIONS = ["video", "images", "images_and_video"]
+REC_OUTPUT_OPTIONS = ["video"]
 VIDEO_CONTAINERS = ["mp4", "avi", "mkv", "mov", "webm"]
 PERSP_LABELS = {"killer": "POV Killer", "victim": "POV Victim", "both": "Both"}
+
+KILL_FILTER_LABELS = {
+    "kill_mod_trois_shot": "TROIS SHOT",
+    "kill_mod_no_trois_shot": "NO TROIS SHOT",
+    "kill_mod_trois_tap": "TROIS TAP",
+    "kill_mod_one_tap": "ONE TAP",
+    "kill_mod_spray_transfer": "SPRAY",
+    "kill_mod_high_velocity": "FERRARI PEEK",
+    "kill_mod_flick": "FLICK",
+    "kill_mod_sauveur": "SAVIOR",
+    "kill_mod_entry_frag": "ENTRY",
+    "kill_mod_ace": "ACE",
+    "kill_mod_multi_kill": "MULTI",
+    "kill_mod_bourreau": "BULLY",
+    "kill_mod_eco_frag": "ECO",
+    "kill_mod_attacker_blind": "BLIND",
+    "kill_mod_through_smoke": "THROUGH SMOKE",
+    "kill_mod_no_scope": "NO SCOPE",
+    "kill_mod_wall_bang": "WALLBANG",
+    "kill_mod_airborne": "AIRBORNE",
+    "kill_mod_assisted_flash": "ASSISTED FLASH",
+    "kill_mod_collateral": "COLLATERAL",
+}
 
 VIDEO_CODECS_INFO = {
     "libx264": "H.264 CPU — Universal, compatible everywhere.",
@@ -274,6 +300,11 @@ DEFAULT_CONFIG = {
     "output_dir_clips":    r"H:\CS\CSVideos\Raws",   # raw clips per demo
     "output_dir_concat":   "",   # concatenated clips (empty = same as raw)
     "output_dir_assembled": "",  # final assembled file (empty = same as raw)
+    "cs2_cfg_dir": "",
+    "ui_window_w": 1600,
+    "ui_window_h": 900,
+    "ui_split_pct": 60,
+    "ui_remember_layout": True,
     "steam_id": "", "player_name": "",
     "events": ["Kills"], "weapons": [],
     "date_from": "", "date_to": "",
@@ -355,7 +386,7 @@ DEFAULT_CONFIG = {
     "video_preset": "medium",
     # HLAE options (used when recsys == "HLAE")
     "hlae_fov": 90,
-    "hlae_slow_motion": 100,   # % of speed : 100 = normal, 50 = half-speed
+    "hlae_slow_motion": 100,   # game speed multiplier in % (100 = normal, 200 = 2x)
     "hlae_afx_stream": False,  # record separate HLAE AFX streams
     "hlae_no_spectator_ui": True,
     "hlae_fix_scope_fov": True,   # mirv_fov handleZoom enabled 1 — fixes scope FOV zoom override
@@ -1289,9 +1320,14 @@ def dp2_badge(parent):
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
+        self.cfg = load_config()
         self.title(f"CSDM Batch {APP_VERSION}")
         self.configure(bg=BG)
-        self.geometry("1600x900")
+        _w = int(self.cfg.get("ui_window_w", 1600) or 1600)
+        _h = int(self.cfg.get("ui_window_h", 900) or 900)
+        _w = max(1000, min(3840, _w))
+        _h = max(600, min(2160, _h))
+        self.geometry(f"{_w}x{_h}")
         self.minsize(1000, 600)
         self.option_add('*TCombobox*Listbox.background', BG3)
         self.option_add('*TCombobox*Listbox.foreground', TEXT)
@@ -1299,7 +1335,6 @@ class App(tk.Tk):
         self.option_add('*TCombobox*Listbox.selectForeground', "white")
         self.option_add('*TCombobox*Listbox.font', FONT_SM)
 
-        self.cfg = load_config()
         self.presets = load_presets()
         self._player_names = {}
         self._tags_list = []
@@ -1321,11 +1356,13 @@ class App(tk.Tk):
                      "cs2_window_mode",
                      "output_dir_clips", "output_dir_concat", "output_dir_assembled",
                      "assemble_output", "video_preset", "teamkills_mode", "phys_ragdoll_scale",
+                     "cs2_cfg_dir",
                      "clutch_clip_mode"]
         int_keys = ["before", "after", "tickrate", "width", "height", "framerate", "crf", "audio_bitrate",
                      "death_notices_duration", "retry_count", "retry_delay", "delay_between_demos",
                      "hlae_fov", "hlae_slow_motion",
                      "phys_ragdoll_gravity", "phys_sv_gravity",
+                     "ui_window_w", "ui_window_h", "ui_split_pct",
                      "victim_pre_s", "dp2_threads",
                      "kill_mod_multi_kill_n", "kill_mod_multi_kill_s",
                      "kill_mod_bourreau_n", "kill_mod_high_vel_thr", "kill_mod_flick_deg"]
@@ -1344,6 +1381,7 @@ class App(tk.Tk):
                       "assemble_after", "delete_after_assemble",
                       "phys_ragdoll_enable", "phys_blood", "phys_dynamic_lighting",
                       "cs2_minimize",
+                     "ui_remember_layout",
                       "clutch_enabled", "clutch_1v1", "clutch_1v2", "clutch_1v3",
                       "clutch_1v4", "clutch_1v5",
                       "clutch_require_win",]
@@ -1395,8 +1433,14 @@ class App(tk.Tk):
         self._date_col_type = ""      # actual SQL type of the date column
         self._pending_restore_sid  = None   # steam_id to restore once DB is ready
         self._pending_restore_tags = []     # tag names to restore once DB is ready
-        self._sm_cb = None                 # slow-motion combo reference (updated on preset load)
+        self._speed_feedback = None
+        self._game_speed_trace_busy = False
+        self._log_badges_enabled = tk.BooleanVar(value=True)
+        self._log_badges_btn = None
+        self._outer_paned = None
+        self._layout_cfg_job = None
 
+        self.v["hlae_slow_motion"].trace_add("write", self._on_game_speed_var)
         self._build_ui()
 
         # PlayerSearchWidget enables all accounts by default; override
@@ -1423,6 +1467,7 @@ class App(tk.Tk):
 
         # Init structured resolution selectors state (v60)
         self.after(50, self._on_res_custom_toggle)
+        self.bind("<Configure>", self._on_window_configure, add="+")
         self.after(60, self._update_res_preview)
 
         self._auto_save()
@@ -1465,6 +1510,10 @@ class App(tk.Tk):
             if k in ("date_from", "date_to"):
                 val = display_to_iso(val)
             cfg[k] = val
+        if cfg.get("encoder") not in ENCODER_OPTIONS:
+            cfg["encoder"] = "FFmpeg"
+        if cfg.get("recording_output") not in REC_OUTPUT_OPTIONS:
+            cfg["recording_output"] = "video"
         cfg["events"] = [e for e, v in self.sel_events.items() if v.get()]
         cfg["weapons"] = [w for w, v in self.sel_weapons.items() if v.get()]
         # Compat: output_dir mirrors output_dir_clips
@@ -1485,6 +1534,10 @@ class App(tk.Tk):
             if keys and k not in keys:
                 continue
             if k in self.v:
+                if k == "encoder" and val not in ENCODER_OPTIONS:
+                    val = "FFmpeg"
+                if k == "recording_output" and val not in REC_OUTPUT_OPTIONS:
+                    val = "video"
                 self.v[k].set(iso_to_display(str(val)) if k in ("date_from", "date_to") else val)
             elif k == "events":
                 for e in EVENTS:
@@ -2169,6 +2222,7 @@ class App(tk.Tk):
         # Right: run bar + vertical PanedWindow (notebook | log)
         outer = ttk.PanedWindow(self, orient="horizontal")
         outer.pack(fill="both", expand=True)
+        self._outer_paned = outer
 
         left_frame = tk.Frame(outer, bg=BG)
         outer.add(left_frame, weight=3)
@@ -2231,6 +2285,7 @@ class App(tk.Tk):
         self.bind("<F5>",     lambda e: self._run())
         self.bind("<F6>",     lambda e: self._dry_run())
         self.bind("<Escape>", lambda e: self._stop_graceful() if self._running else None)
+        self.bind("<Control-b>", self._toggle_log_badges)
 
         # Position the sash once the window is actually visible
         # Wait for <Map> event then force geometry
@@ -2239,10 +2294,16 @@ class App(tk.Tk):
             w = self.winfo_width()
             if w > 100:
                 try:
-                    outer.sashpos(0, int(w * 0.60))
+                    pct = self._clamp_layout_values(
+                        self.v["ui_window_w"].get(),
+                        self.v["ui_window_h"].get(),
+                        self.v["ui_split_pct"].get(),
+                    )[2]
+                    outer.sashpos(0, int(w * (pct / 100.0)))
                 except Exception:
                     pass
         self.bind("<Map>", _set_sash)
+        outer.bind("<ButtonRelease-1>", self._on_splitter_release, add="+")
 
     def _build_log_panel(self, parent):
         parent.rowconfigure(2, weight=1)
@@ -2265,6 +2326,16 @@ class App(tk.Tk):
         self._log_autoscroll = tk.BooleanVar(value=True)
         tk.Checkbutton(top, text="↓auto", variable=self._log_autoscroll,
                        **{**_CHK_KW, "font": FONT_DESC}).pack(side="right", padx=(0, 8))
+        self._log_badges_btn = tk.Button(
+            top, text="Badges: ON", font=FONT_DESC, bg=BG3, fg=GREEN,
+            relief="flat", bd=0, cursor="hand2",
+            activebackground=BORDER, activeforeground=ORANGE,
+            highlightthickness=0, command=self._toggle_log_badges
+        )
+        self._log_badges_btn.pack(side="right", padx=(0, 8), pady=3, ipady=2, ipadx=4)
+        add_tip(self._log_badges_btn,
+                "Toggle inline clip badges in log entries.\n"
+                "Keyboard: Ctrl+B")
 
         btn_bar = tk.Frame(parent, bg=BG3)
         btn_bar.grid(row=1, column=0, sticky="ew")
@@ -2326,6 +2397,9 @@ class App(tk.Tk):
         self._search_idx = 0
         self.log.tag_configure("search_hi",  background=ORANGE2, foreground="white")
         self.log.tag_configure("search_cur", background=ORANGE,  foreground="white")
+        self.log.tag_configure("badge_kill", foreground=RED)
+        self.log.tag_configure("badge_warn", foreground=YELLOW)
+        self.log.tag_configure("badge_safe", foreground=GREEN)
 
     def _log_get_text(self):
         return self.log.get("1.0", "end-1c")
@@ -3290,16 +3364,16 @@ class App(tk.Tk):
         rg.columnconfigure(1, weight=1)
         rg.columnconfigure(2, weight=1)
         for col, (title, opts, key, tip) in enumerate([
-            ("Encoder", ENCODER_OPTIONS, "encoder", "FFmpeg = standard. VirtualDub = legacy."),
+            ("Encoder", ENCODER_OPTIONS, "encoder", "FFmpeg only."),
             ("System",  RECSYS_OPTIONS,  "recsys",
              "HLAE = injects via HLAE into CS2 (recommended — full options).\n"
              "CS = native CSDM recording via CS2's startmovie command.\n\n"
              "⚠ HLAE-exclusive features not available in CS mode:\n"
              "  custom FOV (mirv_fov), AFX streams, No spectator UI,\n"
              "  Fix scope FOV, and other mirv_* commands.\n"
-             "ℹ CS2 Effects (physics, gravity, blood) are injected in HLAE mode.\n"
-             "  In CS mode they are not yet supported (no extraArgs in CS JSON)."),
-            ("Output", REC_OUTPUT_OPTIONS, "recording_output", "video / images / both.")
+             "ℹ Vanilla CS2 effects (physics, gravity, blood) are injected in both modes:\n"
+             "  HLAE via extraArgs, CS via autoexec + runtime cfg injection."),
+            ("Output", REC_OUTPUT_OPTIONS, "recording_output", "Video only.")
         ]):
             f = tk.Frame(rg, bg=BG2)
             f.grid(row=0, column=col, sticky="new", padx=(0, 12 if col < 2 else 0))
@@ -3511,18 +3585,28 @@ class App(tk.Tk):
         desc_label(fov_row, "  90 = default  |  100–110 = cinematic wide  |  60 = zoomed").pack(
             side="left", padx=(8, 0))
 
-        # Slow motion
+        # Game speed
         sm_row = tk.Frame(self._hlae_sec, bg=BG2)
         sm_row.pack(fill="x", pady=(6, 0))
-        mlabel(sm_row, "Slow-motion (%):").pack(side="left")
-        sm_cb = scombo(sm_row, tk.StringVar(), ["100", "75", "50", "33", "25", "10"], 6)
-        self._sm_cb = sm_cb
-        sm_cb.set(str(self.v["hlae_slow_motion"].get()))
-        sm_cb.pack(side="left", padx=(6, 0))
-        sm_cb.bind("<<ComboboxSelected>>",
-                   lambda e, c=sm_cb: self.v["hlae_slow_motion"].set(int(c.get())))
-        desc_label(sm_row, "  100 = real speed  |  50 = half speed  |  25 = quarter").pack(
-            side="left", padx=(8, 0))
+        _gs_lbl = mlabel(sm_row, "Game Speed (%):")
+        _gs_lbl.pack(side="left")
+        _gs_entry = sentry(sm_row, self.v["hlae_slow_motion"], width=7)
+        _gs_entry.pack(side="left", padx=(6, 0), ipady=4)
+        add_tip(_gs_lbl,
+                "Simulation speed multiplier.\n"
+                "100 = normal | 125 = 1.25x | 200 = 2x | max 1000.")
+        add_tip(_gs_entry,
+                "Direct numeric input.\n"
+                "Allowed range: 1..1000 (%).")
+        self._speed_feedback = tk.Label(sm_row, text="", font=FONT_SM, fg=ORANGE, bg=BG2)
+        self._speed_feedback.pack(side="left", padx=(8, 0))
+        for pv in ("50", "75", "100", "125", "150", "200", "500", "1000"):
+            tk.Button(sm_row, text=pv, font=FONT_DESC, bg=BG3, fg=TEXT,
+                      relief="flat", bd=0, cursor="hand2",
+                      activebackground=BORDER, activeforeground=ORANGE,
+                      command=lambda v=pv: self.v["hlae_slow_motion"].set(int(v))
+                      ).pack(side="left", padx=(4, 0), ipady=2, ipadx=3)
+        self._on_game_speed_var()
 
         # Bool options
         bool_opts = tk.Frame(self._hlae_sec, bg=BG2)
@@ -3557,8 +3641,8 @@ class App(tk.Tk):
         self._cs2_sec = Sec(p, "🎮 CS2 EFFECTS  —  both HLAE and CS modes")
         self._cs2_sec.pack(fill="x", pady=(0, 10))
         desc_label(self._cs2_sec,
-                   "Console commands injected via extraArgs at CS2 startup.\n"
-                   "Work in both HLAE and CS recording modes.").pack(fill="x")
+                   "Vanilla CS2 commands shared by both recording modes.\n"
+                   "HLAE: injected via extraArgs | CS: injected via autoexec + runtime cfg.").pack(fill="x")
 
         # CS2 window mode + minimize
         win_row = tk.Frame(self._cs2_sec, bg=BG2)
@@ -3566,8 +3650,9 @@ class App(tk.Tk):
         _wm_lbl = mlabel(win_row, "Window mode:")
         _wm_lbl.pack(side="left")
         add_tip(_wm_lbl,
-                "Launch flag injected into CS2 arguments.\n"
-                "Borderless = -windowed -noborder (recommended for background recording).")
+                "Launch flags: -fullscreen / -windowed / -noborder.\n"
+                "Applied in HLAE mode via extraArgs.\n"
+                "In CS mode, CSDM JSON has no launch-args field (warning shown in log).")
         for lbl, val in [("None","none"),("Fullscreen","fullscreen"),
                          ("Windowed","windowed"),("Borderless","noborder")]:
             hradio(win_row, lbl, self.v["cs2_window_mode"], val).pack(side="left", padx=(4, 0))
@@ -3676,6 +3761,114 @@ class App(tk.Tk):
                       activebackground=BORDER, activeforeground=RED,
                       command=lambda v=n: self._asm_delete_name(v)
                       ).pack(side="left", padx=(4, 0))
+
+    def _on_game_speed_var(self, *_):
+        if self._game_speed_trace_busy:
+            return
+        self._game_speed_trace_busy = True
+        try:
+            val = self._cfg_int({"v": self.v["hlae_slow_motion"].get()}, "v", 100, 1, 1000)
+            try:
+                current = int(self.v["hlae_slow_motion"].get())
+            except Exception:
+                current = None
+            if current != val:
+                self.v["hlae_slow_motion"].set(val)
+            if self._speed_feedback is not None and self._speed_feedback.winfo_exists():
+                self._speed_feedback.config(text=f"{val}%  ({val / 100:.2f}x)")
+        finally:
+            self._game_speed_trace_busy = False
+
+    def _clamp_layout_values(self, w, h, split):
+        try:
+            w = int(float(w))
+        except Exception:
+            w = 1600
+        try:
+            h = int(float(h))
+        except Exception:
+            h = 900
+        try:
+            split = int(float(split))
+        except Exception:
+            split = 60
+        w = max(1000, min(3840, w))
+        h = max(600, min(2160, h))
+        split = max(30, min(85, split))
+        return w, h, split
+
+    def _apply_layout_vars(self):
+        w, h, split = self._clamp_layout_values(
+            self.v["ui_window_w"].get(),
+            self.v["ui_window_h"].get(),
+            self.v["ui_split_pct"].get(),
+        )
+        self.v["ui_window_w"].set(w)
+        self.v["ui_window_h"].set(h)
+        self.v["ui_split_pct"].set(split)
+        self.geometry(f"{w}x{h}")
+        self.update_idletasks()
+        if self._outer_paned is not None:
+            try:
+                self._outer_paned.sashpos(0, int(self.winfo_width() * (split / 100.0)))
+            except Exception:
+                pass
+        self._log_flash(f"  ✓ UI layout applied: {w}x{h} | split {split}%", "ok")
+
+    def _auto_layout(self):
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        w = max(1000, min(3840, int(sw * 0.86)))
+        h = max(600, min(2160, int(sh * 0.84)))
+        self.v["ui_window_w"].set(w)
+        self.v["ui_window_h"].set(h)
+        self.v["ui_split_pct"].set(60)
+        self._apply_layout_vars()
+
+    def _reset_layout_defaults(self):
+        self.v["ui_window_w"].set(1600)
+        self.v["ui_window_h"].set(900)
+        self.v["ui_split_pct"].set(60)
+        self._apply_layout_vars()
+
+    def _on_splitter_release(self, event=None):
+        if self._outer_paned is None:
+            return
+        try:
+            total = max(1, self.winfo_width())
+            split = int(round(self._outer_paned.sashpos(0) * 100 / total))
+            split = self._clamp_layout_values(1600, 900, split)[2]
+            self.v["ui_split_pct"].set(split)
+        except Exception:
+            pass
+
+    def _on_window_configure(self, event=None):
+        if not self.v["ui_remember_layout"].get():
+            return
+        if self.state() != "normal":
+            return
+        if self._layout_cfg_job is not None:
+            try:
+                self.after_cancel(self._layout_cfg_job)
+            except Exception:
+                pass
+        self._layout_cfg_job = self.after(250, self._remember_layout_state)
+
+    def _remember_layout_state(self):
+        self._layout_cfg_job = None
+        if not self.v["ui_remember_layout"].get():
+            return
+        if self.state() != "normal":
+            return
+        try:
+            w = self.winfo_width()
+            h = self.winfo_height()
+            w, h, _ = self._clamp_layout_values(w, h, self.v["ui_split_pct"].get())
+            self.v["ui_window_w"].set(w)
+            self.v["ui_window_h"].set(h)
+            self._on_splitter_release()
+        except Exception:
+            pass
 
     def _on_recsys_change(self, *_):
         try:
@@ -5291,6 +5484,13 @@ class App(tk.Tk):
         sec.pack(fill="x", pady=(0, 10))
         PathField(sec, "CSDM Executable", "csdm.CMD or csdm.exe",
                   self.v["csdm_exe"], "file").pack(fill="x", pady=4)
+        _pf_cfg = PathField(sec, "CS2 cfg folder",
+                  r"Optional override (…\Counter-Strike Global Offensive\game\csgo\cfg)",
+                  self.v["cs2_cfg_dir"], "dir")
+        _pf_cfg.pack(fill="x", pady=4)
+        add_tip(_pf_cfg, "Optional manual override for CS2 cfg directory.\n"
+                         "Used by CS mode to inject csdm_batch_runtime.cfg and autoexec block.\n"
+                         "Leave empty to use automatic Steam library detection.")
         _pf_clips = PathField(sec, "Raw clips folder",
                   "A subfolder per demo is created here",
                   self.v["output_dir_clips"], "dir")
@@ -5312,6 +5512,35 @@ class App(tk.Tk):
         _sub_cb = hchk(sec, "Subfolder per demo", self.v["subfolder_per_demo"])
         _sub_cb.pack(anchor="w", pady=(4, 0))
         add_tip(_sub_cb, "Creates a folder per demo in the raw clips folder.")
+
+        sec = Sec(p, "UI LAYOUT")
+        sec.pack(fill="x", pady=(0, 12))
+        row = tk.Frame(sec, bg=BG2)
+        row.pack(fill="x", pady=(6, 0))
+        mlabel(row, "Window").pack(side="left")
+        sentry(row, self.v["ui_window_w"], width=7).pack(side="left", padx=(8, 4), ipady=4)
+        tk.Label(row, text="x", font=FONT_SM, fg=MUTED, bg=BG2).pack(side="left")
+        sentry(row, self.v["ui_window_h"], width=7).pack(side="left", padx=(4, 10), ipady=4)
+        mlabel(row, "Split %").pack(side="left")
+        sentry(row, self.v["ui_split_pct"], width=5).pack(side="left", padx=(8, 0), ipady=4)
+
+        row2 = tk.Frame(sec, bg=BG2)
+        row2.pack(fill="x", pady=(8, 0))
+        tk.Button(row2, text="Apply", font=FONT_SM, bg=BG3, fg=TEXT,
+                  relief="flat", bd=0, cursor="hand2",
+                  activebackground=BORDER, activeforeground=ORANGE,
+                  command=self._apply_layout_vars).pack(side="left", ipady=5, ipadx=8)
+        tk.Button(row2, text="Auto", font=FONT_SM, bg=BG3, fg=BLUE,
+                  relief="flat", bd=0, cursor="hand2",
+                  activebackground=BORDER, activeforeground=ORANGE,
+                  command=self._auto_layout).pack(side="left", padx=(6, 0), ipady=5, ipadx=8)
+        tk.Button(row2, text="Reset default", font=FONT_SM, bg=BG3, fg=YELLOW,
+                  relief="flat", bd=0, cursor="hand2",
+                  activebackground=BORDER, activeforeground=ORANGE,
+                  command=self._reset_layout_defaults).pack(side="left", padx=(6, 0), ipady=5, ipadx=8)
+        _rem = hchk(row2, "Remember current layout", self.v["ui_remember_layout"])
+        _rem.pack(side="left", padx=(12, 0))
+        add_tip(_rem, "When enabled, manual window resize and splitter moves are saved automatically.")
 
         sec = Sec(p, "POSTGRESQL CONNECTION")
         sec.pack(fill="x", pady=(0, 12))
@@ -5441,12 +5670,7 @@ class App(tk.Tk):
             self._update_res_preview()
         except Exception:
             pass
-        # Combo slow-motion (StringVar anonyme → maj manuelle)
-        try:
-            if self._sm_cb is not None:
-                self._sm_cb.set(str(self.v["hlae_slow_motion"].get()))
-        except Exception:
-            pass
+        self._on_game_speed_var()
 
     def _delete_preset(self, name):
         if messagebox.askyesno("Delete", f"Delete '{name}'?"):
@@ -5684,13 +5908,93 @@ class App(tk.Tk):
             self.log.see("end")
         self.log.configure(state="disabled")
 
+    def _log_parts(self, parts):
+        self.log.configure(state="normal")
+        for txt, tag in parts:
+            self.log.insert("end", txt, tag or "")
+        self.log.insert("end", "\n")
+        if self._log_autoscroll.get():
+            self.log.see("end")
+        self.log.configure(state="disabled")
+
     def _alog(self, msg, tag=""):
         self.after(0, lambda m=msg, t=tag: self._log(m, t))
+
+    def _alog_parts(self, parts):
+        self.after(0, lambda p=parts: self._log_parts(p))
 
     def _clear_log(self):
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
+
+    def _toggle_log_badges(self, event=None):
+        try:
+            self._log_badges_enabled.set(not self._log_badges_enabled.get())
+            on = self._log_badges_enabled.get()
+            if self._log_badges_btn is not None and self._log_badges_btn.winfo_exists():
+                self._log_badges_btn.config(
+                    text=f"Badges: {'ON' if on else 'OFF'}",
+                    fg=GREEN if on else MUTED
+                )
+            self._log_flash(
+                f"  {'✓' if on else 'ℹ'} Clip badges {'enabled' if on else 'collapsed'}.",
+                "ok" if on else "dim"
+            )
+        except Exception:
+            pass
+        return "break"
+
+    def _build_clip_badges(self, events, cfg):
+        badges = []
+        kill_events = [e for e in events if e.get("type") == "kill"]
+        active_filters = [label for key, label in KILL_FILTER_LABELS.items() if cfg.get(key)]
+        if active_filters and kill_events:
+            shown = ", ".join(active_filters[:2])
+            if len(active_filters) > 2:
+                shown += f" +{len(active_filters)-2}"
+            badges.append((f" [KILL FILTER: {shown}]", "badge_kill"))
+
+        weapons = {str(e.get("weapon", "")).lower().strip() for e in events if e.get("weapon")}
+        contains_terms = []
+        for term in ("awp", "deagle", "knife", "he grenade", "molotov", "flashbang", "smoke"):
+            if any(term in w for w in weapons):
+                contains_terms.append(term.upper())
+        if contains_terms:
+            badges.append((f" [CONTAINS: {', '.join(contains_terms[:2])}{' +' + str(len(contains_terms)-2) if len(contains_terms)>2 else ''}]",
+                           "badge_warn"))
+
+        if not badges:
+            badges.append((" [SAFE]", "badge_safe"))
+        return badges
+
+    def _build_demo_log_base(self, date_str, demo_name, event_count, seq_count, idx=None, total=None, timing_str=""):
+        if idx is not None and total is not None:
+            return f"\n[{idx}/{total}]  {date_str}  {demo_name}  ({event_count} events → {seq_count} seq){timing_str}"
+        return f"  {date_str}  {demo_name}  ({event_count} events → {seq_count} seq){timing_str}"
+
+    def _emit_demo_log_entry(self, date_str, demo_name, events, seq_count, cfg, idx=None, total=None, timing_str="", async_emit=False):
+        base = self._build_demo_log_base(
+            date_str=date_str,
+            demo_name=demo_name,
+            event_count=len(events),
+            seq_count=seq_count,
+            idx=idx,
+            total=total,
+            timing_str=timing_str,
+        )
+        if self._log_badges_enabled.get():
+            parts = [(base, "blue")]
+            parts.extend(self._build_clip_badges(events, cfg))
+            if async_emit:
+                self._alog_parts(parts)
+            else:
+                self._log_parts(parts)
+            return
+        if async_emit:
+            self._alog(base, "blue")
+        else:
+            self._log(base, "blue")
 
     # ═══════════════════════════════════════════════════
     #  CLI + BDD queries
@@ -6563,6 +6867,197 @@ class App(tk.Tk):
             return f"{pn} ({sids[0]})"
         return "  +  ".join(self._player_names.get(s, s) for s in sids)
 
+    def _cfg_int(self, cfg, key, default, lo=None, hi=None):
+        raw = cfg.get(key, default)
+        try:
+            val = int(float(str(raw).strip()))
+        except Exception:
+            self._alog(f"  ⚠ cfg '{key}' invalid ({raw}) — fallback {default}", "warn")
+            val = int(default)
+        if lo is not None:
+            val = max(lo, val)
+        if hi is not None:
+            val = min(hi, val)
+        return val
+
+    def _cfg_float(self, cfg, key, default, lo=None, hi=None):
+        raw = cfg.get(key, default)
+        try:
+            val = float(str(raw).strip())
+        except Exception:
+            self._alog(f"  ⚠ cfg '{key}' invalid ({raw}) — fallback {default}", "warn")
+            val = float(default)
+        if lo is not None:
+            val = max(lo, val)
+        if hi is not None:
+            val = min(hi, val)
+        return val
+
+    def _cfg_bool(self, cfg, key, default):
+        raw = cfg.get(key, default)
+        if isinstance(raw, bool):
+            return raw
+        if isinstance(raw, (int, float)):
+            return bool(raw)
+        if isinstance(raw, str):
+            s = raw.strip().lower()
+            if s in {"1", "true", "yes", "on"}:
+                return True
+            if s in {"0", "false", "no", "off"}:
+                return False
+        self._alog(f"  ⚠ cfg '{key}' invalid ({raw}) — fallback {default}", "warn")
+        return bool(default)
+
+    def _common_cs2_injection(self, cfg):
+        launch_args = []
+        wm = cfg.get("cs2_window_mode", "none")
+        wm_map = {
+            "fullscreen": "-fullscreen",
+            "windowed": "-windowed",
+            "noborder": "-windowed -noborder",
+        }
+        if wm in wm_map:
+            launch_args.extend(wm_map[wm].split())
+
+        cmds = [
+            f"cl_ragdoll_gravity {self._cfg_int(cfg, 'phys_ragdoll_gravity', 600, -5000, 5000)}",
+            f"ragdoll_gravity_scale {self._cfg_float(cfg, 'phys_ragdoll_scale', 1.0, -10.0, 10.0)}",
+            f"sv_gravity {self._cfg_int(cfg, 'phys_sv_gravity', 800, -5000, 5000)}",
+            f"cl_ragdoll_physics_enable {1 if self._cfg_bool(cfg, 'phys_ragdoll_enable', True) else 0}",
+            f"violence_hblood {1 if self._cfg_bool(cfg, 'phys_blood', True) else 0}",
+            f"r_dynamic {1 if self._cfg_bool(cfg, 'phys_dynamic_lighting', True) else 0}",
+        ]
+        return {"launch_args": launch_args, "console_cmds": cmds}
+
+    def _resolve_cs2_cfg_dir(self, cfg):
+        hint = (cfg.get("cs2_cfg_dir") or "").strip()
+        candidates = [hint] if hint else []
+
+        pf86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+        steam_roots = [os.path.join(pf86, "Steam")]
+        steam_roots.extend([
+            r"C:\Steam",
+            r"D:\Steam",
+            r"E:\Steam",
+            r"F:\Steam",
+        ])
+
+        seen = set()
+        for root in steam_roots:
+            if not root or root in seen:
+                continue
+            seen.add(root)
+            candidates.append(
+                os.path.join(root, "steamapps", "common",
+                             "Counter-Strike Global Offensive", "game", "csgo", "cfg")
+            )
+            lib_vdf = os.path.join(root, "steamapps", "libraryfolders.vdf")
+            if os.path.isfile(lib_vdf):
+                try:
+                    txt = Path(lib_vdf).read_text(encoding="utf-8", errors="ignore")
+                    for p in re.findall(r'"path"\s*"([^"]+)"', txt):
+                        p = p.replace("\\\\", "\\")
+                        candidates.append(
+                            os.path.join(p, "steamapps", "common",
+                                         "Counter-Strike Global Offensive", "game", "csgo", "cfg")
+                        )
+                except Exception:
+                    pass
+
+        for c in candidates:
+            if c and os.path.isdir(c):
+                return c
+        return ""
+
+    def _inject_cs_runtime_cfg(self, cfg, shared):
+        cfg_dir = self._resolve_cs2_cfg_dir(cfg)
+        if not cfg_dir:
+            self._alog("  ⚠ CS injection: CS2 cfg folder not found. "
+                       "Set cs2_cfg_dir in csdm_config.json.", "warn")
+            return False
+
+        runtime_cmds = list(shared.get("console_cmds", []))
+        sm = self._cfg_int(cfg, "hlae_slow_motion", 100, 1, 1000)
+        if sm != 100:
+            runtime_cmds.append(f"host_timescale {round(sm / 100.0, 4)}")
+        if self._cfg_bool(cfg, "hlae_workshop_download", False):
+            runtime_cmds.append("cl_downloadfilter all")
+        if self._cfg_bool(cfg, "hlae_no_spectator_ui", True):
+            runtime_cmds.append("cl_draw_only_deathnotices 1")
+
+        if not runtime_cmds:
+            return True
+
+        runtime_cfg_path = os.path.join(cfg_dir, CSDM_RUNTIME_CFG_NAME)
+        try:
+            Path(runtime_cfg_path).write_text("\n".join(runtime_cmds) + "\n",
+                                              encoding="utf-8")
+        except Exception as e:
+            self._alog(f"  ⚠ CS injection: failed to write runtime cfg: {e}", "warn")
+            return False
+
+        autoexec_path = os.path.join(cfg_dir, "autoexec.cfg")
+        try:
+            if os.path.isfile(autoexec_path):
+                current = Path(autoexec_path).read_text(encoding="utf-8", errors="ignore")
+            else:
+                current = ""
+            block = f"{CSDM_RUNTIME_BLOCK_START}\nexec {Path(CSDM_RUNTIME_CFG_NAME).stem}\n{CSDM_RUNTIME_BLOCK_END}\n"
+            pattern = re.compile(
+                rf"{re.escape(CSDM_RUNTIME_BLOCK_START)}.*?{re.escape(CSDM_RUNTIME_BLOCK_END)}\n?",
+                re.S
+            )
+            if pattern.search(current):
+                updated = pattern.sub(block, current)
+            else:
+                sep = "" if (not current or current.endswith("\n")) else "\n"
+                updated = f"{current}{sep}{block}"
+            Path(autoexec_path).write_text(updated, encoding="utf-8")
+        except Exception as e:
+            self._alog(f"  ⚠ CS injection: failed to update autoexec.cfg: {e}", "warn")
+            return False
+
+        self._alog(f"  🎮 CS injection ready: {runtime_cfg_path}", "dim")
+        if shared.get("launch_args"):
+            self._alog(
+                f"  ⚠ CS launch options not injectable via CSDM JSON: {' '.join(shared['launch_args'])}",
+                "warn")
+        return True
+
+    def _inject_hlae_extra_args(self, cfg, shared):
+        hlae_options = {}
+        fov = self._cfg_int(cfg, "hlae_fov", 90, 1, 179)
+        if fov and int(fov) != 90:
+            hlae_options["mirv_fov"] = int(fov)
+        slow_mo = self._cfg_int(cfg, "hlae_slow_motion", 100, 1, 1000)
+        if slow_mo and int(slow_mo) != 100:
+            hlae_options["host_timescale"] = round(int(slow_mo) / 100.0, 4)
+        if self._cfg_bool(cfg, "hlae_afx_stream", False):
+            hlae_options["afxStream"] = True
+        if self._cfg_bool(cfg, "hlae_no_spectator_ui", True):
+            hlae_options["hideSpectatorUi"] = True
+
+        tokens = []
+        tokens.extend(shared.get("launch_args", []))
+        tokens.extend(f"+{c}" for c in shared.get("console_cmds", []))
+        if self._cfg_bool(cfg, "hlae_no_spectator_ui", True):
+            tokens.append("+cl_draw_only_deathnotices 1")
+        if self._cfg_bool(cfg, "hlae_fix_scope_fov", True):
+            tokens.append("+mirv_fov handleZoom enabled 1")
+        if self._cfg_bool(cfg, "hlae_workshop_download", False):
+            tokens.append("+cl_downloadfilter all")
+
+        extra_raw = cfg.get("hlae_extra_args", "").strip()
+        if extra_raw:
+            try:
+                tokens.extend(shlex.split(extra_raw, posix=False))
+            except Exception:
+                tokens.extend(extra_raw.split())
+
+        if tokens:
+            hlae_options["extraArgs"] = " ".join(tokens)
+        return hlae_options
+
     def _build_json(self, demo_path, sequences, cfg):
         # In multi-player, sid = first SID (JSON compat), but we determine
         # the "owner" of each event dynamically from killer_sid/victim_sid.
@@ -6753,76 +7248,8 @@ class App(tk.Tk):
             od = os.path.join(od, safe_folder_name(Path(demo_path).name))
             os.makedirs(od, exist_ok=True)
 
-        # --- HLAE extra options (HLAE mode only) ---
-        hlae_options = {}
-        if recsys == "HLAE":
-            fov = cfg.get("hlae_fov", 90)
-            if fov and int(fov) != 90:
-                hlae_options["mirv_fov"] = int(fov)
-            slow_mo = cfg.get("hlae_slow_motion", 100)
-            if slow_mo and int(slow_mo) != 100:
-                hlae_options["host_timescale"] = round(int(slow_mo) / 100.0, 4)
-            if cfg.get("hlae_afx_stream", False):
-                hlae_options["afxStream"] = True
-            extra = cfg.get("hlae_extra_args", "").strip()
-            if cfg.get("hlae_no_spectator_ui", True):
-                hlae_options["hideSpectatorUi"] = True
-                _spec_cmd = "+cl_draw_only_deathnotices 1"
-                if _spec_cmd not in extra:
-                    extra = (_spec_cmd + " " + extra).strip()
-            if cfg.get("hlae_fix_scope_fov", True):
-                _scope_cmd = "+mirv_fov handleZoom enabled 1"
-                if _scope_cmd not in extra:
-                    extra = (_scope_cmd + " " + extra).strip()
-            if cfg.get("hlae_workshop_download", False):
-                dl_arg = "+cl_downloadfilter all"
-                if dl_arg not in extra:
-                    extra = (dl_arg + " " + extra).strip()
-
-            # CS2 window mode (HLAE only — injected via extraArgs)
-            wm = cfg.get("cs2_window_mode", "none")
-            _WM_FLAGS = {
-                "fullscreen": "-fullscreen",
-                "windowed":   "-windowed",
-                "noborder":   "-windowed -noborder",
-            }
-            wm_flag = _WM_FLAGS.get(wm, "")
-            if wm_flag and wm_flag not in extra:
-                extra = (wm_flag + " " + extra).strip()
-
-            if extra:
-                hlae_options["extraArgs"] = extra
-
-        # --- CS2 EFFECTS — injected in both HLAE and CS modes via extraArgs ---
-        # Physics console commands are appended to hlaeOptions.extraArgs (HLAE)
-        # or to a standalone csOptions.extraArgs equivalent when available.
-        # For now both modes use the same extraArgs mechanism; CSDM forwards them.
-        phys_cmds = []
-        rg = cfg.get("phys_ragdoll_gravity", 600)
-        if int(rg) != 600:
-            phys_cmds.append(f"+cl_ragdoll_gravity {rg}")
-        rs = cfg.get("phys_ragdoll_scale", "1.0")
-        if float(rs) != 1.0:
-            phys_cmds.append(f"+ragdoll_gravity_scale {rs}")
-        sg = cfg.get("phys_sv_gravity", 800)
-        if int(sg) != 800:
-            phys_cmds.append(f"+sv_gravity {sg}")
-        if not cfg.get("phys_ragdoll_enable", True):
-            phys_cmds.append("+cl_ragdoll_physics_enable 0")
-        if not cfg.get("phys_blood", True):
-            phys_cmds.append("+violence_hblood 0")
-        if not cfg.get("phys_dynamic_lighting", True):
-            phys_cmds.append("+r_dynamic 0")
-        if phys_cmds:
-            phys_str = " ".join(phys_cmds)
-            if recsys == "HLAE":
-                # Append to HLAE extraArgs already built above
-                cur_extra = hlae_options.get("extraArgs", "")
-                hlae_options["extraArgs"] = (phys_str + " " + cur_extra).strip()
-            else:
-                # CS mode: store for injection if CSDM gains csOptions support
-                # Currently logged as informational only
-                self._alog(f"  🎮 CS2 effects: {phys_str}", "dim")
+        shared_injection = self._common_cs2_injection(cfg)
+        hlae_options = self._inject_hlae_extra_args(cfg, shared_injection) if recsys == "HLAE" else {}
 
         # Encoding preset — injected into outputParameters for CPU codecs only
         # GPU codecs (NVENC/AMF) ignore -preset from libx264/libx265
@@ -7260,10 +7687,13 @@ class App(tk.Tk):
                 total_ticks += s["end_tick"] - s["start_tick"]
             date_str = self._format_demo_date(dp)
             demo_dates[dp] = date_str
-            self._log(
-                f"  {date_str}  {Path(dp).name}  "
-                f"({len(evts[dp])} events → {len(seqs)} seq)",
-                "blue")
+            self._emit_demo_log_entry(
+                date_str=date_str,
+                demo_name=Path(dp).name,
+                events=evts[dp],
+                seq_count=len(seqs),
+                cfg=cfg,
+            )
         known_dates = {d for d in demo_dates.values() if d != "??-??-????"}
         if len(known_dates) == 1 and len(sorted_demos) > 3:
             self._log(
@@ -7543,6 +7973,8 @@ class App(tk.Tk):
                 hlae_info += f" | Phys: {' '.join(phys_parts)}"
         self._alog(f"Encoder: {cfg['encoder']} | RecSys: {recsys}{hlae_info} | TrueView: {'ON' if tv else 'OFF'} | Perspective: {PERSP_LABELS.get(perspective, perspective)}{tag_str}", "info")
         if recsys == "CS":
+            _shared = self._common_cs2_injection(cfg)
+            self._inject_cs_runtime_cfg(cfg, _shared)
             self._alog(
                 "  ⚠ RecSys CS: CS2 replays the demo from tick 0 to reach the target tick.\n"
                 "  Each clip will take as long as the full demo before the event.\n"
@@ -7787,9 +8219,17 @@ class App(tk.Tk):
                 if t_seq > 0.001:
                     _parts.append(f"seq {t_seq*1000:.1f}ms")
                 _timing_str = f"  ⏱ {' '.join(_parts)}"
-            self.after(0, lambda n=dn, ns=len(seqs), ne=len(events), idx=i, ds=date_str, ts=_timing_str:
-                       self._log(
-                           f"\n[{idx}/{len(demo_list)}]  {ds}  {n}  ({ne} events → {ns} seq){ts}", "blue"))
+            self._emit_demo_log_entry(
+                date_str=date_str,
+                demo_name=dn,
+                events=events,
+                seq_count=len(seqs),
+                cfg=cfg,
+                idx=i,
+                total=len(demo_list),
+                timing_str=_timing_str,
+                async_emit=True,
+            )
             if not os.path.isfile(ad):
                 self._alog(f"  SKIP: {ad}", "warn")
                 summary.append((dn, "SKIP", 0, 0, "Not found"))

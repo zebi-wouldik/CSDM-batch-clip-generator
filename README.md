@@ -116,10 +116,15 @@ Two systems available: **HLAE** (recommended) and **CS** (native). The HLAE-spec
 | Slow motion | ✅ | ❌ |
 | AFX streams | ✅ | ❌ |
 | Hide spectator UI | ✅ | ❌ |
-| CS2 effects (physics, gravity, blood) | ✅ | ⚠️ |
+| CS2 effects (physics, gravity, blood) | ✅ | ✅ |
 | TrueView | ✅ | ✅ |
 
-> CS2 effects use standard CS2 console commands — they don't require HLAE. In HLAE mode they are injected via `hlaeOptions.extraArgs`. In CS mode, CSDM's JSON schema has no `extraArgs` field to inject them through, so they are currently ignored.
+> CS2 effects use standard CS2 console commands — they don't require HLAE.
+>  
+> - **HLAE mode**: injected through `hlaeOptions.extraArgs` (plus HLAE-specific options).
+> - **CS mode**: injected through a managed runtime cfg (`csdm_batch_runtime.cfg`) automatically executed from `autoexec.cfg`.
+>  
+> If CS2 cfg path cannot be auto-detected, set `cs2_cfg_dir` in `csdm_config.json`.
 
 ---
 
