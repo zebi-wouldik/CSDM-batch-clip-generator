@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v133.33"""
+"""CSDM Batch Clips Generator v133.35"""
 
 
 import tkinter as tk
@@ -20,7 +20,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v133.33"
+APP_VERSION = "v133.35"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -1611,8 +1611,9 @@ class App(tk.Tk):
         self._kill_triggered = False
         self._tagged_this_batch = []   # [(demo_path, tag_name)] — for rollback on kill
         self._proc = None
-        self._dp2_cache      = {}                  # {demo_path: {"fire_detail": …, "fire_ticks": …}}
+        self._dp2_cache      = {}                  # {demo_path: {…}}
         self._dp2_cache_lock = threading.Lock()    # protects _dp2_cache during parallel pre-parse
+        self._dp2_cache_order: list = []           # LRU insertion order for eviction
         self._db_schema = {}
         self._db_col_types = {}
         self._date_col = None
@@ -1823,178 +1824,179 @@ class App(tk.Tk):
         def task():
             try:
                 conn = self._pg_fresh()
-                with conn.cursor() as cur:
-                    schema = {}
-                    col_types = {}
-                    for t in ["kills", "matches", "rounds", "players", "tags",
-                              "checksum_tags", "match_tags"]:
-                        cur.execute(
-                            "SELECT column_name, data_type FROM information_schema.columns "
-                            "WHERE table_name=%s ORDER BY ordinal_position", (t,))
-                        ri = cur.fetchall()
-                        cols = [r[0] for r in ri]
-                        types = {r[0]: r[1] for r in ri}
-                        if cols:
-                            schema[t] = cols
-                            col_types[t] = types
-
-                    # Fetch players with their last-seen match date for sorting
-                    _m_cols_check = schema.get("matches", [])
-                    _date_col_for_players = next(
-                        (c for c in _m_cols_check
-                         if col_types.get("matches", {}).get(c, "").lower()
-                         in {"date","timestamp","timestamp with time zone",
-                             "timestamp without time zone","timestamptz","bigint","integer","int","int4","int8"}
-                         and "analyze" not in c.lower()),
-                        None)
-                    _pmk_col = next(
-                        (c for c in schema.get("players", [])
-                         if c.lower() in ("match_checksum","match_id","checksum")),
-                        None)
-                    _mmk_col = next(
-                        (c for c in schema.get("matches", [])
-                         if c.lower() in ("checksum","id","match_id")),
-                        None)
-                    if _date_col_for_players and _pmk_col and _mmk_col:
-                        try:
+                try:
+                    with conn.cursor() as cur:
+                        schema = {}
+                        col_types = {}
+                        for t in ["kills", "matches", "rounds", "players", "tags",
+                                  "checksum_tags", "match_tags"]:
                             cur.execute(
-                                f'SELECT DISTINCT p.name, p.steam_id, '
-                                f'MAX(m."{_date_col_for_players}") as last_seen '
-                                f'FROM players p '
-                                f'LEFT JOIN matches m ON m."{_mmk_col}" = p."{_pmk_col}" '
-                                f'WHERE p.name IS NOT NULL AND p.steam_id IS NOT NULL '
-                                f"AND p.name!='' AND p.steam_id!='' "
-                                f'GROUP BY p.name, p.steam_id ORDER BY p.name')
-                            rows = [(r[0], r[1], r[2]) for r in cur.fetchall()]
-                        except Exception:
+                                "SELECT column_name, data_type FROM information_schema.columns "
+                                "WHERE table_name=%s ORDER BY ordinal_position", (t,))
+                            ri = cur.fetchall()
+                            cols = [r[0] for r in ri]
+                            types = {r[0]: r[1] for r in ri}
+                            if cols:
+                                schema[t] = cols
+                                col_types[t] = types
+
+                        # Fetch players with their last-seen match date for sorting
+                        _m_cols_check = schema.get("matches", [])
+                        _date_col_for_players = next(
+                            (c for c in _m_cols_check
+                             if col_types.get("matches", {}).get(c, "").lower()
+                             in {"date","timestamp","timestamp with time zone",
+                                 "timestamp without time zone","timestamptz","bigint","integer","int","int4","int8"}
+                             and "analyze" not in c.lower()),
+                            None)
+                        _pmk_col = next(
+                            (c for c in schema.get("players", [])
+                             if c.lower() in ("match_checksum","match_id","checksum")),
+                            None)
+                        _mmk_col = next(
+                            (c for c in schema.get("matches", [])
+                             if c.lower() in ("checksum","id","match_id")),
+                            None)
+                        if _date_col_for_players and _pmk_col and _mmk_col:
+                            try:
+                                cur.execute(
+                                    f'SELECT DISTINCT p.name, p.steam_id, '
+                                    f'MAX(m."{_date_col_for_players}") as last_seen '
+                                    f'FROM players p '
+                                    f'LEFT JOIN matches m ON m."{_mmk_col}" = p."{_pmk_col}" '
+                                    f'WHERE p.name IS NOT NULL AND p.steam_id IS NOT NULL '
+                                    f"AND p.name!='' AND p.steam_id!='' "
+                                    f'GROUP BY p.name, p.steam_id ORDER BY p.name')
+                                rows = [(r[0], r[1], r[2]) for r in cur.fetchall()]
+                            except Exception:
+                                cur.execute(
+                                    "SELECT DISTINCT p.name, p.steam_id FROM players p "
+                                    "WHERE p.name IS NOT NULL AND p.steam_id IS NOT NULL "
+                                    "AND p.name!='' AND p.steam_id!='' ORDER BY p.name")
+                                rows = [(r[0], r[1], None) for r in cur.fetchall()]
+                        else:
                             cur.execute(
                                 "SELECT DISTINCT p.name, p.steam_id FROM players p "
                                 "WHERE p.name IS NOT NULL AND p.steam_id IS NOT NULL "
                                 "AND p.name!='' AND p.steam_id!='' ORDER BY p.name")
                             rows = [(r[0], r[1], None) for r in cur.fetchall()]
-                    else:
+
+                        _m_types = col_types.get("matches", {})
+                        _m_cols  = schema.get("matches", [])
+                        _DATE_TYPES = {
+                            "date", "timestamp", "timestamp with time zone",
+                            "timestamp without time zone", "timestamptz",
+                        }
+                        _INT_TYPES = {"bigint", "integer", "int", "int4", "int8",
+                                      "smallint", "int2", "numeric"}
+
+                        # Candidate columns: date/timestamp type, OR bigint with date-like name,
+                        # OR text with 'date'/'time' in name
+                        _candidates = []
+                        for c in _m_cols:
+                            t = _m_types.get(c, "").lower()
+                            clow = c.lower()
+                            if t in _DATE_TYPES:
+                                _candidates.append(c)
+                            elif any(it in t for it in _INT_TYPES) and (
+                                    "date" in clow or "time" in clow or "played" in clow):
+                                _candidates.append(c)
+                            elif "text" in t and ("date" in clow or "time" in clow):
+                                _candidates.append(c)
+
+                        _SUSPECT = ("analyze", "created", "import", "added", "updated")
+                        best_col, best_score = None, -1
+                        for c in _candidates:
+                            try:
+                                cur.execute(
+                                    f'SELECT COUNT(DISTINCT "{c}") FROM '
+                                    f'(SELECT "{c}" FROM matches '
+                                    f' WHERE "{c}" IS NOT NULL LIMIT 30) sub')
+                                n_distinct = cur.fetchone()[0] or 0
+                            except Exception:
+                                n_distinct = 0
+                            penalty = 5 if any(s in c.lower() for s in _SUSPECT) else 0
+                            score = n_distinct - penalty
+                            if score > best_score:
+                                best_score = score
+                                best_col = c
+
+                        dc = best_col
+                        dc_type = _m_types.get(dc, "").lower() if dc else ""
+
                         cur.execute(
-                            "SELECT DISTINCT p.name, p.steam_id FROM players p "
-                            "WHERE p.name IS NOT NULL AND p.steam_id IS NOT NULL "
-                            "AND p.name!='' AND p.steam_id!='' ORDER BY p.name")
-                        rows = [(r[0], r[1], None) for r in cur.fetchall()]
+                            "SELECT DISTINCT weapon_name FROM kills "
+                            "WHERE weapon_name IS NOT NULL AND weapon_name!='' ORDER BY weapon_name")
+                        weapons = [r[0] for r in cur.fetchall()]
 
-                    _m_types = col_types.get("matches", {})
-                    _m_cols  = schema.get("matches", [])
-                    _DATE_TYPES = {
-                        "date", "timestamp", "timestamp with time zone",
-                        "timestamp without time zone", "timestamptz",
-                    }
-                    _INT_TYPES = {"bigint", "integer", "int", "int4", "int8",
-                                  "smallint", "int2", "numeric"}
+                        tags_data = []
+                        tags_schema_info = {}
+                        if "tags" in schema:
+                            tc = schema["tags"]
+                            tt = col_types.get("tags", {})
+                            id_col = next((c for c in tc if c in ("id", "tag_id")), tc[0] if tc else None)
+                            id_col_type = tt.get(id_col, "bigint")
+                            name_col = next((c for c in tc if c in ("name", "tag_name")), None)
+                            color_col = next((c for c in tc if c in ("color", "tag_color")), None)
 
-                    # Candidate columns: date/timestamp type, OR bigint with date-like name,
-                    # OR text with 'date'/'time' in name
-                    _candidates = []
-                    for c in _m_cols:
-                        t = _m_types.get(c, "").lower()
-                        clow = c.lower()
-                        if t in _DATE_TYPES:
-                            _candidates.append(c)
-                        elif any(it in t for it in _INT_TYPES) and (
-                                "date" in clow or "time" in clow or "played" in clow):
-                            _candidates.append(c)
-                        elif "text" in t and ("date" in clow or "time" in clow):
-                            _candidates.append(c)
+                            jt = None
+                            jt_tag_col = None
+                            jt_match_col = None
+                            jt_col_types = {}
 
-                    _SUSPECT = ("analyze", "created", "import", "added", "updated")
-                    best_col, best_score = None, -1
-                    for c in _candidates:
-                        try:
-                            cur.execute(
-                                f'SELECT COUNT(DISTINCT "{c}") FROM '
-                                f'(SELECT "{c}" FROM matches '
-                                f' WHERE "{c}" IS NOT NULL LIMIT 30) sub')
-                            n_distinct = cur.fetchone()[0] or 0
-                        except Exception:
-                            n_distinct = 0
-                        penalty = 5 if any(s in c.lower() for s in _SUSPECT) else 0
-                        score = n_distinct - penalty
-                        if score > best_score:
-                            best_score = score
-                            best_col = c
-
-                    dc = best_col
-                    dc_type = _m_types.get(dc, "").lower() if dc else ""
-
-                    cur.execute(
-                        "SELECT DISTINCT weapon_name FROM kills "
-                        "WHERE weapon_name IS NOT NULL AND weapon_name!='' ORDER BY weapon_name")
-                    weapons = [r[0] for r in cur.fetchall()]
-
-                    tags_data = []
-                    tags_schema_info = {}
-                    if "tags" in schema:
-                        tc = schema["tags"]
-                        tt = col_types.get("tags", {})
-                        id_col = next((c for c in tc if c in ("id", "tag_id")), tc[0] if tc else None)
-                        id_col_type = tt.get(id_col, "bigint")
-                        name_col = next((c for c in tc if c in ("name", "tag_name")), None)
-                        color_col = next((c for c in tc if c in ("color", "tag_color")), None)
-
-                        jt = None
-                        jt_tag_col = None
-                        jt_match_col = None
-                        jt_col_types = {}
-
-                        for jtable in ("checksum_tags", "match_tags"):
-                            if jtable in schema:
-                                jcols = schema[jtable]
-                                jtypes = col_types.get(jtable, {})
-                                candidate_tag = None
-                                candidate_match = None
-                                for c in jcols:
-                                    cl = c.lower()
-                                    if "tag" in cl and "checksum" not in cl and "match" not in cl:
-                                        candidate_tag = c
-                                    elif any(k in cl for k in ("checksum", "match", "demo")):
-                                        candidate_match = c
-                                if candidate_tag and candidate_match:
-                                    jt = jtable
-                                    jt_tag_col = candidate_tag
-                                    jt_match_col = candidate_match
-                                    jt_col_types = jtypes
-                                    break
-
-                        if not jt:
                             for jtable in ("checksum_tags", "match_tags"):
                                 if jtable in schema:
                                     jcols = schema[jtable]
-                                    if len(jcols) >= 2:
+                                    jtypes = col_types.get(jtable, {})
+                                    candidate_tag = None
+                                    candidate_match = None
+                                    for c in jcols:
+                                        cl = c.lower()
+                                        if "tag" in cl and "checksum" not in cl and "match" not in cl:
+                                            candidate_tag = c
+                                        elif any(k in cl for k in ("checksum", "match", "demo")):
+                                            candidate_match = c
+                                    if candidate_tag and candidate_match:
                                         jt = jtable
-                                        jt_match_col = jcols[0]
-                                        jt_tag_col = jcols[1]
-                                        jt_col_types = col_types.get(jtable, {})
+                                        jt_tag_col = candidate_tag
+                                        jt_match_col = candidate_match
+                                        jt_col_types = jtypes
                                         break
 
-                        tags_schema_info = {
-                            "table": "tags",
-                            "id_col": id_col,
-                            "id_col_type": id_col_type,
-                            "name_col": name_col,
-                            "color_col": color_col,
-                            "junction_table": jt,
-                            "jt_tag_col": jt_tag_col,
-                            "jt_match_col": jt_match_col,
-                            "jt_col_types": jt_col_types,
-                        }
+                            if not jt:
+                                for jtable in ("checksum_tags", "match_tags"):
+                                    if jtable in schema:
+                                        jcols = schema[jtable]
+                                        if len(jcols) >= 2:
+                                            jt = jtable
+                                            jt_match_col = jcols[0]
+                                            jt_tag_col = jcols[1]
+                                            jt_col_types = col_types.get(jtable, {})
+                                            break
 
-                        if name_col and id_col:
-                            sel = f'"{id_col}","{name_col}"'
-                            if color_col:
-                                sel += f',"{color_col}"'
-                            cur.execute(f'SELECT {sel} FROM tags ORDER BY "{name_col}"')
-                            for r in cur.fetchall():
-                                tags_data.append(
-                                    (r[0], r[1] if len(r) > 1 else str(r[0]),
-                                     r[2] if len(r) > 2 and color_col else ""))
+                            tags_schema_info = {
+                                "table": "tags",
+                                "id_col": id_col,
+                                "id_col_type": id_col_type,
+                                "name_col": name_col,
+                                "color_col": color_col,
+                                "junction_table": jt,
+                                "jt_tag_col": jt_tag_col,
+                                "jt_match_col": jt_match_col,
+                                "jt_col_types": jt_col_types,
+                            }
 
-                conn.close()
+                            if name_col and id_col:
+                                sel = f'"{id_col}","{name_col}"'
+                                if color_col:
+                                    sel += f',"{color_col}"'
+                                cur.execute(f'SELECT {sel} FROM tags ORDER BY "{name_col}"')
+                                for r in cur.fetchall():
+                                    tags_data.append(
+                                        (r[0], r[1] if len(r) > 1 else str(r[0]),
+                                         r[2] if len(r) > 2 and color_col else ""))
+                finally:
+                    conn.close()
                 players = [(f"{n}  ({s})", s, n, d) for n, s, d in rows]
                 names = {s: n for n, s, *_ in rows}
                 self.after(0, lambda: self._on_load_ok(players, dc, dc_type, weapons, schema,
@@ -4642,7 +4644,7 @@ class App(tk.Tk):
                 cur.setdefault("hurt_index", {})
                 cur.setdefault("death_flags", {})
                 cur["_sections"] = set(cur.get("_sections", set())) | required_sections
-                self._dp2_cache[demo_path] = cur
+                self._dp2_cache_put_locked(demo_path, cur)
             return False
         try:
             from demoparser2 import DemoParser
@@ -4824,7 +4826,7 @@ class App(tk.Tk):
             merged["hurt_index"] = hurt_index
             merged["death_flags"] = death_flags
             merged["_sections"] = set(merged.get("_sections", set())) | required_sections
-            self._dp2_cache[demo_path] = merged
+            self._dp2_cache_put_locked(demo_path, merged)
         return True
 
     def _no_trois_shot_filter(self, demo_path, events, cfg):
@@ -6873,6 +6875,32 @@ class App(tk.Tk):
 
     _LOG_PUMP_MS = 50   # drain interval in milliseconds — 50ms ≈ 20 flushes/sec
 
+    _LOG_MAX_LINES = 8000   # trim oldest lines when the Text widget exceeds this
+
+    _DP2_CACHE_MAX = 150    # max demos kept in dp2 cache; oldest evicted beyond this
+
+    def _dp2_cache_put_locked(self, demo_path: str, data: dict):
+        """Write to _dp2_cache and evict the oldest entry if cache exceeds _DP2_CACHE_MAX.
+
+        MUST be called while _dp2_cache_lock is already held.
+
+        Each cached demo holds fire_detail, fire_ticks, view_angles, hurt_index, and
+        death_flags — typically 0.5–2 MB of Python objects per demo. Without eviction,
+        a long batch with many dp2 filters active can exhaust RAM and crash.
+
+        LRU policy: _dp2_cache_order tracks insertion order (oldest = front).
+        Re-writes of an existing entry retain their original slot (no re-promotion).
+        """
+        is_new = demo_path not in self._dp2_cache
+        self._dp2_cache[demo_path] = data
+        if is_new:
+            self._dp2_cache_order.append(demo_path)
+        while len(self._dp2_cache) > self._DP2_CACHE_MAX:
+            if not self._dp2_cache_order:
+                break
+            oldest = self._dp2_cache_order.pop(0)
+            self._dp2_cache.pop(oldest, None)
+
     def _drain_log_buffer_once(self):
         if not self._log_buf:
             return
@@ -6890,6 +6918,11 @@ class App(tk.Tk):
                 else:
                     msg, tag = item
                     self.log.insert("end", msg + "\n", tag)
+            # Trim oldest lines if the widget is growing too large
+            line_count = int(self.log.index("end-1c").split(".")[0])
+            if line_count > self._LOG_MAX_LINES:
+                trim_to = line_count - self._LOG_MAX_LINES
+                self.log.delete("1.0", f"{trim_to + 1}.0")
             if autoscroll:
                 self.log.see("end")
             self.log.configure(state="disabled")
@@ -9836,8 +9869,8 @@ class App(tk.Tk):
 
             dur = time.time() - t0
             threading.Thread(
-                target=lambda p=tp: (time.sleep(10), os.unlink(p))
-                if os.path.exists(p) else None, daemon=True).start()
+                target=lambda p=tp: (time.sleep(10), os.unlink(p) if os.path.exists(p) else None),
+                daemon=True).start()
 
             if d_ok:
                 ds = fmt_duration(dur)

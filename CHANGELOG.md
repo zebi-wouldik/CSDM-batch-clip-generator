@@ -5,7 +5,38 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v133.33]
+## [v133.35]
+### Fixed
+
+- **DB connection leak in `_connect_and_load`**: the psycopg2 connection opened at the start of the DB connect task was closed inside the `try` block (`conn.close()`). If any exception occurred anywhere in the ~170 lines of schema/player/tag queries between open and close, the `except` handler fired and called `_on_load_fail` — but `conn.close()` was never reached, leaking the connection. Fixed by wrapping the entire `with conn.cursor()` block in a `try/finally: conn.close()`, guaranteeing the connection is always closed regardless of outcome.
+
+- **SyntaxError introduced in previous session repaired**: the partial indentation refactor from the previous session left the inner `for` loop body at the wrong indent level, producing `SyntaxError: expected an indented block`. The entire `task()` function has been rewritten with correct indentation.
+
+- **Version bump**: script version moved to `v133.35`.
+
+---
+
+
+### Fixed
+
+- **OOM crash on large batches with dp2 filters** — the dp2 cache (`self._dp2_cache`) accumulated parsed demo data for the entire session with no eviction. Each entry holds `fire_detail`, `fire_ticks`, `view_angles`, `hurt_index`, and `death_flags` — typically 0.5–2 MB of Python objects per demo. A batch of 200+ demos with multiple dp2 filters active (WALLBANG, AIRBORNE, TROIS SHOT, etc.) could silently consume 400 MB–1 GB, eventually crashing with an `MemoryError` or being killed by the OS.
+
+  **Fix — LRU eviction:** added `_dp2_cache_put_locked(demo_path, data)` as the single write entry-point for the cache (called under the existing lock). It maintains `_dp2_cache_order` (insertion-order list) and evicts the oldest entry whenever `len(_dp2_cache) > _DP2_CACHE_MAX` (default: **150 demos**). Evicted demos are re-parsed on demand if needed again. The DRY helper replaces the two former raw `self._dp2_cache[demo_path] = …` assignments.
+
+- **Log Text widget growing unbounded** — the `self.log` Tk Text widget accumulated every log line for the entire session with no cap. On batches of 300+ demos with verbose dp2 logging, this caused progressive UI slowdown as Tk managed an ever-growing text buffer. Added `_LOG_MAX_LINES = 8000`: after each pump flush, if the line count exceeds the limit, the oldest lines are trimmed via a single `log.delete("1.0", f"{trim_to+1}.0")` call.
+
+- **Tempfile cleanup lambda evaluated at creation time instead of inside the thread** — the per-demo JSON tempfile cleanup was:
+  ```python
+  target=lambda p=tp: (time.sleep(10), os.unlink(p))
+  if os.path.exists(p) else None   # ← evaluated NOW
+  ```
+  If the file didn't exist at thread-creation time, `target=None` caused `Thread(target=None).start()` which raises `TypeError` (silently swallowed), leaking the tempfile on disk. Fixed: the `os.path.exists` check is now inside the lambda, evaluated after the 10-second sleep.
+
+- **Version bump**: script version moved to `v133.34`.
+
+---
+
+
 ### Changed
 
 - **"Minimize on launch" replaced by "Send to back on launch"**: instead of minimizing CS2 (which interrupts its taskbar state and can cause issues with HLAE injection timing), the new behaviour uses `SetWindowPos(HWND_BOTTOM)` to push CS2 to the bottom of the Windows Z-order. CS2 keeps running fully in the background — it is simply placed behind every other window so your desktop stays on top. No minimize animation, no taskbar icon change, no playback interruption.
