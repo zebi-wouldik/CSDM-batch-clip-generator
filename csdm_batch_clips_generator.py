@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v133.39"""
+"""CSDM Batch Clips Generator v143.0"""
 
 
 import tkinter as tk
@@ -21,7 +21,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v133.39"
+APP_VERSION = "v143.0"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -266,11 +266,12 @@ KILL_FILTER_REGISTRY: _List[FilterDef] = [
         dp2_log="🎯🎲 TROIS TAP",dp2_result="TROIS TAP",  dp2_skip="0 TROIS TAP",
         special="trois_tap"),
     FilterDef("kill_mod_one_tap",        "🎯 ONE TAP:",       "🎯 ONE TAP",    "dp2",
-        ("Isolated single-shot headshot — no other shot within 2s before or after.\n"
+        ("Isolated single-shot headshot — no other shot within N seconds before or after.\n"
          "HS is auto-forced only when active logic guarantees HS-only output."),
         dp2_filter="_one_tap_filter",           dp2_apply="_apply_one_tap_to_events",
         dp2_log="🎯 ONE TAP",   dp2_result="one tap",     dp2_skip="0 ONE TAP",
-        special="one_tap"),
+        special="one_tap",
+        extra_config={"kill_mod_one_tap_s": 2}),
     FilterDef("kill_mod_spray_transfer", "🔫 SPRAY TRANSFER:","🔫 SPRAY",      "dp2",
         ("≥2 enemies killed in one continuous spray (no trigger release).\n"
          "Auto weapons only: AK-47, M4A4/M4A1-S, Galil AR, FAMAS, SG 553, AUG, SMGs, M249, Negev, CZ75."),
@@ -1627,6 +1628,7 @@ class App(tk.Tk):
         self._dp2_verbose    = False  # per-kill dp2 filter logging (debug only — expensive)
         self._tag_search_results = {}
         self._warned_missing_mods: set = set()  # suppress repeat warnings for same absent cols
+        self._warned_require_win_no_data: bool = False  # suppress repeated win-data warning
 
         self.v = {}
         str_keys = ["pg_host", "pg_port", "pg_user", "pg_pass", "pg_db", "csdm_exe", "output_dir",
@@ -2120,6 +2122,7 @@ class App(tk.Tk):
         self._ts_cache       = {}
         self._col_cache      = {}
         self._warned_missing_mods = set()  # reset so re-connect re-checks column presence
+        self._warned_require_win_no_data = False
 
         # Warn (log only) if the date column was not detected
         if not dc:
@@ -3060,6 +3063,13 @@ class App(tk.Tk):
                 sentry(_fl_row, self.v["kill_mod_flick_deg"], width=4).pack(
                     side="left", padx=(4, 0), ipady=4)
                 mlabel(_fl_row, "°").pack(side="left", padx=(2, 0))
+            elif _fdef.key == "kill_mod_one_tap":
+                # ONE TAP: isolation window in seconds
+                _ot_row = self._build_filter_row(sec, _fdef, self._must_widgets["dp2"])
+                mlabel(_ot_row, "  Window:").pack(side="left", padx=(8, 0))
+                sentry(_ot_row, self.v["kill_mod_one_tap_s"], width=3).pack(
+                    side="left", padx=(4, 0), ipady=4)
+                mlabel(_ot_row, "s").pack(side="left", padx=(2, 0))
             else:
                 self._build_filter_row(sec, _fdef, self._must_widgets["dp2"])
         self.after(50, lambda: self._on_logic_mode_change("dp2"))
@@ -4772,7 +4782,8 @@ class App(tk.Tk):
         """Keep only isolated single-shot kills.
 
         A kill is kept if the killer fired exactly one shot with that weapon
-        in [kill_tick − WINDOW, kill_tick + WINDOW].
+        in [kill_tick − WINDOW, kill_tick + WINDOW] where WINDOW is derived
+        from cfg["kill_mod_one_tap_s"] (seconds) × tickrate (default: 2s).
         Reads fire_ticks from _dp2_cache (populated by _dp2_parse_demo).
         If the demo is not yet cached, triggers a synchronous parse as fallback.
         (Headshot is pre-guaranteed by the DB query when kill_mod_one_tap is enabled.)
@@ -4788,7 +4799,9 @@ class App(tk.Tk):
             data = self._dp2_cache.get(demo_path, {})
         shots_index = data.get("fire_ticks", {})
 
-        WINDOW = DP2_TICK_WINDOW  # 128 ticks ≈ 2s at 64 tick/s
+        _one_tap_s = max(0.5, float(cfg.get("kill_mod_one_tap_s", 2)))
+        _tickrate   = int(cfg.get("tickrate", 64))
+        WINDOW = int(_one_tap_s * _tickrate)  # convert user-seconds → ticks
 
         def _is_isolated(kill_tick, killer_sid, weapon_raw):
             """True iff exactly 1 shot with this weapon was fired in [kill_tick-WINDOW, kill_tick+WINDOW]."""
@@ -7436,13 +7449,28 @@ class App(tk.Tk):
                             f"{len(groups)} clutch(es) — {sizes_str}",
                             "info")
                         results.setdefault(dp, [])
-                        existing_sigs = {(e["tick"], e.get("killer_sid")) for e in results[dp]}
+                        # Build a sig→index map so we can stamp clutch metadata onto
+                        # kill events that were already added by the regular kills query.
+                        # Without this, clutch kills whose (tick, killer_sid) already
+                        # exist in results are silently skipped, leaving those events
+                        # without clutch_group/clutch_size and making clutch sequences
+                        # impossible to build in _show_preview / the run path.
+                        sig_to_idx = {
+                            (e["tick"], e.get("killer_sid")): i
+                            for i, e in enumerate(results[dp])
+                        }
                         for group in groups:
                             for kill in group:
                                 sig = (kill["tick"], kill.get("killer_sid"))
-                                if sig not in existing_sigs:
+                                if sig in sig_to_idx:
+                                    # Stamp clutch metadata onto the existing event so
+                                    # it is picked up by _build_clutch_sequences.
+                                    existing = results[dp][sig_to_idx[sig]]
+                                    existing["clutch_group"] = kill["clutch_group"]
+                                    existing["clutch_size"]  = kill["clutch_size"]
+                                else:
                                     results[dp].append(kill)
-                                    existing_sigs.add(sig)
+                                    sig_to_idx[sig] = len(results[dp]) - 1
 
         finally:
             pass  # persistent connection — kept open for reuse
@@ -7918,9 +7946,13 @@ class App(tk.Tk):
                 # ── Step 5: clutch detection per round ───────────────────────
                 def _norm_side(s):
                     s = (s or "").upper().replace("-", "_").replace(" ", "_")
-                    if s in ("CT", "COUNTER_TERRORIST", "COUNTER", "COUNTERTERRORIST"):
+                    if s in ("CT", "COUNTER_TERRORIST", "COUNTER", "COUNTERTERRORIST",
+                             "CT_WIN", "CTS_WIN", "BOMB_DEFUSED",
+                             "COUNTER_TERRORIST_WIN"):
                         return "CT"
-                    if s in ("T", "TERRORIST", "TERROR"):
+                    if s in ("T", "TERRORIST", "TERROR",
+                             "T_WIN", "TS_WIN", "TARGET_BOMBED", "BOMB_EXPLODED",
+                             "TERRORISTS_WIN", "TERRORIST_WIN"):
                         return "T"
                     return s
 
@@ -7959,13 +7991,28 @@ class App(tk.Tk):
                             return v_s != player_side
                         return False
 
-                    # Teammates alive at first kill tick = teammates who haven't died yet
+                    # Build the full set of known teammates: anyone on the player's side
+                    # who appeared in this round — either as a victim (died) OR as a killer
+                    # (made kills). Teammates who survived the whole round without killing
+                    # anything are invisible to this data, but teammates who killed at least
+                    # once are captured here, closing the main false-positive gap.
+                    all_teammates: set = set()
+                    for _k in kills_sorted:
+                        # Died on player's side (excluding the player themselves)
+                        if _is_teammate(_k):
+                            all_teammates.add(_k["victim_sid"])
+                        # Killed something while on player's side (and is not the player)
+                        if (_k["killer_sid"] != player_sid
+                                and _norm_side(_k.get("killer_side", "")) == player_side):
+                            all_teammates.add(_k["killer_sid"])
+
+                    # Which of these known teammates were already dead before first kill?
                     teammates_dead_before = {k["victim_sid"] for k in kills_sorted
                                               if k["tick"] < first_kill_tick and _is_teammate(k)}
-                    all_teammates = {k["victim_sid"] for k in kills_sorted if _is_teammate(k)}
+                    # Known teammates still alive at first kill tick
                     teammates_alive_at_clutch = all_teammates - teammates_dead_before
 
-                    # If any teammate was still alive at the first kill → not a clutch
+                    # If any known teammate was still alive at the first kill → not a clutch
                     if teammates_alive_at_clutch:
                         continue
 
@@ -7980,6 +8027,8 @@ class App(tk.Tk):
                     opponents_alive = all_opponents - opponents_dead_before
 
                     clutch_size = len(opponents_alive)
+                    if clutch_size < 1:
+                        continue  # 1v0 is a data artefact — no opponents alive, skip
                     if allowed_sizes and clutch_size not in allowed_sizes:
                         continue
 
@@ -7987,9 +8036,17 @@ class App(tk.Tk):
                     if require_win:
                         round_winner = player_kills[0].get("round_winner")
                         winner_norm  = _norm_side(round_winner)
-                        if player_side and winner_norm:
-                            if player_side != winner_norm:
-                                continue  # lost the clutch round
+                        if not winner_norm:
+                            # Rounds table missing or winner column empty/unresolvable —
+                            # cannot evaluate the win condition; warn once and let the
+                            # clutch through rather than silently dropping it.
+                            if not getattr(self, "_warned_require_win_no_data", False):
+                                self._alog(
+                                    "  ⚠ 'Win only' filter: round winner could not be "                                    "determined (rounds table missing or winner column "                                    "empty). Filter ignored for these clutches.",
+                                    "warn")
+                                self._warned_require_win_no_data = True
+                        elif player_side and player_side != winner_norm:
+                            continue  # lost the clutch round
 
                     # Build clean kill events (only the player's kills in this round)
                     clean_kills = []

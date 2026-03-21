@@ -5,6 +5,54 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v143.0]
+### Fixed
+
+- **Clutch detection false positives — teammates who made kills were invisible**: the teammate check built `all_teammates` exclusively from *victims* on the player's side (`_is_teammate(kill)` ↔ `victim_side == player_side`). A teammate who made one or more kills during the round but hadn't yet died at the player's first kill tick was never added to `all_teammates` — so they were absent from `teammates_alive_at_clutch` — and the round was incorrectly classified as a clutch. Fixed: `all_teammates` is now built by scanning every kill in the round and collecting anyone on the player's side who appears as **killer** *or* victim (excluding the player themselves). This closes the primary false-positive gap; the only remaining undetectable case is a teammate who did nothing at all in the round (no kills, no deaths), which cannot be inferred from the kills table alone.
+
+- **`require_win` ("Win only") semantics clarified and corrected**: the option clips the player's kills (or whatever event type is selected) only when the player's team *won* that clutch round. A round is won by the player's team when `round_winner` matches `player_side`. The existing implementation was correct in logic but previously broken by the `_norm_side` gap for `win_reason`-style values (fixed in v133.41) and the silent-pass-through when rounds data is missing (also v133.41).
+
+### Added
+
+- **Configurable isolation window for ONE TAP filter**: the isolation window was a hardcoded `DP2_TICK_WINDOW = 128` ticks (≈ 2s at 64 tick/s). It is now driven by a new per-filter config value `kill_mod_one_tap_s` (integer seconds, default `2`). A `Window: [N] s` entry field appears inline on the ONE TAP filter row in the dp2 section — same style as the `Min angle` field on FLICK. The value is converted to ticks at filter time via `int(kill_mod_one_tap_s × tickrate)`, so it scales correctly with both 64- and 128-tick demos. Minimum clamped to 0.5s to prevent degenerate zero-width windows.
+
+### Changed
+
+- **Version jump to v143.0**: reflects the scope of the clutch logic rewrite.
+
+---
+
+## [v133.42]
+### Fixed
+
+- **1v0 clutch artefact included when "all sizes" is selected**: when no 1vX checkboxes are checked (`clutch_allowed_sizes` returns an empty set, meaning no size restriction), a round where `all_opponents` was empty — due to missing or incomplete data in the DB — produced `clutch_size = 0`. The size-filter guard `if allowed_sizes and clutch_size not in allowed_sizes` was skipped entirely (because `allowed_sizes` is empty in "all" mode), so the 1v0 round was logged and processed as a clutch. Added an unconditional `if clutch_size < 1: continue` guard before the size filter so data artefacts are always discarded regardless of which sizes are selected.
+
+- **Version bump**: script version moved to `v133.42`.
+
+---
+
+## [v133.41]
+### Fixed
+
+- **`require_win` filter silently ignored when rounds table is unavailable**: if `rtc_col` or `rmk_col` could not be resolved (rounds table absent or missing columns), `round_brackets` stayed empty, every kill's `round_winner` was `None`, `_norm_side` returned `""`, and the guard `if player_side and winner_norm` evaluated to `False` — causing the "Win only" checkbox to do nothing. A warning is now emitted once per session via `self._warned_require_win_no_data` and the clutch is allowed through rather than silently dropped, so the user knows the data needed to evaluate the filter is missing.
+
+- **`_norm_side` rejects all `win_reason`-style winner values**: when `rwin_col` resolved to a `win_reason` column (the last-resort fallback after `winner_name`, `winner_side`, `winner`, `winning_side`), values such as `"ct_win"`, `"t_win"`, `"bomb_defused"`, `"target_bombed"`, `"bomb_exploded"` were returned verbatim by `_norm_side` and never matched `"CT"` or `"T"`. This caused `player_side != winner_norm` to be true for every clutch, filtering them all out when `require_win=True`. `_norm_side` now maps the full set of known `win_reason` values: CT-side wins (`ct_win`, `cts_win`, `bomb_defused`, `counter_terrorist_win`) → `"CT"`; T-side wins (`t_win`, `ts_win`, `target_bombed`, `bomb_exploded`, `terrorists_win`, `terrorist_win`) → `"T"`.
+
+- **Version bump**: script version moved to `v133.41`.
+
+---
+
+## [v133.40]
+### Fixed
+
+- **Clutch clips never generated when Kills and Clutch events are both enabled**: in `_query_events`, after the regular kills query populated `results[dp]`, the clutch merging loop used a set of `(tick, killer_sid)` signatures to skip duplicate entries. When a clutch kill matched an already-present regular kill event, the clutch version was silently dropped — leaving the existing event without the `clutch_group` / `clutch_size` fields that `_build_clutch_sequences` (and the run path) rely on to identify and assemble clutch clips. The result: with Kills + Clutch both active, every clutch round whose kills overlapped with the player's regular kill set produced zero clutch clips. Clutch-only mode (Kills disabled) was unaffected because `results[dp]` was empty when the merging ran.
+
+  **Fix:** replaced the skip-on-duplicate set with a `sig→index` dict built from the current `results[dp]`. When a clutch kill's signature already exists, the code now looks up the existing event by index and stamps `clutch_group` / `clutch_size` directly onto it, preserving the `_mf` and weapon data already on that event while making it visible to the clutch sequence builder. New signatures are appended as before and registered in the map.
+
+- **Version bump**: script version moved to `v133.40`.
+
+---
+
 ## [v133.39]
 ### Fixed
 
