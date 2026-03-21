@@ -5,7 +5,100 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
-## [v133.35]
+## [v133.39]
+### Fixed
+
+- **Clutch section header rendered in gray instead of accent color**: the `🤝 Clutch:` label was built with `mlabel` (which uses `MUTED` gray) instead of `slabel` (bold, accent-colored). Every other subsection header in the KILL FILTERS panel — *Mods*, *demoparser2 modifiers*, *Situation (DB + Clutch)* — correctly used `slabel`; the clutch block was the only one left behind. A separator line (`BORDER`-colored `tk.Frame`, 1px height) was also added above the block so it aligns visually with the other subsections.
+
+- **Scroll stopping when cursor moves over Sec frames, checkboxes, or any child widget** (`ScrollableFrame`): the `<MouseWheel>` binding was controlled by `<Enter>`/`<Leave>` on the canvas only. Because Tk fires `<Leave>` on the canvas the moment the pointer enters a child widget inside it (e.g., a `Sec` LabelFrame, a `hchk` checkbox, a `mlabel`), scrolling died as soon as the user hovered any UI element in the panel — even while the cursor was visually still inside the scroll area.
+
+  **Fix:** the `<Leave>` handler now checks the actual pointer position via `winfo_pointerxy()` against the scrollable widget's bounding box before deciding to unbind. If the pointer is still within the widget's bounds, `unbind_all` is skipped and scrolling remains active. A matching `<Enter>` binding was added to `self.inner` (the inner content frame) so scroll is re-enabled immediately when the mouse enters the content area regardless of which sub-widget it enters through.
+
+- **Clutch events silently discarded by `_apply_db_postfilters`**: clutch events carry a `clutch_group` key and are validated entirely by `_query_clutch_events` (which checks team isolation, opponent count, and optionally win/loss before adding an event to results). However, `_apply_db_postfilters` — which enforces DB situational filters like entry frag, ace, multi-kill, eco-frag — was receiving the raw `results` dict including clutch events and treating them as ordinary kills. Any demo where only clutch events existed (no regular kills) produced an empty `per_mod_sigs` list and fell through a bare `continue`, silently dropping every clutch event for that demo. Even in mixed scenarios, the `kept_kills`/`filtered[dp]` assembly never re-added clutch kills.
+
+  **Fix:** at the start of the per-demo loop in `_apply_db_postfilters`, clutch events are separated from the rest (`clutch_group is not None`). They are never passed into the modifier-matching logic, and are unconditionally appended to the output at every exit point in the loop — including the early `not kill_events` return, the `not per_mod_sigs` continue, and the final `kept_kills + non_kill` assembly.
+
+- **Version bump**: script version moved to `v133.39`.
+
+---
+
+## [v133.38]
+### Fixed
+
+- **`KeyError: 'kill_mod_hv_one_shot'` on startup** (regression from v133.37): the registry refactor replaced the manual `bool_keys` filter list with `*_FILTER_BOOL_KEYS`, which only covers primary filter enable/req keys. `kill_mod_hv_one_shot` is a sub-option bool inside `kill_mod_high_velocity`'s `extra_config` — it was in the old manual list but not in `_FILTER_BOOL_KEYS`, so no `BooleanVar` was created for it, causing a `KeyError` the moment the Ferrari Peek row tried to use `self.v["kill_mod_hv_one_shot"]`.
+
+  **Fix (DRY):** `bool_keys` and `int_keys` now both auto-derive their filter sub-option entries from `extra_config` fields in the registry:
+  - `bool_keys` adds `*[k for f in KILL_FILTER_REGISTRY if f.extra_config for k, v in f.extra_config.items() if isinstance(v, bool)]` → picks up `kill_mod_hv_one_shot`
+  - `int_keys` adds the equivalent for int values (not bool) → picks up `kill_mod_high_vel_thr`, `kill_mod_flick_deg`, `kill_mod_multi_kill_n`, `kill_mod_multi_kill_s`, `kill_mod_bourreau_n`
+
+  Adding a new filter with bool or int sub-options in `extra_config` now automatically creates the correct `BooleanVar` or `IntVar` without touching `bool_keys` or `int_keys`.
+
+- **Version bump**: script version moved to `v133.38`.
+
+---
+
+
+### Architecture — Kill Filter Registry
+
+**Problem:** every kill modifier existed in 7+ scattered places — `DEFAULT_CONFIG`, `bool_keys`, `PRESET_KEYS`, `KILL_FILTER_LABELS`, `_FILTER_BADGE_DEFS`, `_DP2_FILTER_DEFS`, `_MOD_COLS`, and 340 lines of hardcoded per-filter UI code. Adding or removing a filter required touching all of them.
+
+**Solution:** a single `KILL_FILTER_REGISTRY` — a list of `FilterDef` NamedTuples. Everything else is derived:
+
+| Structure | Before | After |
+|---|---|---|
+| `DEFAULT_CONFIG` filter entries | 40 manual lines | `**_FILTER_CONFIG_DEFAULTS` (1 line) |
+| `bool_keys` filter entries | 20 manual entries | `*_FILTER_BOOL_KEYS` (1 entry) |
+| `PRESET_KEYS["player"]` filter entries | 40 manual entries | `*_FILTER_PRESET_PLAYER_KEYS` (1 entry) |
+| `KILL_FILTER_LABELS` | 20 manual entries | derived dict (1 line) |
+| `_FILTER_BADGE_DEFS` | 20-entry class list | cached property from registry |
+| `_DP2_FILTER_DEFS` | 11-entry class list | cached property from registry |
+| `_MOD_COLS` | local dict in `_query_events` | `KILL_FILTER_SQL_COLS` (module-level, from registry) |
+| Kill filter UI | ~340 lines of per-filter code | ~130 lines of data-driven loops |
+
+**`FilterDef` fields:** `key`, `label`, `badge`, `category` (mods/dp2/db), `tip`, `sql_cols`, `dp2_filter`, `dp2_apply`, `dp2_log/result/skip`, `special`, `hide_ui`, `extra_config`.
+
+**`_build_filter_row(parent, fdef, must_list)`** — DRY UI builder. Renders label + Enable + ★ Must + optional dp2_badge for any standard filter row. TROIS SHOT's "Exclude" hchk, FERRARI PEEK's expandable panel, FLICK's degree entry, MULTI-KILL's N/s entries, and BULLY's repeat-# combobox are added to the returned row frame after the call.
+
+**To add a new filter now:** add one `FilterDef(...)` entry to `KILL_FILTER_REGISTRY`. Config keys, bool_keys, preset keys, badge, dp2 filter table, SQL column lookup, and UI row all follow automatically. Nothing else changes.
+
+### Performance
+- `from functools import lru_cache` added — `_weapon_category` and filter-def property caches avoid repeated derivation.
+- `_FILTER_BADGE_DEFS` and `_DP2_FILTER_DEFS` are now cached properties (computed once per session, not every call).
+
+### Code reduction
+- Kill filter UI: ~340 lines → ~130 lines (−62%)
+- Registry replaces 7 scattered data structures with 1
+
+- **Version bump**: script version moved to `v133.37`.
+
+---
+
+
+### Changed & Fixed
+
+- **Demo picker selection reworked**: clicking a row in the demo picker now uses native Treeview multi-selection (click, Shift+click, Ctrl+click) without immediately toggling its check state. The old "↕ Toggle selected" button (which toggled in one click — making it impossible to just highlight a row) has been replaced with two explicit buttons:
+  - **✓ Check selected** — checks all currently highlighted rows
+  - **✕ Uncheck selected** — unchecks all currently highlighted rows
+
+  The workflow is now: select one or more demos (mouse/keyboard) → press the appropriate button. All four picker buttons (Check all / Uncheck all / Check selected / Uncheck selected) use green/red colouring consistently.
+
+- **"✕ Unselect all" kill filters button** now RED (`fg=RED`) with a `✕` prefix — visually consistent with the demo picker's uncheck buttons.
+
+- **`demoparser2` badge always at the far right** of every filter row — previously it was packed left after the buttons/toggles, meaning it appeared mid-row next to ★ Must. Now `side="right"` on all 8 call sites.
+
+- **Kill filter names now use `flabel` (bright text)** to distinguish them from control labels: all 14 filter name labels (💨 SMOKE:, 🧱 WALLBANG:, 🎲 TROIS SHOT:, 🎯 ONE TAP:, 🏎 FERRARI PEEK:, ↩ FLICK:, 🛡 SAVIOR:, 🚀 ENTRY FRAG:, 🃏 ACE:, ⚡ MULTI-KILL:, 💀 BULLY:, 💰 ECO FRAG:, 🎯 Headshots:, and the loop-built Mods/dp2-flag rows) now render in `TEXT` colour instead of `MUTED`.
+
+- **Subcategory section headers use `slabel` (bold accent)**: "Kill filters (Mods + demoparser2):", "Mods — none checked = all kills:", "demoparser2 modifiers:", and "Situation (DB + Clutch):" are now bold and accent-coloured, making them visually pop as section dividers.
+
+- **`flabel()` and `slabel()` helper functions added** alongside `mlabel()`:
+  - `flabel` — same as `mlabel` but `fg=TEXT` (full brightness, for filter names)
+  - `slabel` — bold, `fg=ORANGE` (accent colour, for subcategory headers)
+
+- **Version bump**: script version moved to `v133.36`.
+
+---
+
+
 ### Fixed
 
 - **DB connection leak in `_connect_and_load`**: the psycopg2 connection opened at the start of the DB connect task was closed inside the `try` block (`conn.close()`). If any exception occurred anywhere in the ~170 lines of schema/player/tag queries between open and close, the `except` handler fired and called `_on_load_fail` — but `conn.close()` was never reached, leaking the connection. Fixed by wrapping the entire `with conn.cursor()` block in a `try/finally: conn.close()`, guaranteeing the connection is always closed regardless of outcome.

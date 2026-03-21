@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v133.35"""
+"""CSDM Batch Clips Generator v133.39"""
 
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
 import subprocess, threading, json, os, tempfile, time, shutil, re, uuid, random, shlex
 import bisect, concurrent.futures
+from functools import lru_cache
 from collections import defaultdict, deque
 import calendar as cal_mod
 from datetime import datetime, timedelta, date
@@ -20,7 +21,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v133.35"
+APP_VERSION = "v133.39"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -174,28 +175,177 @@ RECSYS_OPTIONS = ["HLAE", "CS"]
 VIDEO_CONTAINERS = ["mp4", "avi", "mkv", "mov", "webm"]
 PERSP_LABELS = {"killer": "POV Killer", "victim": "POV Victim", "both": "Both"}
 
-KILL_FILTER_LABELS = {
-    "kill_mod_trois_shot": "TROIS SHOT",
-    "kill_mod_no_trois_shot": "NO TROIS SHOT",
-    "kill_mod_trois_tap": "TROIS TAP",
-    "kill_mod_one_tap": "ONE TAP",
-    "kill_mod_spray_transfer": "SPRAY",
-    "kill_mod_high_velocity": "FERRARI PEEK",
-    "kill_mod_flick": "FLICK",
-    "kill_mod_sauveur": "SAVIOR",
-    "kill_mod_entry_frag": "ENTRY",
-    "kill_mod_ace": "ACE",
-    "kill_mod_multi_kill": "MULTI",
-    "kill_mod_bourreau": "BULLY",
-    "kill_mod_eco_frag": "ECO",
-    "kill_mod_attacker_blind": "BLIND",
-    "kill_mod_through_smoke": "THROUGH SMOKE",
-    "kill_mod_no_scope": "NO SCOPE",
-    "kill_mod_wall_bang": "WALLBANG",
-    "kill_mod_airborne": "AIRBORNE",
-    "kill_mod_assisted_flash": "ASSISTED FLASH",
-    "kill_mod_collateral": "COLLATERAL",
-}
+
+# ═══════════════════════════════════════════════════════
+#  Kill Filter Registry — single source of truth
+# ═══════════════════════════════════════════════════════
+#
+# Every kill modifier is declared exactly ONCE here.
+# All other structures (DEFAULT_CONFIG entries, bool_keys,
+# PRESET_KEYS, _FILTER_BADGE_DEFS, _DP2_FILTER_DEFS, _MOD_COLS,
+# needs_dp2, and UI rows) are DERIVED from this registry.
+#
+# To ADD a filter:  add one FilterDef entry.
+# To REMOVE one:   delete its entry.
+# To CHANGE it:    edit its entry — nothing else needs updating.
+
+from typing import NamedTuple, Optional, List as _List
+
+class FilterDef(NamedTuple):
+    key:          str
+    label:        str            # UI label (flabel), e.g. "💨 SMOKE:"
+    badge:        str            # short badge text, e.g. "💨 SMOKE"
+    category:     str            # "mods" | "dp2" | "db"
+    tip:          str            # tooltip
+    sql_cols:     Optional[list] = None  # mods: candidate DB columns
+    dp2_filter:   Optional[str]  = None  # dp2: per-demo App method name
+    dp2_apply:    Optional[str]  = None  # dp2: dict-level App method name
+    dp2_log:      Optional[str]  = None  # dp2: log prefix
+    dp2_result:   Optional[str]  = None  # dp2: log result word
+    dp2_skip:     Optional[str]  = None  # dp2: log skip word
+    special:      Optional[str]  = None  # "trois_shot"|"trois_tap"|"one_tap"|"high_velocity"
+    hide_ui:      bool           = False # True → no standalone row (rendered by another)
+    extra_config: Optional[dict] = None  # extra DEFAULT_CONFIG entries for this filter
+
+
+KILL_FILTER_REGISTRY: _List[FilterDef] = [
+    # ── SQL-backed Mods ──────────────────────────────────────────────────
+    FilterDef("kill_mod_through_smoke",  "💨 SMOKE:",         "💨 SMOKE",      "mods",
+        "Kill through a smoke grenade (DB column — fast, no demoparser2 needed).",
+        sql_cols=["is_through_smoke", "through_smoke"]),
+    FilterDef("kill_mod_no_scope",       "🔭 NO-SCOPE:",      "🔭 NOSCOPE",    "mods",
+        "No-scope kill — sniper only (DB column).",
+        sql_cols=["is_no_scope", "no_scope"]),
+    FilterDef("kill_mod_assisted_flash", "⚡ VICTIM FLASHED:","⚡ VIC.FLASH",  "mods",
+        "Victim was blinded by a flashbang (DB column).",
+        sql_cols=["is_assisted_flash", "assisted_flash"]),
+    # ── dp2 — player_death flag filters ─────────────────────────────────
+    FilterDef("kill_mod_wall_bang",      "🧱 WALLBANG:",      "🧱 WALLBANG",   "dp2",
+        ("Kill where the bullet penetrated an obstacle and is not a collateral chain.\n"
+         "Uses player_death.penetrated with per-shot grouping via demoparser2."),
+        dp2_filter="_wall_bang_dp2_filter",     dp2_apply="_apply_wall_bang_dp2_to_events",
+        dp2_log="🧱 WALLBANG",  dp2_result="wallbang",    dp2_skip="0 WALLBANG"),
+    FilterDef("kill_mod_airborne",       "🪂 AIRBORNE:",      "🪂 AIR",        "dp2",
+        ("Bullet of the kill was fired while the killer was not on ground.\n"
+         "Uses player_death.attackerinair from the demo file via demoparser2."),
+        dp2_filter="_airborne_dp2_filter",      dp2_apply="_apply_airborne_dp2_to_events",
+        dp2_log="🪂 AIRBORNE",  dp2_result="airborne",    dp2_skip="0 AIRBORNE"),
+    FilterDef("kill_mod_collateral",     "🎯 COLLATERAL:",    "🎯 COLLAT.",    "dp2",
+        ("Single bullet penetrated and killed multiple players in the same shot chain.\n"
+         "Uses player_death.penetrated + shot grouping via demoparser2."),
+        dp2_filter="_collateral_dp2_filter",    dp2_apply="_apply_collateral_dp2_to_events",
+        dp2_log="🎯 COLLATERAL",dp2_result="collateral",  dp2_skip="0 COLLATERAL"),
+    FilterDef("kill_mod_attacker_blind", "😵 BLIND FIRE:",    "😵 BLIND",      "dp2",
+        ("Bullet fired while the killer was blinded.\n"
+         "Uses player_death.attackerblind from the demo file via demoparser2."),
+        dp2_filter="_attacker_blind_dp2_filter",dp2_apply="_apply_attacker_blind_dp2_to_events",
+        dp2_log="😵 BLIND FIRE",dp2_result="blind fire",  dp2_skip="0 BLIND FIRE"),
+    # ── dp2 — weapon_fire-based filters ─────────────────────────────────
+    FilterDef("kill_mod_trois_shot",     "🎲 TROIS SHOT:",    "🎲 TROIS SHOT", "dp2",
+        ("Lucky kills on precision weapons — detected via demoparser2.\n\n"
+         "Per-weapon logic:\n"
+         "  Deagle / R8   bloom > 0.015 (not a stationary aimed shot)\n"
+         "  AWP / SSG 08  unscoped at shot time\n"
+         "  SCAR-20 / G3SG1  unscoped OR bloom > 0.010 OR moving\n\n"
+         "Enable = keep only lucky kills. Exclude = keep only precise kills on these weapons.\n"
+         "⚠ Enable and Exclude are mutually exclusive."),
+        dp2_filter="_trois_shot_filter",        dp2_apply="_apply_trois_shot_to_events",
+        dp2_log="🎲 TROIS SHOT",dp2_result="TROIS SHOT",  dp2_skip="0 TROIS SHOT",
+        special="trois_shot"),
+    FilterDef("kill_mod_no_trois_shot",  "🚫🎲 EXCLUDE:",     "🚫🎲 Exclude",  "dp2",
+        ("Inverse of TROIS SHOT — removes lucky kills on these weapons.\n"
+         "When combined with other dp2 filters, acts as an exclusion gate first."),
+        dp2_filter="_no_trois_shot_filter",     dp2_apply="_apply_no_trois_shot_to_events",
+        dp2_log="🚫🎲 Exclude", dp2_result="precise",     dp2_skip="0 EXCLUDE",
+        hide_ui=True),  # rendered inside TROIS SHOT row
+    FilterDef("kill_mod_trois_tap",      "🎯🎲 TROIS TAP:",   "🎯🎲 TROIS TAP","dp2",
+        ("TROIS SHOT + ONE TAP: lucky isolated headshot.\n"
+         "Must be a headshot, qualify as lucky, and have no other shot within 2s.\n"
+         "HS is auto-forced only when active logic guarantees HS-only output."),
+        dp2_filter=None, dp2_apply=None,   # always exclusive, handled separately
+        dp2_log="🎯🎲 TROIS TAP",dp2_result="TROIS TAP",  dp2_skip="0 TROIS TAP",
+        special="trois_tap"),
+    FilterDef("kill_mod_one_tap",        "🎯 ONE TAP:",       "🎯 ONE TAP",    "dp2",
+        ("Isolated single-shot headshot — no other shot within 2s before or after.\n"
+         "HS is auto-forced only when active logic guarantees HS-only output."),
+        dp2_filter="_one_tap_filter",           dp2_apply="_apply_one_tap_to_events",
+        dp2_log="🎯 ONE TAP",   dp2_result="one tap",     dp2_skip="0 ONE TAP",
+        special="one_tap"),
+    FilterDef("kill_mod_spray_transfer", "🔫 SPRAY TRANSFER:","🔫 SPRAY",      "dp2",
+        ("≥2 enemies killed in one continuous spray (no trigger release).\n"
+         "Auto weapons only: AK-47, M4A4/M4A1-S, Galil AR, FAMAS, SG 553, AUG, SMGs, M249, Negev, CZ75."),
+        dp2_filter="_spray_transfer_filter",    dp2_apply="_apply_spray_transfer_to_events",
+        dp2_log="🔫 SPRAY",     dp2_result="spray transfer",dp2_skip="0 SPRAY"),
+    FilterDef("kill_mod_high_velocity",  "🏎 FERRARI PEEK:",  "🏎 FERRARI",    "dp2",
+        ("Moving peek that kills on a single shot then immediately resumes.\n"
+         "Approach speed ≥ threshold, one shot, resumes movement within 2s.\n"
+         "CS2 run speeds: knife 250 · pistols 240 · AK-47 215 · AWP 200 u/s"),
+        dp2_filter="_high_velocity_filter",     dp2_apply="_apply_high_velocity_to_events",
+        dp2_log="🏎 FERRARI PEEK",dp2_result="counter-strafe",dp2_skip="0 FERRARI PEEK",
+        special="high_velocity",
+        extra_config={"kill_mod_hv_one_shot": True, "kill_mod_high_vel_thr": 100}),
+    FilterDef("kill_mod_flick",          "↩ FLICK:",          "↩ FLICK",       "dp2",
+        ("Kill preceded by a large view-angle change (~0.5s before kill tick).\n"
+         "Default: 50°. Lower = catch smaller corrections, raise = extreme flicks only."),
+        dp2_filter="_flick_filter",             dp2_apply="_apply_flick_to_events",
+        dp2_log="↩ FLICK",      dp2_result="flick",       dp2_skip="0 FLICK",
+        extra_config={"kill_mod_flick_deg": 50}),
+    FilterDef("kill_mod_sauveur",        "🛡 SAVIOR:",        "🛡 SAVIOR",     "dp2",
+        ("Kill an enemy who was actively damaging a teammate in the ~2s prior.\n"
+         "Captures clutch saves and last-second rescues."),
+        dp2_filter="_sauveur_filter",           dp2_apply="_apply_sauveur_to_events",
+        dp2_log="🛡 SAVIOR",    dp2_result="savior",      dp2_skip="0 SAVIOR"),
+    # ── DB post-filters ──────────────────────────────────────────────────
+    FilterDef("kill_mod_entry_frag",     "🚀 ENTRY FRAG:",    "🚀 ENTRY",      "db",
+        "First kill of the round (earliest tick), regardless of side."),
+    FilterDef("kill_mod_ace",            "🃏 ACE:",           "🃏 ACE",         "db",
+        "Rounds where the player eliminated all 5 opponents alone."),
+    FilterDef("kill_mod_multi_kill",     "⚡ MULTI-KILL:",    "⚡ MULTI",       "db",
+        "N or more kills in one round within the time window.",
+        extra_config={"kill_mod_multi_kill_n": 3, "kill_mod_multi_kill_s": 12}),
+    FilterDef("kill_mod_bourreau",       "💀 BULLY:",         "💀 BULLY",       "db",
+        ("Kill the same opponent for the Nth time in the match.\n"
+         "e.g. From kill #3 = captured from the 3rd time you kill the same player."),
+        extra_config={"kill_mod_bourreau_n": 3}),
+    FilterDef("kill_mod_eco_frag",       "💰 ECO FRAG:",      "💰 ECO",         "db",
+        ("Pistol kill against a full-buy opponent (rifle / sniper / LMG).\n"
+         "Falls back to all pistol kills if victim_weapon column is missing.")),
+]
+
+# ── Derived structures (auto-generated — DO NOT EDIT, edit KILL_FILTER_REGISTRY) ──
+
+# All registry keys (including hide_ui entries)
+KILL_FILTER_KEYS_ALL: _List[str] = [f.key for f in KILL_FILTER_REGISTRY]
+# Primary keys (visible in UI)
+KILL_FILTER_KEYS: _List[str] = [f.key for f in KILL_FILTER_REGISTRY if not f.hide_ui]
+# Short display labels dict — replaces KILL_FILTER_LABELS
+KILL_FILTER_LABELS: dict = {f.key: f.badge for f in KILL_FILTER_REGISTRY}
+# SQL-backed mod candidate columns dict — replaces _MOD_COLS in _query_events
+KILL_FILTER_SQL_COLS: dict = {f.key: f.sql_cols
+    for f in KILL_FILTER_REGISTRY if f.category == "mods" and f.sql_cols}
+# DEFAULT_CONFIG additions (auto-built from registry)
+_FILTER_CONFIG_DEFAULTS: dict = {}
+for _f in KILL_FILTER_REGISTRY:
+    _FILTER_CONFIG_DEFAULTS[_f.key] = False
+    _FILTER_CONFIG_DEFAULTS[f"{_f.key}_req"] = False
+    if _f.extra_config:
+        _FILTER_CONFIG_DEFAULTS.update(_f.extra_config)
+# bool_keys additions (all filter enable + _req flags + bool extra_config sub-keys)
+_FILTER_BOOL_KEYS: _List[str] = []
+for _f in KILL_FILTER_REGISTRY:
+    _FILTER_BOOL_KEYS.append(_f.key)
+    _FILTER_BOOL_KEYS.append(f"{_f.key}_req")
+    if _f.extra_config:
+        for _ek, _ev in _f.extra_config.items():
+            if isinstance(_ev, bool) and _ek not in _FILTER_BOOL_KEYS:
+                _FILTER_BOOL_KEYS.append(_ek)
+# PRESET_KEYS player additions
+_FILTER_PRESET_PLAYER_KEYS: _List[str] = list(_FILTER_BOOL_KEYS)
+for _f in KILL_FILTER_REGISTRY:
+    if _f.extra_config:
+        for _k in _f.extra_config:
+            if _k not in _FILTER_PRESET_PLAYER_KEYS:
+                _FILTER_PRESET_PLAYER_KEYS.append(_k)
 
 VIDEO_CODECS_INFO = {
     "libx264": "H.264 CPU — Universal, compatible everywhere.",
@@ -455,68 +605,14 @@ DEFAULT_CONFIG = {
     "headshots_mode": "all",
     "teamkills_mode": "include",
     "include_suicides": True,   # include suicides (weapon world/suicide/world_entity)
-    # Kill modifiers logic is fixed to "mixed" (required + optional)
-    "kill_mod_logic_mods": "mixed",   # internal compatibility key
-    "kill_mod_logic_dp2":  "mixed",   # internal compatibility key
-    "kill_mod_logic_db":   "mixed",   # internal compatibility key
-    # Per-filter "required" flags
-    "kill_mod_through_smoke_req":  False,
-    "kill_mod_no_scope_req":       False,
-    "kill_mod_wall_bang_req":      False,
-    "kill_mod_airborne_req":       False,
-    "kill_mod_assisted_flash_req": False,
-    "kill_mod_collateral_req":     False,
-    "kill_mod_attacker_blind_req": False,
-    "kill_mod_trois_shot_req":     False,
-    "kill_mod_no_trois_shot_req":  False,
-    "kill_mod_trois_tap_req":      False,
-    "kill_mod_one_tap_req":        False,
-    "kill_mod_spray_transfer_req": False,
-    "kill_mod_high_velocity_req":  False,
-    "kill_mod_flick_req":          False,
-    "kill_mod_sauveur_req":        False,
-    "kill_mod_entry_frag_req":     False,
-    "kill_mod_ace_req":            False,
-    "kill_mod_multi_kill_req":     False,
-    "kill_mod_bourreau_req":       False,
-    "kill_mod_eco_frag_req":       False,
-
-    # Kill modifiers (OR logic: checked = must match; none checked = no filter)
-    
-    "kill_mod_through_smoke": False,   # kill through smoke
-    "kill_mod_no_scope": False,        # no-scope kill (sniper)
-    "kill_mod_wall_bang": False,       # wallbang kill
-    "kill_mod_airborne": False,        # killer airborne
-    "kill_mod_assisted_flash": False,  # victim blinded (flash-assisted kill)
-    "kill_mod_collateral": False,      # collateral kill (bullet through a victim)
-    # TROIS SHOT modifier (v62) — lucky kills on precision weapons via demoparser2
-    "kill_mod_trois_shot": False,
-    # Inverse modifier: exclude lucky kills (v68)
-    "kill_mod_no_trois_shot": False,
-    # TROIS TAP modifier (v68) — lucky AND isolated one-tap headshot
-    "kill_mod_trois_tap": False,
-    # ONE TAP modifier (v66) — isolated single shot headshot, no shot within ±2s
-    "kill_mod_one_tap": False,
-    # SPRAY TRANSFER modifier (v87) — ≥2 kills in one continuous burst (auto weapons only)
-    "kill_mod_spray_transfer": False,
-    # DB-based modifiers (v91)
-    "kill_mod_entry_frag":     False,  # first kill of the round
-    "kill_mod_ace":            False,  # 5-kill round (all 5 opponents)
-    "kill_mod_multi_kill":     False,  # ≥3 kills in the same round within N seconds
-    "kill_mod_multi_kill_n":   3,      # minimum kills for multi-kill (3=triple, 4=quadra)
-    "kill_mod_multi_kill_s":   12,     # max seconds between first and last kill
-    "kill_mod_bourreau":       False,  # kills the same victim ≥3 times in the match
-    "kill_mod_bourreau_n":     3,      # minimum repeat kills against same victim
-    "kill_mod_eco_frag":       False,  # pistol kill vs full-buy opponent
-    "kill_mod_attacker_blind": False,  # killer was blinded at shot time (attacker_blind)
-    # dp2-based modifiers (v91)
-    "kill_mod_high_velocity":  False,  # ferrari peek — one-shot + moving before + resumes after
-    "kill_mod_hv_one_shot":    True,   # require isolated shot (no prior fire within ~0.75s)
-    "kill_mod_high_vel_thr":   100,    # min approach speed (u/s) — walk=130, run=250
-    "kill_mod_flick":          False,  # large view-angle change just before the kill
-    "kill_mod_flick_deg":      50,     # minimum angle delta in degrees to qualify
-    "kill_mod_sauveur":        False,  # killed an enemy who was hurting a teammate
-    # Clutch mode (v82/v93) — player is last alive on team, kills remaining opponents
+    # Kill modifiers — auto-populated from KILL_FILTER_REGISTRY
+    # Logic mode keys kept for backward compat
+    "kill_mod_logic_mods": "mixed",
+    "kill_mod_logic_dp2":  "mixed",
+    "kill_mod_logic_db":   "mixed",
+    # All filter enable/req/extra_config keys are injected below at startup
+    **_FILTER_CONFIG_DEFAULTS,
+        # Clutch mode (v82/v93) — player is last alive on team, kills remaining opponents
     "clutch_enabled":     False,
     # 1vX size filter — which opponent counts are included. All False = all included.
     "clutch_1v1":         False,
@@ -564,28 +660,9 @@ PRESET_KEYS = {
     "player": ["steam_id", "player_name", "events", "weapons", "date_from", "date_to",
                "perspective", "victim_pre_s", "headshots_mode", "include_suicides", "teamkills_mode",
                "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
-               "kill_mod_through_smoke", "kill_mod_no_scope", "kill_mod_wall_bang",
-               "kill_mod_airborne", "kill_mod_assisted_flash", "kill_mod_collateral",
-               "kill_mod_trois_shot", "kill_mod_no_trois_shot", "kill_mod_trois_tap",
-               "kill_mod_one_tap", "kill_mod_spray_transfer",
-               "kill_mod_entry_frag", "kill_mod_ace", "kill_mod_multi_kill",
-               "kill_mod_multi_kill_n", "kill_mod_multi_kill_s",
-               "kill_mod_bourreau", "kill_mod_bourreau_n",
-               "kill_mod_eco_frag", "kill_mod_attacker_blind",
-               "kill_mod_high_velocity", "kill_mod_hv_one_shot", "kill_mod_high_vel_thr",
-               "kill_mod_flick", "kill_mod_flick_deg", "kill_mod_sauveur",
-               # _req flags (mixed mode)
-               "kill_mod_through_smoke_req", "kill_mod_no_scope_req",
-               "kill_mod_wall_bang_req", "kill_mod_airborne_req",
-               "kill_mod_assisted_flash_req", "kill_mod_collateral_req",
-               "kill_mod_attacker_blind_req",
-               "kill_mod_trois_shot_req", "kill_mod_no_trois_shot_req",
-               "kill_mod_trois_tap_req", "kill_mod_one_tap_req",
-               "kill_mod_spray_transfer_req", "kill_mod_high_velocity_req",
-               "kill_mod_flick_req", "kill_mod_sauveur_req",
-               "kill_mod_entry_frag_req", "kill_mod_ace_req",
-               "kill_mod_multi_kill_req", "kill_mod_bourreau_req", "kill_mod_eco_frag_req",
-               "clutch_enabled", "clutch_1v1", "clutch_1v2", "clutch_1v3",
+               # Filter keys auto-derived from KILL_FILTER_REGISTRY
+               *_FILTER_PRESET_PLAYER_KEYS,
+                              "clutch_enabled", "clutch_1v1", "clutch_1v2", "clutch_1v3",
                "clutch_1v4", "clutch_1v5",
                "clutch_require_win", "clutch_clip_mode",
                "clip_order", "show_xray"],
@@ -1347,10 +1424,32 @@ class ScrollableFrame(tk.Frame):
         self._c.configure(yscrollcommand=sb.set)
         self._c.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        self._c.bind("<Enter>", lambda e: self._c.bind_all("<MouseWheel>",
-                                                            lambda ev: self._c.yview_scroll(-1 * (ev.delta // 120),
-                                                                                            "units")))
-        self._c.bind("<Leave>", lambda e: self._c.unbind_all("<MouseWheel>"))
+        def _scroll(ev):
+            self._c.yview_scroll(-1 * (ev.delta // 120), "units")
+
+        def _enable_scroll(e=None):
+            self._c.bind_all("<MouseWheel>", _scroll)
+
+        def _maybe_disable_scroll(e=None):
+            # Only unbind if the pointer has truly left the whole scrollable area.
+            # Without this check, <Leave> fires whenever mouse enters a child widget
+            # (Sec frames, checkboxes, labels…) and kills scrolling mid-panel.
+            try:
+                px, py = self.winfo_pointerxy()
+                rx, ry = self.winfo_rootx(), self.winfo_rooty()
+                rw, rh = self.winfo_width(), self.winfo_height()
+                if px < rx or px > rx + rw or py < ry or py > ry + rh:
+                    self._c.unbind_all("<MouseWheel>")
+            except Exception:
+                self._c.unbind_all("<MouseWheel>")
+
+        # Re-enable when entering canvas or inner content frame.
+        # Re-check when leaving either — if pointer is still inside the
+        # visible area we keep scrolling; otherwise we turn it off.
+        self._c.bind("<Enter>", _enable_scroll)
+        self._c.bind("<Leave>", _maybe_disable_scroll)
+        self.inner.bind("<Enter>", _enable_scroll)
+        self.inner.bind("<Leave>", _maybe_disable_scroll)
 
 class Sec(tk.LabelFrame):
     def __init__(self, parent, title, **kw):
@@ -1390,6 +1489,15 @@ def scombo(parent, var, values, width=15):
 
 def mlabel(parent, text, **kw):
     return tk.Label(parent, text=text, font=FONT_SM, fg=MUTED, bg=BG2, **kw)
+
+def flabel(parent, text, **kw):
+    """Filter name label — slightly brighter than mlabel to distinguish filter names."""
+    return tk.Label(parent, text=text, font=FONT_SM, fg=TEXT, bg=BG2, **kw)
+
+def slabel(parent, text, **kw):
+    """Subcategory section header label — accent-coloured to visually separate sections."""
+    return tk.Label(parent, text=text, font=(FONT_SM[0], FONT_SM[1], "bold"),
+                    fg=ORANGE, bg=BG2, **kw)
 
 def hchk(parent, text, var, **kw):
     cb_kw = dict(font=FONT_SM, relief="flat", bd=0, cursor="hand2",
@@ -1539,31 +1647,23 @@ class App(tk.Tk):
                      "phys_ragdoll_gravity", "phys_sv_gravity",
                      "ui_window_w", "ui_window_h", "ui_split_pct",
                      "victim_pre_s", "dp2_threads",
-                     "kill_mod_multi_kill_n", "kill_mod_multi_kill_s",
-                     "kill_mod_bourreau_n", "kill_mod_high_vel_thr", "kill_mod_flick_deg"]
+                     # Filter sub-option ints from extra_config (e.g. kill_mod_flick_deg)
+                     *[k for f in KILL_FILTER_REGISTRY
+                       if f.extra_config
+                       for k, v in f.extra_config.items()
+                       if isinstance(v, int) and not isinstance(v, bool)]]
         bool_keys = ["use_config_file_mode", "close_game_after", "show_only_death_notices",
                       "concatenate_sequences", "subfolder_per_demo", "true_view", "tag_enabled",
                       "hlae_afx_stream", "hlae_no_spectator_ui",
                       "hlae_fix_scope_fov", "hlae_workshop_download",
                       "include_suicides", "show_xray",
-                      "kill_mod_through_smoke", "kill_mod_no_scope", "kill_mod_wall_bang",
-                      "kill_mod_airborne", "kill_mod_assisted_flash", "kill_mod_collateral",
-                      "kill_mod_trois_shot", "kill_mod_no_trois_shot", "kill_mod_trois_tap",
-                      "kill_mod_one_tap", "kill_mod_spray_transfer",
-                      "kill_mod_entry_frag", "kill_mod_ace", "kill_mod_multi_kill",
-                      "kill_mod_bourreau", "kill_mod_eco_frag", "kill_mod_attacker_blind",
-                      "kill_mod_high_velocity", "kill_mod_hv_one_shot", "kill_mod_flick", "kill_mod_sauveur",
-                      # Per-filter "required" flags (mixed mode)
-                      "kill_mod_through_smoke_req", "kill_mod_no_scope_req",
-                      "kill_mod_wall_bang_req", "kill_mod_airborne_req",
-                      "kill_mod_assisted_flash_req", "kill_mod_collateral_req",
-                      "kill_mod_attacker_blind_req",
-                      "kill_mod_trois_shot_req", "kill_mod_no_trois_shot_req",
-                      "kill_mod_trois_tap_req", "kill_mod_one_tap_req",
-                      "kill_mod_spray_transfer_req", "kill_mod_high_velocity_req",
-                      "kill_mod_flick_req", "kill_mod_sauveur_req",
-                      "kill_mod_entry_frag_req", "kill_mod_ace_req",
-                      "kill_mod_multi_kill_req", "kill_mod_bourreau_req", "kill_mod_eco_frag_req",
+                      # Filter bool keys auto-derived from KILL_FILTER_REGISTRY
+                      *_FILTER_BOOL_KEYS,
+                      # Filter sub-option bools from extra_config (e.g. kill_mod_hv_one_shot)
+                      *[k for f in KILL_FILTER_REGISTRY
+                        if f.extra_config
+                        for k, v in f.extra_config.items()
+                        if isinstance(v, bool)],
                       "assemble_after", "delete_after_assemble",
                       "phys_ragdoll_enable", "phys_blood", "phys_dynamic_lighting",
                       "cs2_send_to_back",
@@ -2867,7 +2967,7 @@ class App(tk.Tk):
         # HS filter — its own row, independent of the Mods ANY/ALL logic
         hs_row = tk.Frame(sec, bg=BG2)
         hs_row.pack(fill="x", pady=(4, 0))
-        _hs_lbl = mlabel(hs_row, "🎯 Headshots:")
+        _hs_lbl = flabel(hs_row, "🎯 Headshots:")
         _hs_lbl.pack(side="left")
         add_tip(_hs_lbl,
                 "All = include all kills regardless of headshot status.\n"
@@ -2881,11 +2981,11 @@ class App(tk.Tk):
         # Store the radio buttons container so ONE TAP / TROIS TAP can disable it
         self._hs_row = hs_row
 
-        # ── KILL FILTERS (fixed required+optional logic) ──────────────────────
+        # ── KILL FILTERS — data-driven from KILL_FILTER_REGISTRY ──────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
         _kill_logic_hdr = tk.Frame(sec, bg=BG2)
         _kill_logic_hdr.pack(fill="x", pady=(0, 4))
-        mlabel(_kill_logic_hdr, "Kill filters (Mods + demoparser2):").pack(side="left")
+        slabel(_kill_logic_hdr, "Kill filters (Mods + demoparser2):").pack(side="left")
         _logic_lbl = mlabel(_kill_logic_hdr, "  ★ Must = required, others = optional")
         _logic_lbl.pack(side="left", padx=(8, 0))
         add_tip(_logic_lbl,
@@ -2894,337 +2994,117 @@ class App(tk.Tk):
                 "plus at least one enabled non-★ filter must match globally.\n"
                 "If no non-★ filter is enabled, only ★ Must filters are required.")
         _clear_kf_btn = tk.Button(
-            _kill_logic_hdr, text="Unselect all", command=self._clear_kill_filters,
-            font=FONT_SM, bg=BG3, fg=MUTED, activebackground=BORDER, activeforeground=TEXT,
-            relief="flat", bd=0, padx=8, pady=2, cursor="hand2"
+            _kill_logic_hdr, text="✕ Unselect all", command=self._clear_kill_filters,
+            font=FONT_SM, bg=BG3, fg=RED, activebackground=BORDER, activeforeground=RED,
+            relief="flat", bd=0, padx=8, pady=2, cursor="hand2", highlightthickness=0
         )
         _clear_kf_btn.pack(side="right")
         add_tip(_clear_kf_btn, "Disable all kill/situation modifiers and clear all ★ Must flags.")
         self._on_kill_logic_change()
 
-        _MODS = [
-            ("kill_mod_through_smoke",  "💨 SMOKE:",          "kill_mod_through_smoke",
-             "Kill through a smoke grenade (DB column — fast, no demoparser2 needed)."),
-            ("kill_mod_no_scope",       "🔭 NO-SCOPE:",       "kill_mod_no_scope",
-             "No-scope kill — sniper only (DB column)."),
-            ("kill_mod_assisted_flash", "⚡ VICTIM FLASHED:", "kill_mod_assisted_flash",
-             "Victim was blinded by a flashbang (DB column)."),
-        ]
-        self._must_widgets["mods"] = []
-        for i, (key, label, _ck, tip) in enumerate(_MODS):
-            row = tk.Frame(sec, bg=BG2)
-            row.pack(fill="x", pady=(2 if i > 0 else 0, 0))
-            _lbl = mlabel(row, label)
-            _lbl.pack(side="left")
-            add_tip(_lbl, tip)
-            _cb = hchk(row, "Enable", self.v[key])
-            _cb.pack(side="left", padx=(4, 0))
-            add_tip(_cb, tip)
-            _must_cb = hchk(row, "★ Must", self.v[f"{key}_req"])
-            self._must_widgets["mods"].append(_must_cb)
-            add_tip(_must_cb, "Required filter (must match).\nOthers without ★ are optional (at least one optional must match).")
-            self._wire_enable_must(self.v[key], self.v[f"{key}_req"])
-        self.after(50, lambda: self._on_logic_mode_change("mods"))
-
-        # ── Mods ───────────────────────────────────────────────────────────────
+        # ── Mods (SQL-backed) ─────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
         _mods_hdr = tk.Frame(sec, bg=BG2)
         _mods_hdr.pack(fill="x", pady=(0, 4))
-        mlabel(_mods_hdr, "Mods — none checked = all kills:").pack(side="left")
+        slabel(_mods_hdr, "Mods — none checked = all kills:").pack(side="left")
+
+        self._must_widgets["mods"] = []
+        for _fdef in [f for f in KILL_FILTER_REGISTRY if f.category == "mods"]:
+            self._build_filter_row(sec, _fdef, self._must_widgets["mods"])
+        self.after(50, lambda: self._on_logic_mode_change("mods"))
 
         # ── demoparser2 modifiers ─────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
         _dp2_hdr = tk.Frame(sec, bg=BG2)
         _dp2_hdr.pack(fill="x", pady=(0, 4))
-        mlabel(_dp2_hdr, "demoparser2 modifiers:").pack(side="left")
+        slabel(_dp2_hdr, "demoparser2 modifiers:").pack(side="left")
         mlabel(_dp2_hdr, "  (uses shared kill logic above)").pack(side="left", padx=(8, 0))
 
-        # ── player_death flag modifiers (dp2) ─────────────────────────────────
         self._must_widgets["dp2"] = []
-        _DP2_FLAG_MODS = [
-            ("kill_mod_wall_bang",      "🧱 WALLBANG:",
-             "Kill where the bullet penetrated an obstacle and is not a collateral chain.\n"
-             "If penetration goes through a player and also kills another player, it is counted as COLLATERAL instead.\n"
-             "Uses player_death.penetrated with per-shot grouping via demoparser2."),
-            ("kill_mod_airborne",       "🪂 AIRBORNE:",
-             "Bullet of the kill was fired while the killer was not on ground.\n"
-             "Uses player_death.attackerinair from the demo file via demoparser2."),
-            ("kill_mod_collateral",     "🎯 COLLATERAL:",
-             "Single bullet penetrated a first player and killed at least one more player in the same shot chain.\n"
-             "Detected from penetrated kills grouped by killer+tick+weapon and validated by a single weapon_fire near that tick."),
-            ("kill_mod_attacker_blind", "😵 BLIND FIRE:",
-             "Bullet of the kill was fired while the killer was blinded.\n"
-             "Uses player_death.attackerblind from the demo file via demoparser2."),
-        ]
-        for key, label, tip in _DP2_FLAG_MODS:
-            row = tk.Frame(sec, bg=BG2)
-            row.pack(fill="x", pady=(2, 0))
-            _lbl = mlabel(row, label)
-            _lbl.pack(side="left")
-            add_tip(_lbl, tip)
-            _cb = hchk(row, "Enable", self.v[key])
-            _cb.pack(side="left", padx=(4, 0))
-            add_tip(_cb, tip)
-            _must_cb = hchk(row, "★ Must", self.v[f"{key}_req"])
-            self._must_widgets["dp2"].append(_must_cb)
-            add_tip(_must_cb, "Required filter (must match).")
-            self._wire_enable_must(self.v[key], self.v[f"{key}_req"])
-            dp2_badge(row).pack(side="left", padx=(8, 0))
-
-        # ── TROIS SHOT ────────────────────────────────────────────────────────
-        trois_row = tk.Frame(sec, bg=BG2)
-        trois_row.pack(fill="x", pady=(2, 0))
-        _ts_lbl = mlabel(trois_row, "🎲 TROIS SHOT:")
-        _ts_lbl.pack(side="left")
-        add_tip(_ts_lbl,
-                "Lucky kills on precision weapons — detected via demoparser2.\n\n"
-                "Per-weapon logic:\n"
-                "  Deagle / R8   bloom > 0.015 (not a stationary aimed shot)\n"
-                "  AWP / SSG 08  unscoped at shot time\n"
-                "  SCAR-20 / G3SG1  unscoped OR bloom > 0.010 OR moving\n\n"
-                "Enable = keep only lucky kills.\n"
-                "Exclude = keep only precise kills on these weapons.\n"
-                "⚠ Enable and Exclude are mutually exclusive.")
-        _ts_cb = hchk(trois_row, "Enable", self.v["kill_mod_trois_shot"],
-                      command=self._on_trois_shot_toggle)
-        _ts_cb.pack(side="left", padx=(4, 0))
-        _ts_must = hchk(trois_row, "★ Must", self.v["kill_mod_trois_shot_req"])
-        self._must_widgets["dp2"].append(_ts_must)
-        add_tip(_ts_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_trois_shot"], self.v["kill_mod_trois_shot_req"])
-        _nts_cb = hchk(trois_row, "Exclude", self.v["kill_mod_no_trois_shot"],
-                       command=self._on_no_trois_shot_toggle)
-        _nts_cb.pack(side="left", padx=(12, 0))
-        add_tip(_nts_cb,
-                "Inverse of TROIS SHOT — removes lucky kills on these weapons.\n"
-                "When combined with other dp2 filters, it acts as an exclusion gate first.")
-        dp2_badge(trois_row).pack(side="left", padx=(8, 0))
-
-        # ── TROIS TAP ─────────────────────────────────────────────────────────
-        tt_row = tk.Frame(sec, bg=BG2)
-        tt_row.pack(fill="x", pady=(4, 0))
-        _tt_lbl = mlabel(tt_row, "🎯🎲 TROIS TAP:")
-        _tt_lbl.pack(side="left")
-        add_tip(_tt_lbl,
-                "TROIS SHOT + ONE TAP combined: lucky isolated headshot.\n"
-                "Must be a headshot, qualify as lucky (TROIS SHOT), and have no other\n"
-                "shot within 2s before or after.\n"
-                "HS is auto-forced only when active logic guarantees HS-only output.")
-        _tt_cb = hchk(tt_row, "Enable", self.v["kill_mod_trois_tap"],
-                      command=self._on_trois_tap_toggle)
-        _tt_cb.pack(side="left", padx=(4, 0))
-        _tt_must = hchk(tt_row, "★ Must", self.v["kill_mod_trois_tap_req"])
-        self._must_widgets["dp2"].append(_tt_must)
-        add_tip(_tt_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_trois_tap"], self.v["kill_mod_trois_tap_req"])
-        dp2_badge(tt_row).pack(side="left", padx=(8, 0))
-
-        # ── ONE TAP ───────────────────────────────────────────────────────────
-        ot_row = tk.Frame(sec, bg=BG2)
-        ot_row.pack(fill="x", pady=(4, 0))
-        _ot_lbl = mlabel(ot_row, "🎯 ONE TAP:")
-        _ot_lbl.pack(side="left")
-        add_tip(_ot_lbl,
-                "Isolated single-shot headshot — no other shot within 2s before or after.\n"
-                "HS is auto-forced only when active logic guarantees HS-only output.")
-        _ot_cb = hchk(ot_row, "Enable", self.v["kill_mod_one_tap"],
-                      command=self._on_one_tap_toggle)
-        _ot_cb.pack(side="left", padx=(4, 0))
-        _ot_must = hchk(ot_row, "★ Must", self.v["kill_mod_one_tap_req"])
-        self._must_widgets["dp2"].append(_ot_must)
-        add_tip(_ot_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_one_tap"], self.v["kill_mod_one_tap_req"])
-        dp2_badge(ot_row).pack(side="left", padx=(8, 0))
-
-        # ── SPRAY TRANSFER ────────────────────────────────────────────────────
-        st_row = tk.Frame(sec, bg=BG2)
-        st_row.pack(fill="x", pady=(4, 0))
-        _st_lbl = mlabel(st_row, "🔫 SPRAY TRANSFER:")
-        _st_lbl.pack(side="left")
-        add_tip(_st_lbl,
-                "≥2 enemies killed in one continuous spray (no trigger release).\n"
-                "Auto weapons only: rifles (AK-47, M4A4/M4A1-S, Galil AR, FAMAS, SG 553, AUG),\n"
-                "SMGs, M249, Negev, and CZ75-Auto (the only full-auto pistol).\n"
-                "Excluded: AWP, SSG 08, SCAR-20, G3SG1, shotguns, other pistols.")
-        _st_cb = hchk(st_row, "Enable", self.v["kill_mod_spray_transfer"])
-        _st_cb.pack(side="left", padx=(4, 0))
-        _st_must = hchk(st_row, "★ Must", self.v["kill_mod_spray_transfer_req"])
-        self._must_widgets["dp2"].append(_st_must)
-        add_tip(_st_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_spray_transfer"], self.v["kill_mod_spray_transfer_req"])
-        dp2_badge(st_row).pack(side="left", padx=(8, 0))
-
-        # ── FERRARI PEEK ──────────────────────────────────────────────────────
-        hv_row = tk.Frame(sec, bg=BG2)
-        hv_row.pack(fill="x", pady=(4, 0))
-        _hv_lbl = mlabel(hv_row, "🏎 FERRARI PEEK:")
-        _hv_lbl.pack(side="left")
-        add_tip(_hv_lbl,
-                "Kill faster than the opponent can react.\n\n"
-                "The player peeks at speed, fires once, and retreats immediately —\n"
-                "the entire exposure window is shorter than human reaction time (~150-250ms).\n\n"
-                "Three conditions:\n"
-                "  1. One-shot (optional) — no prior fire within ~0.75s before the kill\n"
-                "  2. Moving before — approach speed ≥ threshold within the last 1s before the shot,\n"
-                "     OR the kill shot itself was fired while still running\n"
-                "  3. Resumes after — fires again within 2s of the kill while moving\n\n"
-                "CS2 run speeds: knife 250 · pistols 240 · Deagle 230 · AK-47 215 · AWP 200 u/s\n"
-                "Default 100 u/s — catches any active peek above walking speed.")
-
-        _hv_inner = tk.Frame(hv_row, bg=BG2)
-
-        def _on_hv_toggle(*_):
-            if self.v["kill_mod_high_velocity"].get():
-                _hv_inner.pack(side="left", fill="x")
+        for _fdef in [f for f in KILL_FILTER_REGISTRY
+                      if f.category == "dp2" and not f.hide_ui]:
+            if _fdef.special == "high_velocity":
+                # FERRARI PEEK: expandable sub-panel
+                _hv_row = tk.Frame(sec, bg=BG2)
+                _hv_row.pack(fill="x", pady=(4, 0))
+                flabel(_hv_row, _fdef.label).pack(side="left")
+                add_tip(_hv_row.winfo_children()[-1], _fdef.tip)
+                _hv_inner = tk.Frame(_hv_row, bg=BG2)
+                def _on_hv_toggle(*_, _inner=_hv_inner):
+                    if self.v["kill_mod_high_velocity"].get():
+                        _inner.pack(side="left", fill="x")
+                    else:
+                        _inner.pack_forget()
+                _hv_en = hchk(_hv_row, "Enable", self.v["kill_mod_high_velocity"],
+                              command=_on_hv_toggle)
+                _hv_en.pack(side="left", padx=(4, 0))
+                _hv_must = hchk(_hv_row, "★ Must", self.v["kill_mod_high_velocity_req"])
+                self._must_widgets["dp2"].append(_hv_must)
+                add_tip(_hv_must, "Required filter (must match).")
+                self._wire_enable_must(self.v["kill_mod_high_velocity"],
+                                       self.v["kill_mod_high_velocity_req"])
+                _os_cb = hchk(_hv_inner, "One-shot", self.v["kill_mod_hv_one_shot"])
+                _os_cb.pack(side="left", padx=(8, 0))
+                add_tip(_os_cb, "Require no prior fire within ~0.75s before the kill.\n"
+                                "Uncheck to allow spray finishers.")
+                mlabel(_hv_inner, "  Min approach:").pack(side="left", padx=(8, 0))
+                sentry(_hv_inner, self.v["kill_mod_high_vel_thr"], width=5).pack(
+                    side="left", padx=(4, 0), ipady=4)
+                mlabel(_hv_inner, "u/s").pack(side="left", padx=(2, 0))
+                dp2_badge(_hv_inner).pack(side="right", padx=(0, 4))
+                self.after(50, _on_hv_toggle)
+            elif _fdef.key == "kill_mod_flick":
+                # FLICK: degree entry field
+                _fl_row = self._build_filter_row(sec, _fdef, self._must_widgets["dp2"])
+                mlabel(_fl_row, "  Min angle:").pack(side="left", padx=(8, 0))
+                sentry(_fl_row, self.v["kill_mod_flick_deg"], width=4).pack(
+                    side="left", padx=(4, 0), ipady=4)
+                mlabel(_fl_row, "°").pack(side="left", padx=(2, 0))
             else:
-                _hv_inner.pack_forget()
-
-        _hv_enable = hchk(hv_row, "Enable", self.v["kill_mod_high_velocity"],
-                          command=_on_hv_toggle)
-        _hv_enable.pack(side="left", padx=(4, 0))
-        _hv_must = hchk(hv_row, "★ Must", self.v["kill_mod_high_velocity_req"])
-        self._must_widgets["dp2"].append(_hv_must)
-        add_tip(_hv_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_high_velocity"], self.v["kill_mod_high_velocity_req"])
-
-        _os_cb = hchk(_hv_inner, "One-shot", self.v["kill_mod_hv_one_shot"])
-        _os_cb.pack(side="left", padx=(8, 0))
-        add_tip(_os_cb, "Require no prior fire within ~0.75s before the kill.\n"
-                        "Uncheck to allow spray finishers as long as the approach and resume conditions hold.")
-        mlabel(_hv_inner, "  Min approach:").pack(side="left", padx=(8, 0))
-        sentry(_hv_inner, self.v["kill_mod_high_vel_thr"], width=5).pack(side="left", padx=(4, 0), ipady=4)
-        mlabel(_hv_inner, "u/s").pack(side="left", padx=(2, 0))
-        dp2_badge(_hv_inner).pack(side="left", padx=(8, 0))
-
-        self.after(50, _on_hv_toggle)
-
-        # ── FLICK ─────────────────────────────────────────────────────────────
-        fl_row = tk.Frame(sec, bg=BG2)
-        fl_row.pack(fill="x", pady=(4, 0))
-        _fl_lbl = mlabel(fl_row, "↩ FLICK:")
-        _fl_lbl.pack(side="left")
-        add_tip(_fl_lbl,
-                "Kill preceded by a large view-angle change (~0.5s before kill tick).\n"
-                "Default: 50°. Lower = catch smaller corrections, raise = extreme flicks only.")
-        hchk(fl_row, "Enable", self.v["kill_mod_flick"]).pack(side="left", padx=(4, 0))
-        _fl_must = hchk(fl_row, "★ Must", self.v["kill_mod_flick_req"])
-        self._must_widgets["dp2"].append(_fl_must)
-        add_tip(_fl_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_flick"], self.v["kill_mod_flick_req"])
-        mlabel(fl_row, "  Min angle:").pack(side="left", padx=(8, 0))
-        sentry(fl_row, self.v["kill_mod_flick_deg"], width=4).pack(side="left", padx=(4, 0), ipady=4)
-        mlabel(fl_row, "°").pack(side="left", padx=(2, 0))
-        dp2_badge(fl_row).pack(side="left", padx=(8, 0))
-
-        # ── SAVIOR ────────────────────────────────────────────────────────────
-        sv_row = tk.Frame(sec, bg=BG2)
-        sv_row.pack(fill="x", pady=(4, 0))
-        _sv_lbl = mlabel(sv_row, "🛡 SAVIOR:")
-        _sv_lbl.pack(side="left")
-        add_tip(_sv_lbl,
-                "Kill an enemy who was actively damaging a teammate in the ~2s prior.\n"
-                "Captures clutch saves and last-second rescues.")
-        hchk(sv_row, "Enable", self.v["kill_mod_sauveur"]).pack(side="left", padx=(4, 0))
-        _sv_must = hchk(sv_row, "★ Must", self.v["kill_mod_sauveur_req"])
-        self._must_widgets["dp2"].append(_sv_must)
-        add_tip(_sv_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_sauveur"], self.v["kill_mod_sauveur_req"])
-        dp2_badge(sv_row).pack(side="left", padx=(8, 0))
+                self._build_filter_row(sec, _fdef, self._must_widgets["dp2"])
         self.after(50, lambda: self._on_logic_mode_change("dp2"))
 
-        # ── SITUATION (fixed required+optional logic) ────────────────────────
+        # ── Situation (DB + Clutch) ───────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
         _sit_hdr = tk.Frame(sec, bg=BG2)
         _sit_hdr.pack(fill="x", pady=(0, 4))
-        mlabel(_sit_hdr, "Situation (DB + Clutch):").pack(side="left")
+        slabel(_sit_hdr, "Situation (DB + Clutch):").pack(side="left")
         _sit_logic_lbl = mlabel(_sit_hdr, "  ★ Must = required, others = optional")
         _sit_logic_lbl.pack(side="left", padx=(8, 0))
         add_tip(_sit_logic_lbl,
                 "Applied after kill filters.\n"
                 "Fixed logic: all ★ Must situation filters must match,\n"
-                "plus at least one enabled non-★ filter must match globally.\n"
-                "If no non-★ filter is enabled, only ★ Must filters are required.")
+                "plus at least one enabled non-★ filter must match globally.")
         self._must_widgets["db"] = []
-
-        # ── ENTRY FRAG ────────────────────────────────────────────────────────
-        ef_row = tk.Frame(sec, bg=BG2)
-        ef_row.pack(fill="x", pady=(2, 0))
-        _ef_lbl = mlabel(ef_row, "🚀 ENTRY FRAG:")
-        _ef_lbl.pack(side="left")
-        add_tip(_ef_lbl, "First kill of the round (earliest tick), regardless of side.")
-        hchk(ef_row, "Enable", self.v["kill_mod_entry_frag"]).pack(side="left", padx=(4, 0))
-        _ef_must = hchk(ef_row, "★ Must", self.v["kill_mod_entry_frag_req"])
-        self._must_widgets["db"].append(_ef_must)
-        add_tip(_ef_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_entry_frag"], self.v["kill_mod_entry_frag_req"])
-
-        # ── ACE ───────────────────────────────────────────────────────────────
-        ac_row = tk.Frame(sec, bg=BG2)
-        ac_row.pack(fill="x", pady=(4, 0))
-        _ac_lbl = mlabel(ac_row, "🃏 ACE:")
-        _ac_lbl.pack(side="left")
-        add_tip(_ac_lbl, "Rounds where the player eliminated all 5 opponents alone.")
-        hchk(ac_row, "Enable", self.v["kill_mod_ace"]).pack(side="left", padx=(4, 0))
-        _ac_must = hchk(ac_row, "★ Must", self.v["kill_mod_ace_req"])
-        self._must_widgets["db"].append(_ac_must)
-        add_tip(_ac_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_ace"], self.v["kill_mod_ace_req"])
-
-        # ── MULTI-KILL ────────────────────────────────────────────────────────
-        mk_row = tk.Frame(sec, bg=BG2)
-        mk_row.pack(fill="x", pady=(4, 0))
-        _mk_lbl = mlabel(mk_row, "⚡ MULTI-KILL:")
-        _mk_lbl.pack(side="left")
-        add_tip(_mk_lbl, "N or more kills in one round within the time window.")
-        hchk(mk_row, "Enable", self.v["kill_mod_multi_kill"]).pack(side="left", padx=(4, 0))
-        _mk_must = hchk(mk_row, "★ Must", self.v["kill_mod_multi_kill_req"])
-        self._must_widgets["db"].append(_mk_must)
-        add_tip(_mk_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_multi_kill"], self.v["kill_mod_multi_kill_req"])
-        mlabel(mk_row, "  Min kills:").pack(side="left", padx=(8, 0))
-        scombo(mk_row, self.v["kill_mod_multi_kill_n"], [2, 3, 4, 5], 3).pack(side="left", padx=(4, 0))
-        add_tip(mk_row.winfo_children()[-1], "2 = double, 3 = triple, 4 = quadra, 5 = ace")
-        mlabel(mk_row, "  within:").pack(side="left", padx=(8, 0))
-        sentry(mk_row, self.v["kill_mod_multi_kill_s"], width=3).pack(side="left", padx=(4, 0), ipady=4)
-        mlabel(mk_row, "s").pack(side="left", padx=(2, 0))
-
-        # ── BULLY ─────────────────────────────────────────────────────────────
-        bo_row = tk.Frame(sec, bg=BG2)
-        bo_row.pack(fill="x", pady=(4, 0))
-        _bo_lbl = mlabel(bo_row, "💀 BULLY:")
-        _bo_lbl.pack(side="left")
-        add_tip(_bo_lbl,
-                "Kill the same opponent for the Nth time in the match.\n"
-                "e.g. From kill #3 = captured from the 3rd time you kill the same player.")
-        hchk(bo_row, "Enable", self.v["kill_mod_bourreau"]).pack(side="left", padx=(4, 0))
-        _bo_must = hchk(bo_row, "★ Must", self.v["kill_mod_bourreau_req"])
-        self._must_widgets["db"].append(_bo_must)
-        add_tip(_bo_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_bourreau"], self.v["kill_mod_bourreau_req"])
-        mlabel(bo_row, "  From kill #:").pack(side="left", padx=(8, 0))
-        scombo(bo_row, self.v["kill_mod_bourreau_n"], [2, 3, 4, 5], 3).pack(side="left", padx=(4, 0))
-        add_tip(bo_row.winfo_children()[-1], "2 = from 2nd kill of same victim, 3 = from 3rd, etc.")
-
-        # ── ECO FRAG ──────────────────────────────────────────────────────────
-        eco_row = tk.Frame(sec, bg=BG2)
-        eco_row.pack(fill="x", pady=(4, 0))
-        _eco_lbl = mlabel(eco_row, "💰 ECO FRAG:")
-        _eco_lbl.pack(side="left")
-        add_tip(_eco_lbl,
-                "Pistol kill against a full-buy opponent (rifle / sniper / LMG).\n"
-                "Falls back to all pistol kills if victim_weapon column is missing.")
-        hchk(eco_row, "Enable", self.v["kill_mod_eco_frag"]).pack(side="left", padx=(4, 0))
-        _eco_must = hchk(eco_row, "★ Must", self.v["kill_mod_eco_frag_req"])
-        self._must_widgets["db"].append(_eco_must)
-        add_tip(_eco_must, "Required filter (must match).")
-        self._wire_enable_must(self.v["kill_mod_eco_frag"], self.v["kill_mod_eco_frag_req"])
+        for _fdef in [f for f in KILL_FILTER_REGISTRY if f.category == "db"]:
+            if _fdef.key == "kill_mod_multi_kill":
+                _mk_row = self._build_filter_row(sec, _fdef, self._must_widgets["db"])
+                mlabel(_mk_row, "  Min kills:").pack(side="left", padx=(8, 0))
+                scombo(_mk_row, self.v["kill_mod_multi_kill_n"], [2, 3, 4, 5], 3).pack(
+                    side="left", padx=(4, 0))
+                add_tip(_mk_row.winfo_children()[-1],
+                        "2 = double, 3 = triple, 4 = quadra, 5 = ace")
+                mlabel(_mk_row, "  within:").pack(side="left", padx=(8, 0))
+                sentry(_mk_row, self.v["kill_mod_multi_kill_s"], width=3).pack(
+                    side="left", padx=(4, 0), ipady=4)
+                mlabel(_mk_row, "s").pack(side="left", padx=(2, 0))
+            elif _fdef.key == "kill_mod_bourreau":
+                _bo_row = self._build_filter_row(sec, _fdef, self._must_widgets["db"])
+                mlabel(_bo_row, "  From kill #:").pack(side="left", padx=(8, 0))
+                scombo(_bo_row, self.v["kill_mod_bourreau_n"], [2, 3, 4, 5], 3).pack(
+                    side="left", padx=(4, 0))
+                add_tip(_bo_row.winfo_children()[-1],
+                        "2 = from 2nd kill of same victim, 3 = from 3rd, etc.")
+            else:
+                self._build_filter_row(sec, _fdef, self._must_widgets["db"])
         self.after(50, lambda: self._on_logic_mode_change("db"))
         self._install_hs_lock_watchers()
 
         # ── CLUTCH ────────────────────────────────────────────────────────────
+        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
         clutch_hdr = tk.Frame(sec, bg=BG2)
         clutch_hdr.pack(fill="x")
-        _cl_lbl = mlabel(clutch_hdr, "🤝 CLUTCH:")
+        _cl_lbl = slabel(clutch_hdr, "🤝 Clutch:")
         _cl_lbl.pack(side="left")
         add_tip(_cl_lbl,
                 "Player is last alive on their team and kills the remaining opponents.\n"
@@ -3430,11 +3310,16 @@ class App(tk.Tk):
                   activeforeground=RED, activebackground=BG3,
                   command=lambda: self._demo_picker_set_all(False)
                   ).pack(side="left")
-        tk.Button(pick_btns, text="↕ Toggle selected", font=FONT_DESC, bg=BG3, fg=MUTED,
+        tk.Button(pick_btns, text="✓ Check selected", font=FONT_DESC, bg=BG3, fg=GREEN,
                   relief="flat", bd=0, cursor="hand2", highlightthickness=0,
-                  activeforeground=ORANGE, activebackground=BG3,
-                  command=self._demo_picker_toggle_selected
+                  activeforeground=GREEN, activebackground=BG3,
+                  command=lambda: self._demo_picker_set_selected(True)
                   ).pack(side="left", padx=(6, 0))
+        tk.Button(pick_btns, text="✕ Uncheck selected", font=FONT_DESC, bg=BG3, fg=RED,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activeforeground=RED, activebackground=BG3,
+                  command=lambda: self._demo_picker_set_selected(False)
+                  ).pack(side="left", padx=(4, 0))
 
         # Internal state: {demo_path: bool} — True = included
         self._demo_picker_state: dict = {}
@@ -3581,30 +3466,12 @@ class App(tk.Tk):
             pass
 
     def _on_demo_tree_click(self, event):
-        """Toggle checked state on click. Return 'break' to suppress native selection
-        highlight which would otherwise fight with our tag-based coloring."""
+        """Allow native treeview row selection without toggling the check state.
+        Use the Check/Uncheck selected buttons to change check state on the selection."""
         region = self._demo_tree.identify_region(event.x, event.y)
-        iid    = self._demo_tree.identify_row(event.y)
-        if not iid or region not in ("cell", "tree"):
+        if region not in ("cell", "tree"):
             return "break"
-        dp = iid  # iid == demo_path
-        cur = self._demo_picker_state.get(dp, True)
-        new = not cur
-        self._demo_picker_state[dp] = new
-        sym = "✓" if new else "✕"
-        tag = "ok" if new else "off"
-        vals = self._demo_tree.item(iid, "values")
-        self._demo_tree.item(iid, values=(sym, vals[1], vals[2]), tags=(tag,))
-        self._demo_tree.selection_remove(iid)  # no native highlight
-        n_on  = sum(1 for v in self._demo_picker_state.values() if v)
-        n_tot = len(self._demo_picker_state)
-        try:
-            self._picker_count_lbl.config(
-                text=f"{n_on}/{n_tot} selected",
-                fg=ORANGE if n_on < n_tot else MUTED)
-        except Exception:
-            pass
-        return "break"
+        # Let native selection happen — don't return "break" so Tk handles highlight
 
     def _demo_picker_set_all(self, value):
         for dp in list(self._demo_picker_state.keys()):
@@ -3626,15 +3493,14 @@ class App(tk.Tk):
         except Exception:
             pass
 
-    def _demo_picker_toggle_selected(self):
+    def _demo_picker_set_selected(self, value: bool):
+        """Set the check state of all currently highlighted (native-selected) rows."""
         sel = self._demo_tree.selection()
         for iid in sel:
             dp = iid
-            cur = self._demo_picker_state.get(dp, True)
-            new = not cur
-            self._demo_picker_state[dp] = new
-            sym = "✓" if new else "✕"
-            tag = "ok" if new else "off"
+            self._demo_picker_state[dp] = value
+            sym = "✓" if value else "✕"
+            tag = "ok" if value else "off"
             old_vals = self._demo_tree.item(iid, "values")
             self._demo_tree.item(iid, values=(sym, old_vals[1], old_vals[2]), tags=(tag,))
         n_on  = sum(1 for v in self._demo_picker_state.values() if v)
@@ -4396,6 +4262,60 @@ class App(tk.Tk):
                 pass
         if category in ("mods", "dp2"):
             self._refresh_hs_lock_state()
+
+    def _build_filter_row(self, parent, fdef: "FilterDef",
+                          must_list: list, pady: int = 2) -> None:
+        """Build one standard kill-filter row from a FilterDef.
+
+        Renders:  [flabel]  [Enable hchk]  [★ Must hchk]  [optional extras]  [dp2_badge right]
+
+        Standard rows cover every filter that has no special toggle logic.
+        Special filters (trois_tap, one_tap, high_velocity) add their own rows
+        via their 'special' field — this method is still called for the label/Enable/Must
+        scaffold; their extra widgets are added by dedicated _build_*_extras methods.
+
+        must_list  — category must_widgets list; the ★ Must checkbox is appended.
+        """
+        row = tk.Frame(parent, bg=BG2)
+        row.pack(fill="x", pady=(pady, 0))
+
+        lbl = flabel(row, fdef.label)
+        lbl.pack(side="left")
+        add_tip(lbl, fdef.tip)
+
+        # Command for special filters
+        cmd_map = {
+            "trois_shot":     self._on_trois_shot_toggle,
+            "trois_tap":      self._on_trois_tap_toggle,
+            "one_tap":        self._on_one_tap_toggle,
+        }
+        cmd = cmd_map.get(fdef.special)
+
+        cb_kw = {"command": cmd} if cmd else {}
+        cb = hchk(row, "Enable", self.v[fdef.key], **cb_kw)
+        cb.pack(side="left", padx=(4, 0))
+        add_tip(cb, fdef.tip)
+
+        must_cb = hchk(row, "★ Must", self.v[f"{fdef.key}_req"])
+        must_list.append(must_cb)
+        add_tip(must_cb, "Required filter (must match).\nOthers without ★ are optional "
+                         "(at least one optional must match).")
+        self._wire_enable_must(self.v[fdef.key], self.v[f"{fdef.key}_req"])
+
+        # TROIS SHOT: add Exclude hchk on the same row
+        if fdef.special == "trois_shot":
+            nts_cb = hchk(row, "Exclude", self.v["kill_mod_no_trois_shot"],
+                          command=self._on_no_trois_shot_toggle)
+            nts_cb.pack(side="left", padx=(12, 0))
+            add_tip(nts_cb, "Inverse of TROIS SHOT — removes lucky kills on these weapons.\n"
+                            "When combined with other dp2 filters, acts as an exclusion gate first.")
+
+        # dp2 badge always far right for dp2 category
+        if fdef.category == "dp2":
+            dp2_badge(row).pack(side="right", padx=(0, 4))
+
+        return row
+
 
     def _on_kill_logic_change(self, *_):
         self.v["kill_mod_logic_mods"].set("mixed")
@@ -6964,32 +6884,20 @@ class App(tk.Tk):
     # Ordered list of (cfg_key, emoji_label, category) for every kill filter that has a badge.
     # category: "mods" | "dp2" | "db"
     # Used by _build_filter_badges (per-clip) and _build_filter_header_parts (preview header).
-    _FILTER_BADGE_DEFS = [
-        # Mods (SQL boolean columns — present in most CSDM DB versions)
-        ("kill_mod_through_smoke",  "💨 SMOKE",         "mods"),
-        ("kill_mod_no_scope",       "🔭 NOSCOPE",       "mods"),
-        ("kill_mod_assisted_flash", "⚡ VIC.FLASH",     "mods"),
-        # dp2 (demoparser2 — weapon_fire and player_death event fields)
-        ("kill_mod_trois_tap",      "🎯🎲 TROIS TAP",  "dp2"),
-        ("kill_mod_trois_shot",     "🎲 TROIS SHOT",   "dp2"),
-        ("kill_mod_no_trois_shot",  "🚫🎲 Exclude",    "dp2"),
-        ("kill_mod_one_tap",        "🎯 ONE TAP",       "dp2"),
-        ("kill_mod_spray_transfer", "🔫 SPRAY",         "dp2"),
-        ("kill_mod_high_velocity",  "🏎 FERRARI",       "dp2"),
-        ("kill_mod_flick",          "↩ FLICK",          "dp2"),
-        ("kill_mod_sauveur",        "🛡 SAVIOR",        "dp2"),
-        # dp2 — player_death event flags (formerly "missing DB columns")
-        ("kill_mod_wall_bang",      "🧱 WALLBANG",      "dp2"),
-        ("kill_mod_airborne",       "🪂 AIR",           "dp2"),
-        ("kill_mod_attacker_blind", "😵 BLIND",         "dp2"),
-        ("kill_mod_collateral",     "🎯 COLLAT.",       "dp2"),
-        # DB (post-filter — cross-round context)
-        ("kill_mod_entry_frag",     "🚀 ENTRY",         "db"),
-        ("kill_mod_ace",            "🃏 ACE",            "db"),
-        ("kill_mod_multi_kill",     "⚡ MULTI",          "db"),
-        ("kill_mod_bourreau",       "💀 BULLY",          "db"),
-        ("kill_mod_eco_frag",       "💰 ECO",            "db"),
-    ]
+    @staticmethod
+    def _get_filter_badge_defs():
+        """Derive badge defs from KILL_FILTER_REGISTRY — replaces _FILTER_BADGE_DEFS.
+        Returns [(key, badge, category), ...] for all registered filters."""
+        return [(f.key, f.badge, f.category) for f in KILL_FILTER_REGISTRY]
+
+    # Cached class-level property — derived once from registry
+    @property
+    def _FILTER_BADGE_DEFS(self):
+        try:
+            return self.__filter_badge_defs_cache
+        except AttributeError:
+            self.__filter_badge_defs_cache = self._get_filter_badge_defs()
+            return self.__filter_badge_defs_cache
 
     _SQL_MOD_KEYS = (
         "kill_mod_through_smoke",
@@ -7285,11 +7193,7 @@ class App(tk.Tk):
                     ph = ",".join(["%s"] * len(SUICIDE_WEAPONS))
                     suicidesql = f' AND k."{wc}" NOT IN ({ph})'
 
-                _MOD_COLS = {
-                    "kill_mod_through_smoke":  ["is_through_smoke", "through_smoke"],
-                    "kill_mod_no_scope":       ["is_no_scope", "no_scope"],
-                    "kill_mod_assisted_flash": ["is_assisted_flash", "assisted_flash"],  # VICTIM blinded
-                }
+                _MOD_COLS = KILL_FILTER_SQL_COLS  # derived from KILL_FILTER_REGISTRY
                 active_mods = [k for k in _MOD_COLS if cfg.get(k, False)]
                 modsql = ""
                 _mods_dp2_or_any = self._mods_dp2_global_any_union_enabled(cfg)
@@ -7610,8 +7514,14 @@ class App(tk.Tk):
         filtered = {}
 
         for dp, events in results.items():
-            kill_events = [e for e in events if e.get("type") == "kill"]
-            non_kill    = [e for e in events if e.get("type") != "kill"]
+            # Clutch events carry a clutch_group key — they are validated separately
+            # by _query_clutch_events and must never be discarded here regardless of
+            # which DB situational filters (entry frag, ace, multi-kill…) are active.
+            clutch_events = [e for e in events if e.get("clutch_group") is not None]
+            non_clutch_events = [e for e in events if e.get("clutch_group") is None]
+
+            kill_events = [e for e in non_clutch_events if e.get("type") == "kill"]
+            non_kill    = [e for e in non_clutch_events if e.get("type") != "kill"]
 
             if not kill_events:
                 filtered[dp] = events
@@ -7724,6 +7634,9 @@ class App(tk.Tk):
 
             # ── Combine per-modifier sets ──────────────────────────────────
             if not per_mod_sigs:
+                # No modifier produced any qualifying sigs — keep clutch events untouched
+                if clutch_events:
+                    filtered[dp] = clutch_events + non_kill
                 continue
 
             logic_mode = cfg.get("kill_mod_logic_db", "any")
@@ -7765,9 +7678,9 @@ class App(tk.Tk):
                         e["_mf"] = existing | matched
                     kept_kills.append(e)
 
-            if kept_kills or non_kill:
-                filtered[dp] = kept_kills + non_kill
-            # If no kills survived AND no non-kill events, drop the demo entirely
+            if kept_kills or non_kill or clutch_events:
+                filtered[dp] = kept_kills + non_kill + clutch_events
+            # If no kills survived AND no non-kill events AND no clutch events, drop the demo
 
         return filtered
     def _effective_before(self, cfg):
@@ -9186,31 +9099,24 @@ class App(tk.Tk):
     # apply_fn_attr   — dict-level apply method name (used by _apply_dp2_filters_to_events preview path)
     #
     # TROIS TAP is NOT listed here — it is always exclusive and handled separately.
-    _DP2_FILTER_DEFS = [
-        ("kill_mod_trois_shot",     "_trois_shot_filter",          "_apply_trois_shot_to_events",
-         "🎲 TROIS SHOT",    "TROIS SHOT",     "0 TROIS SHOT"),
-        ("kill_mod_no_trois_shot",  "_no_trois_shot_filter",       "_apply_no_trois_shot_to_events",
-         "🚫🎲 Exclude",     "precise",        "0 EXCLUDE"),
-        ("kill_mod_one_tap",        "_one_tap_filter",             "_apply_one_tap_to_events",
-         "🎯 ONE TAP",       "one tap",        "0 ONE TAP"),
-        ("kill_mod_spray_transfer", "_spray_transfer_filter",      "_apply_spray_transfer_to_events",
-         "🔫 SPRAY",         "spray transfer", "0 SPRAY"),
-        ("kill_mod_high_velocity",  "_high_velocity_filter",       "_apply_high_velocity_to_events",
-         "🏎 FERRARI PEEK",  "counter-strafe", "0 FERRARI PEEK"),
-        ("kill_mod_flick",          "_flick_filter",               "_apply_flick_to_events",
-         "↩ FLICK",          "flick",          "0 FLICK"),
-        ("kill_mod_sauveur",        "_sauveur_filter",             "_apply_sauveur_to_events",
-         "🛡 SAVIOR",        "savior",         "0 SAVIOR"),
-        # Filters formerly SQL-only; now backed by player_death event flags via dp2
-        ("kill_mod_wall_bang",      "_wall_bang_dp2_filter",       "_apply_wall_bang_dp2_to_events",
-         "🧱 WALLBANG",      "wallbang",       "0 WALLBANG"),
-        ("kill_mod_airborne",       "_airborne_dp2_filter",        "_apply_airborne_dp2_to_events",
-         "🪂 AIRBORNE",      "airborne",       "0 AIRBORNE"),
-        ("kill_mod_attacker_blind", "_attacker_blind_dp2_filter",  "_apply_attacker_blind_dp2_to_events",
-         "😵 BLIND FIRE",    "blind fire",     "0 BLIND FIRE"),
-        ("kill_mod_collateral",     "_collateral_dp2_filter",      "_apply_collateral_dp2_to_events",
-         "🎯 COLLATERAL",    "collateral",     "0 COLLATERAL"),
-    ]
+    @staticmethod
+    def _get_dp2_filter_defs():
+        """Derive dp2 filter defs from KILL_FILTER_REGISTRY — replaces _DP2_FILTER_DEFS.
+        Returns [(key, filter_fn, apply_fn, log, result, skip), ...]
+        for filters with dp2_filter set (excludes trois_tap which is always exclusive)."""
+        return [
+            (f.key, f.dp2_filter, f.dp2_apply, f.dp2_log, f.dp2_result, f.dp2_skip)
+            for f in KILL_FILTER_REGISTRY
+            if f.dp2_filter is not None
+        ]
+
+    @property
+    def _DP2_FILTER_DEFS(self):
+        try:
+            return self.__dp2_filter_defs_cache
+        except AttributeError:
+            self.__dp2_filter_defs_cache = self._get_dp2_filter_defs()
+            return self.__dp2_filter_defs_cache
 
     def _apply_dp2_modifiers(self, dp, events, cfg):
         """Apply active demoparser2 kill modifiers for one demo (batch worker path).
