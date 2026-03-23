@@ -1,0 +1,8 @@
+# Database connectivity
+psycopg2-binary
+
+# CS2 Demo parsing
+demoparser2
+
+# Windows-specific functionality (Optional)
+# pywin32; sys_platform == 'win32'
