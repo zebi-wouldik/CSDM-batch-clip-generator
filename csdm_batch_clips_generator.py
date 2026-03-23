@@ -3030,6 +3030,54 @@ class App(tk.Tk):
                  ).pack(side="left", fill="x", expand=True, pady=(2, 0))
         self.after(50, self._on_perspective_change)
 
+
+        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
+
+        tg = tk.Frame(sec, bg=BG2)
+        tg.pack(fill="x")
+        tg.columnconfigure(0, weight=1)
+        tg.columnconfigure(1, weight=1)
+        _sb = self._slider(tg, "Seconds BEFORE", self.v["before"], 1, 15, 0, 0)
+        add_tip(_sb, "Seconds of footage recorded before the event tick.\n"
+                     "In 'Both' mode, victim_pre_s is added on top of this value.")
+        _sa = self._slider(tg, "Seconds AFTER", self.v["after"],  1, 15, 0, 1)
+        add_tip(_sa, "Seconds of footage recorded after the event tick.")
+
+        tr = tk.Frame(sec, bg=BG2)
+        tr.pack(fill="x", pady=(4, 0))
+        _cs2_cb = hchk(tr, "Close CS2 after demo", self.v["close_game_after"])
+        _cs2_cb.pack(side="left")
+        add_tip(_cs2_cb, "closeGameAfterRecording — closes CS2 after each recorded demo.\n"
+                         "Recommended: ON. Leaving CS2 open between demos can cause\n"
+                         "instability on long batches.")
+
+        rg = tk.Frame(sec, bg=BG2)
+        rg.pack(fill="x", pady=(6, 0))
+        _ret_lbl = mlabel(rg, "Retries:")
+        _ret_lbl.pack(side="left")
+        add_tip(_ret_lbl, "Number of times to retry a demo if CSDM reports 'Game error'\n"
+                          "or a crash. Each retry re-launches CS2 from scratch.\n"
+                          "Recommended: 2.")
+        sentry(rg, self.v["retry_count"], width=3).pack(side="left", padx=(4, 0), ipady=4)
+        _del_lbl = mlabel(rg, "  Delay (s):")
+        _del_lbl.pack(side="left", padx=(8, 0))
+        add_tip(_del_lbl, "Seconds to wait between retries.\n"
+                          "Give CS2 time to fully close before re-launching.\n"
+                          "Recommended: 15.")
+        sentry(rg, self.v["retry_delay"], width=3).pack(side="left", padx=(4, 0), ipady=4)
+        _pause_lbl = mlabel(rg, "  Demo pause (s):")
+        _pause_lbl.pack(side="left", padx=(8, 0))
+        add_tip(_pause_lbl, "Seconds to wait between demos (successful or failed).\n"
+                            "Helps CS2 fully release resources before the next launch.\n"
+                            "Recommended: 3–5.")
+        sentry(rg, self.v["delay_between_demos"], width=3).pack(side="left", padx=(4, 0), ipady=4)
+        _ord_lbl = mlabel(rg, "  Order:")
+        _ord_lbl.pack(side="left", padx=(16, 0))
+        add_tip(_ord_lbl, "Chronological: demos processed oldest-to-newest.\n"
+                          "Random: demos shuffled before the batch starts.")
+        for lbl, val in [("Chrono","chrono"),("Random 🎲","random")]:
+            hradio(rg, lbl, self.v["clip_order"], val).pack(side="left", padx=(4, 0))
+
         # ══════════════════════════════════════════════════════════════════════
         sec = Sec(p, "KILL FILTERS")
         sec.pack(fill="x", pady=(0, 10))
@@ -3256,52 +3304,6 @@ class App(tk.Tk):
         self.v["clutch_enabled"].trace_add("write", _clutch_toggle_state)
         _clutch_toggle_state()
 
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
-
-        tg = tk.Frame(sec, bg=BG2)
-        tg.pack(fill="x")
-        tg.columnconfigure(0, weight=1)
-        tg.columnconfigure(1, weight=1)
-        _sb = self._slider(tg, "Seconds BEFORE", self.v["before"], 1, 15, 0, 0)
-        add_tip(_sb, "Seconds of footage recorded before the event tick.\n"
-                     "In 'Both' mode, victim_pre_s is added on top of this value.")
-        _sa = self._slider(tg, "Seconds AFTER", self.v["after"],  1, 15, 0, 1)
-        add_tip(_sa, "Seconds of footage recorded after the event tick.")
-
-        tr = tk.Frame(sec, bg=BG2)
-        tr.pack(fill="x", pady=(4, 0))
-        _cs2_cb = hchk(tr, "Close CS2 after demo", self.v["close_game_after"])
-        _cs2_cb.pack(side="left")
-        add_tip(_cs2_cb, "closeGameAfterRecording — closes CS2 after each recorded demo.\n"
-                         "Recommended: ON. Leaving CS2 open between demos can cause\n"
-                         "instability on long batches.")
-
-        rg = tk.Frame(sec, bg=BG2)
-        rg.pack(fill="x", pady=(6, 0))
-        _ret_lbl = mlabel(rg, "Retries:")
-        _ret_lbl.pack(side="left")
-        add_tip(_ret_lbl, "Number of times to retry a demo if CSDM reports 'Game error'\n"
-                          "or a crash. Each retry re-launches CS2 from scratch.\n"
-                          "Recommended: 2.")
-        sentry(rg, self.v["retry_count"], width=3).pack(side="left", padx=(4, 0), ipady=4)
-        _del_lbl = mlabel(rg, "  Delay (s):")
-        _del_lbl.pack(side="left", padx=(8, 0))
-        add_tip(_del_lbl, "Seconds to wait between retries.\n"
-                          "Give CS2 time to fully close before re-launching.\n"
-                          "Recommended: 15.")
-        sentry(rg, self.v["retry_delay"], width=3).pack(side="left", padx=(4, 0), ipady=4)
-        _pause_lbl = mlabel(rg, "  Demo pause (s):")
-        _pause_lbl.pack(side="left", padx=(8, 0))
-        add_tip(_pause_lbl, "Seconds to wait between demos (successful or failed).\n"
-                            "Helps CS2 fully release resources before the next launch.\n"
-                            "Recommended: 3–5.")
-        sentry(rg, self.v["delay_between_demos"], width=3).pack(side="left", padx=(4, 0), ipady=4)
-        _ord_lbl = mlabel(rg, "  Order:")
-        _ord_lbl.pack(side="left", padx=(16, 0))
-        add_tip(_ord_lbl, "Chronological: demos processed oldest-to-newest.\n"
-                          "Random: demos shuffled before the batch starts.")
-        for lbl, val in [("Chrono","chrono"),("Random 🎲","random")]:
-            hradio(rg, lbl, self.v["clip_order"], val).pack(side="left", padx=(4, 0))
 
         sec = Sec(p, "DEMO SELECTION")
         sec.pack(fill="x", pady=(0, 6))
