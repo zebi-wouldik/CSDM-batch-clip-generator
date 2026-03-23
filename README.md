@@ -153,7 +153,7 @@ Detects rounds where the player was the **last alive** on their team and killed 
 |---|---|
 | **1v1 – 1v5** | Filter by opponent count — none checked = all sizes included |
 | **Full clutch** | One clip from first kill to last (+ before/after padding) |
-| **Per kill** | One clip per kill, standard padding |
+| **Kills only** | One clip per kill during the clutch, standard before/after padding |
 | **Win only** | Only clutches where the player's team won the round |
 
 ---

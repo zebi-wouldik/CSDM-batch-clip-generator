@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v143.0"""
+"""CSDM Batch Clips Generator v157"""
 
 
 import tkinter as tk
@@ -21,7 +21,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v143.0"
+APP_VERSION = "v157"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -293,7 +293,7 @@ KILL_FILTER_REGISTRY: _List[FilterDef] = [
         extra_config={"kill_mod_flick_deg": 50}),
     FilterDef("kill_mod_sauveur",        "🛡 SAVIOR:",        "🛡 SAVIOR",     "dp2",
         ("Kill an enemy who was actively damaging a teammate in the ~2s prior.\n"
-         "Captures clutch saves and last-second rescues."),
+         "Captures last-second rescues."),
         dp2_filter="_sauveur_filter",           dp2_apply="_apply_sauveur_to_events",
         dp2_log="🛡 SAVIOR",    dp2_result="savior",      dp2_skip="0 SAVIOR"),
     # ── DB post-filters ──────────────────────────────────────────────────
@@ -613,16 +613,16 @@ DEFAULT_CONFIG = {
     "kill_mod_logic_db":   "mixed",
     # All filter enable/req/extra_config keys are injected below at startup
     **_FILTER_CONFIG_DEFAULTS,
-        # Clutch mode (v82/v93) — player is last alive on team, kills remaining opponents
-    "clutch_enabled":     False,
-    # 1vX size filter — which opponent counts are included. All False = all included.
-    "clutch_1v1":         False,
-    "clutch_1v2":         False,
-    "clutch_1v3":         False,
-    "clutch_1v4":         False,
-    "clutch_1v5":         False,
-    "clutch_require_win": False,   # only include clutches where the player's team won the round
-    "clutch_clip_mode":   "full",  # "full" = one clip per clutch (first→last kill) | "individual" = one clip per kill
+        # Clutch — player is last alive on his team, facing ≥1 opponent(s)
+    "clutch_enabled":   False,   # master toggle
+    "clutch_wins_only": False,   # only keep rounds the player won
+    "clutch_mode":      "kills_only",  # "kills_only" | "full_clutch"
+    # 1vX size filter — which opponent counts are included (all False = all sizes)
+    "clutch_1v1": False,
+    "clutch_1v2": False,
+    "clutch_1v3": False,
+    "clutch_1v4": False,
+    "clutch_1v5": False,
     # Sequence options
     "show_xray": True,
     # Encoding preset (libx264/libx265/libsvtav1 only — no effect on GPU)
@@ -663,10 +663,10 @@ PRESET_KEYS = {
                "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
                # Filter keys auto-derived from KILL_FILTER_REGISTRY
                *_FILTER_PRESET_PLAYER_KEYS,
-                              "clutch_enabled", "clutch_1v1", "clutch_1v2", "clutch_1v3",
-               "clutch_1v4", "clutch_1v5",
-               "clutch_require_win", "clutch_clip_mode",
-               "clip_order", "show_xray"],
+               "clip_order", "show_xray",
+               # Clutch
+               "clutch_enabled", "clutch_wins_only", "clutch_mode",
+               "clutch_1v1", "clutch_1v2", "clutch_1v3", "clutch_1v4", "clutch_1v5"],
     "video": ["encoder", "recsys", "width", "height", "framerate",
               "crf", "video_codec", "video_preset", "audio_codec", "audio_bitrate",
               "video_container", "ffmpeg_input_params", "ffmpeg_output_params",
@@ -1057,6 +1057,8 @@ class PlayerSearchWidget(tk.Frame):
         self._active_sids   = set()       # source of truth (may contain multiple)
         self._active_names  = {}          # {sid: name}
         self._on_change     = on_change
+        self._PAGE_SIZE     = 8           # rows visible at once in the DB list
+        self._page          = 0           # current page index
 
         # Enable all saved accounts by default
         for p in self._saved_players:
@@ -1109,39 +1111,49 @@ class PlayerSearchWidget(tk.Frame):
         self._count_lbl = tk.Label(sr, text="", font=FONT_DESC, bg=BG2, fg=MUTED)
         self._count_lbl.pack(side="right", padx=(6, 0))
 
-        # Sort buttons
-        sort_row = tk.Frame(self, bg=BG2)
-        sort_row.pack(fill="x", pady=(3, 0))
-        mlabel(sort_row, "Sort:").pack(side="left")
+        # Sort + page controls
+        ctrl_row = tk.Frame(self, bg=BG2)
+        ctrl_row.pack(fill="x", pady=(3, 0))
+        mlabel(ctrl_row, "Sort:").pack(side="left")
         self._sort_name_btn = tk.Button(
-            sort_row, text="Name ↑", font=FONT_DESC, bg=BG3, fg=ORANGE,
+            ctrl_row, text="Name ↑", font=FONT_DESC, bg=BG3, fg=ORANGE,
             relief="flat", bd=0, cursor="hand2", highlightthickness=0,
             activebackground=BORDER, activeforeground=ORANGE,
             command=lambda: self._set_sort("name"))
         self._sort_name_btn.pack(side="left", padx=(4, 0), ipady=2, ipadx=4)
         self._sort_date_btn = tk.Button(
-            sort_row, text="Date", font=FONT_DESC, bg=BG3, fg=MUTED,
+            ctrl_row, text="Date", font=FONT_DESC, bg=BG3, fg=MUTED,
             relief="flat", bd=0, cursor="hand2", highlightthickness=0,
             activebackground=BORDER, activeforeground=ORANGE,
             command=lambda: self._set_sort("date"))
         self._sort_date_btn.pack(side="left", padx=(4, 0), ipady=2, ipadx=4)
         add_tip(self._sort_date_btn, "Sort by last match date (most recent first).")
 
-        lf = tk.Frame(self, bg=BG2)
-        lf.pack(fill="both", expand=True, pady=(4, 0))
-        lf.rowconfigure(0, weight=1)
-        lf.columnconfigure(0, weight=1)
+        # Pagination controls (right side of same row)
+        self._pg_lbl = tk.Label(ctrl_row, text="", font=FONT_DESC, bg=BG2, fg=MUTED)
+        self._pg_lbl.pack(side="right", padx=(4, 0))
+        self._pg_next_btn = tk.Button(
+            ctrl_row, text="▶", font=FONT_DESC, bg=BG3, fg=MUTED,
+            relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+            activebackground=BORDER, activeforeground=ORANGE,
+            command=self._page_next)
+        self._pg_next_btn.pack(side="right", padx=(2, 0), ipady=2, ipadx=4)
+        self._pg_prev_btn = tk.Button(
+            ctrl_row, text="◀", font=FONT_DESC, bg=BG3, fg=MUTED,
+            relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+            activebackground=BORDER, activeforeground=ORANGE,
+            command=self._page_prev)
+        self._pg_prev_btn.pack(side="right", padx=(2, 0), ipady=2, ipadx=4)
+
         self._lb = tk.Listbox(
-            lf, font=FONT_MONO, bg=BG3, fg=MUTED,
+            self, font=FONT_MONO, bg=BG3, fg=MUTED,
             selectbackground=BG3, selectforeground=TEXT,
             activestyle="none", relief="flat", bd=0,
-            highlightthickness=1, highlightbackground=BORDER, height=4,
+            highlightthickness=1, highlightbackground=BORDER,
+            height=self._PAGE_SIZE,
             exportselection=False)
-        self._lb.grid(row=0, column=0, sticky="nsew")
+        self._lb.pack(fill="x", pady=(4, 0))
         self._lb.bind("<<ListboxSelect>>", self._on_lb_select)
-        sb = ttk.Scrollbar(lf, orient="vertical", command=self._lb.yview)
-        sb.grid(row=0, column=1, sticky="ns")
-        self._lb.configure(yscrollcommand=sb.set)
 
         self._lb_sel_lbl = tk.Label(
             self, text="", font=FONT_DESC, fg=MUTED, bg=BG2, anchor="w")
@@ -1334,7 +1346,6 @@ class PlayerSearchWidget(tk.Frame):
 
     def _refresh(self, query=""):
         q = query.strip().lower()
-        self._lb.delete(0, "end")
         self._filtered = []
 
         def _last_seen(entry):
@@ -1367,15 +1378,61 @@ class PlayerSearchWidget(tk.Frame):
         else:
             candidates.sort(key=lambda e: e[2].lower(), reverse=self._sort_rev)
 
-        for entry in candidates:
+        self._filtered = candidates
+        self._page = 0
+        self._render_page()
+
+    def _render_page(self):
+        """Repopulate the listbox with the current page of _filtered."""
+        ps = self._PAGE_SIZE
+        total = len(self._filtered)
+        n_pages = max(1, (total + ps - 1) // ps)
+        self._page = max(0, min(self._page, n_pages - 1))
+        start = self._page * ps
+        page_entries = self._filtered[start:start + ps]
+
+        self._lb.delete(0, "end")
+        for entry in page_entries:
             self._lb.insert("end", entry[0])
-            self._filtered.append(entry)
+
+        # Update pagination label
+        if total == 0:
+            pg_txt = "0 results"
+        elif n_pages == 1:
+            pg_txt = f"{total} player{'s' if total != 1 else ''}"
+        else:
+            pg_txt = f"p.{self._page + 1}/{n_pages}  ({total} total)"
+        try:
+            self._pg_lbl.config(text=pg_txt)
+            self._pg_prev_btn.config(
+                fg=ORANGE if self._page > 0 else MUTED,
+                state="normal" if self._page > 0 else "disabled")
+            self._pg_next_btn.config(
+                fg=ORANGE if self._page < n_pages - 1 else MUTED,
+                state="normal" if self._page < n_pages - 1 else "disabled")
+        except Exception:
+            pass
+
+    def _page_prev(self):
+        if self._page > 0:
+            self._page -= 1
+            self._render_page()
+
+    def _page_next(self):
+        ps = self._PAGE_SIZE
+        n_pages = max(1, (len(self._filtered) + ps - 1) // ps)
+        if self._page < n_pages - 1:
+            self._page += 1
+            self._render_page()
 
     def _on_lb_select(self, *_):
         sel = self._lb.curselection()
-        if not sel or sel[0] >= len(self._filtered):
+        if not sel:
             return
-        entry = self._filtered[sel[0]]
+        abs_idx = self._page * self._PAGE_SIZE + sel[0]
+        if abs_idx >= len(self._filtered):
+            return
+        entry = self._filtered[abs_idx]
         label, sid, name = entry[0], entry[1], entry[2]
         self._lb_label, self._lb_sid, self._lb_name = label, sid, name
         self._lb_sel_lbl.config(
@@ -1383,11 +1440,18 @@ class PlayerSearchWidget(tk.Frame):
             fg=YELLOW)
 
     def _select_by_label(self, label):
-        for i, entry in enumerate(self._filtered):
+        """Select an entry by label, jumping to the correct page if needed."""
+        for abs_idx, entry in enumerate(self._filtered):
             if entry[0] == label:
+                # Jump to the page containing this entry
+                target_page = abs_idx // self._PAGE_SIZE
+                if target_page != self._page:
+                    self._page = target_page
+                    self._render_page()
+                row_idx = abs_idx % self._PAGE_SIZE
                 self._lb.selection_clear(0, "end")
-                self._lb.selection_set(i)
-                self._lb.see(i)
+                self._lb.selection_set(row_idx)
+                self._lb.see(row_idx)
                 self._lb_label, self._lb_sid, self._lb_name = entry[0], entry[1], entry[2]
                 break
 
@@ -1415,6 +1479,12 @@ class PlayerSearchWidget(tk.Frame):
         return f"{self._active_names.get(sid, '')}  ({sid})" if sid else ""
 
 class ScrollableFrame(tk.Frame):
+    """A vertically scrollable frame.
+
+    Scroll dispatching uses per-widget <Enter>/<Leave> bindings on the canvas
+    and inner frame rather than bind_all, so it never hijacks the mousewheel
+    from the log console, demo picker, or any other scrollable widget.
+    """
     def __init__(self, parent, **kw):
         super().__init__(parent, **kw)
         self._c = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0)
@@ -1425,32 +1495,44 @@ class ScrollableFrame(tk.Frame):
         self._c.configure(yscrollcommand=sb.set)
         self._c.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
-        def _scroll(ev):
+
+        def _on_wheel(ev):
+            # Scroll this canvas only — never touches other widgets.
             self._c.yview_scroll(-1 * (ev.delta // 120), "units")
 
-        def _enable_scroll(e=None):
-            self._c.bind_all("<MouseWheel>", _scroll)
+        def _bind_wheel(e=None):
+            # Bind only to this canvas, not application-wide.
+            self._c.bind("<MouseWheel>", _on_wheel)
+            # Also bind to every child of inner so moving over child widgets
+            # doesn't silently lose the scroll binding.
+            self._bind_children(self.inner, _on_wheel)
 
-        def _maybe_disable_scroll(e=None):
-            # Only unbind if the pointer has truly left the whole scrollable area.
-            # Without this check, <Leave> fires whenever mouse enters a child widget
-            # (Sec frames, checkboxes, labels…) and kills scrolling mid-panel.
-            try:
-                px, py = self.winfo_pointerxy()
-                rx, ry = self.winfo_rootx(), self.winfo_rooty()
-                rw, rh = self.winfo_width(), self.winfo_height()
-                if px < rx or px > rx + rw or py < ry or py > ry + rh:
-                    self._c.unbind_all("<MouseWheel>")
-            except Exception:
-                self._c.unbind_all("<MouseWheel>")
+        def _unbind_wheel(e=None):
+            self._c.unbind("<MouseWheel>")
+            self._unbind_children(self.inner)
 
-        # Re-enable when entering canvas or inner content frame.
-        # Re-check when leaving either — if pointer is still inside the
-        # visible area we keep scrolling; otherwise we turn it off.
-        self._c.bind("<Enter>", _enable_scroll)
-        self._c.bind("<Leave>", _maybe_disable_scroll)
-        self.inner.bind("<Enter>", _enable_scroll)
-        self.inner.bind("<Leave>", _maybe_disable_scroll)
+        self._c.bind("<Enter>", _bind_wheel)
+        self._c.bind("<Leave>", _unbind_wheel)
+        self.inner.bind("<Enter>", _bind_wheel)
+        self.inner.bind("<Leave>", _unbind_wheel)
+
+    def _bind_children(self, widget, handler):
+        """Recursively bind <MouseWheel> on every child widget."""
+        try:
+            widget.bind("<MouseWheel>", handler)
+            for child in widget.winfo_children():
+                self._bind_children(child, handler)
+        except Exception:
+            pass
+
+    def _unbind_children(self, widget):
+        """Recursively unbind <MouseWheel> from every child widget."""
+        try:
+            widget.unbind("<MouseWheel>")
+            for child in widget.winfo_children():
+                self._unbind_children(child)
+        except Exception:
+            pass
 
 class Sec(tk.LabelFrame):
     def __init__(self, parent, title, **kw):
@@ -1628,6 +1710,7 @@ class App(tk.Tk):
         self._dp2_verbose    = False  # per-kill dp2 filter logging (debug only — expensive)
         self._tag_search_results = {}
         self._warned_missing_mods: set = set()  # suppress repeat warnings for same absent cols
+        self._warned_clutch_no_team_col: bool = False   # suppress repeated team-col warning
         self._warned_require_win_no_data: bool = False  # suppress repeated win-data warning
 
         self.v = {}
@@ -1639,10 +1722,10 @@ class App(tk.Tk):
                      "output_dir_clips", "output_dir_concat", "output_dir_assembled",
                      "assemble_output", "video_preset", "teamkills_mode", "phys_ragdoll_scale",
                      "cs2_cfg_dir",
-                     "clutch_clip_mode",
                      "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
                      "headshots_mode",
-                     "theme_bg", "theme_accent"]
+                     "theme_bg", "theme_accent",
+                     "clutch_mode"]
         int_keys = ["before", "after", "tickrate", "width", "height", "framerate", "crf", "audio_bitrate",
                      "death_notices_duration", "retry_count", "retry_delay", "delay_between_demos",
                      "hlae_fov", "hlae_slow_motion",
@@ -1670,9 +1753,9 @@ class App(tk.Tk):
                       "phys_ragdoll_enable", "phys_blood", "phys_dynamic_lighting",
                       "cs2_send_to_back",
                      "ui_remember_layout",
-                      "clutch_enabled", "clutch_1v1", "clutch_1v2", "clutch_1v3",
-                      "clutch_1v4", "clutch_1v5",
-                      "clutch_require_win",]
+                     "clutch_enabled", "clutch_wins_only",
+                     "clutch_1v1", "clutch_1v2", "clutch_1v3", "clutch_1v4", "clutch_1v5",
+]
         for k in str_keys:
             val = str(self.cfg.get(k, DEFAULT_CONFIG.get(k, "")))
             if k in ("date_from", "date_to"):
@@ -2872,7 +2955,7 @@ class App(tk.Tk):
         self.player_search = PlayerSearchWidget(sec, on_change=self._on_player_change)
         self.player_search.pack(fill="x")
 
-        sec = Sec(p, "CAPTURE")
+        sec = Sec(p, "CAPTURE & TIMING")
         sec.pack(fill="x", pady=(0, 10))
 
         ev_row = tk.Frame(sec, bg=BG2)
@@ -3078,7 +3161,7 @@ class App(tk.Tk):
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
         _sit_hdr = tk.Frame(sec, bg=BG2)
         _sit_hdr.pack(fill="x", pady=(0, 4))
-        slabel(_sit_hdr, "Situation (DB + Clutch):").pack(side="left")
+        slabel(_sit_hdr, "Situation (DB):").pack(side="left")
         _sit_logic_lbl = mlabel(_sit_hdr, "  ★ Must = required, others = optional")
         _sit_logic_lbl.pack(side="left", padx=(8, 0))
         add_tip(_sit_logic_lbl,
@@ -3112,55 +3195,68 @@ class App(tk.Tk):
 
         # ── CLUTCH ────────────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
-        clutch_hdr = tk.Frame(sec, bg=BG2)
-        clutch_hdr.pack(fill="x")
-        _cl_lbl = slabel(clutch_hdr, "🤝 Clutch:")
-        _cl_lbl.pack(side="left")
-        add_tip(_cl_lbl,
-                "Player is last alive on their team and kills the remaining opponents.\n"
-                "1vX filters: check which sizes to include (none = all included).\n"
-                "Full = one clip per clutch. Per kill = one clip per kill.\n"
-                "Can be combined with Kills / Deaths / Rounds.")
-        _cl_cb = hchk(clutch_hdr, "Enable", self.v["clutch_enabled"],
-                      command=self._on_clutch_toggle)
-        _cl_cb.pack(side="left", padx=(4, 0))
+        _clutch_hdr = tk.Frame(sec, bg=BG2)
+        _clutch_hdr.pack(fill="x", pady=(0, 4))
+        _clutch_cb = hchk(_clutch_hdr, "🎯 CLUTCH", self.v["clutch_enabled"])
+        _clutch_cb.pack(side="left")
+        add_tip(_clutch_cb,
+                "Clutch mode: only capture rounds where the selected player\n"
+                "was the last alive on his team.\n"
+                "The clip begins from the moment he becomes last alive.\n"
+                "Requires the 'kills' table to include team/side columns.")
 
-        # Always-packed container — inner content shown/hidden by _on_clutch_toggle
-        self._clutch_opts_row = tk.Frame(sec, bg=BG2)
-        self._clutch_opts_row.pack(fill="x")
+        _clutch_opts = tk.Frame(sec, bg=BG2)
+        _clutch_opts.pack(fill="x", pady=(0, 2))
 
-        # Inner frame — this is what gets shown/hidden
-        self._clutch_opts_inner = tk.Frame(self._clutch_opts_row, bg=BG2)
+        # Wins only
+        _wins_cb = hchk(_clutch_opts, "Wins only", self.v["clutch_wins_only"])
+        _wins_cb.pack(side="left", padx=(16, 0))
+        add_tip(_wins_cb, "Only include rounds the player won (killed all remaining opponents).\n"
+                          "Rounds where he died without finishing are excluded.")
 
-        # 1vX checkboxes
-        _sizes_row = tk.Frame(self._clutch_opts_inner, bg=BG2)
-        _sizes_row.pack(fill="x", pady=(4, 0))
-        mlabel(_sizes_row, "Sizes:").pack(side="left")
-        add_tip(_sizes_row.winfo_children()[-1],
-                "No box checked = all sizes included (1v1 through 1v5).")
-        for n in range(1, 6):
-            _cb = hchk(_sizes_row, f"1v{n}", self.v[f"clutch_1v{n}"])
-            _cb.pack(side="left", padx=(6, 0))
-
-        # Clip mode + win only
-        _clip_row = tk.Frame(self._clutch_opts_inner, bg=BG2)
-        _clip_row.pack(fill="x", pady=(4, 0))
-        mlabel(_clip_row, "Clip:").pack(side="left")
+        # Mode: kills_only / full_round
+        mlabel(_clutch_opts, "  Mode:").pack(side="left", padx=(16, 0))
         for lbl, val, tip in [
-            ("Full clutch", "full",       "One clip from the first to the last kill of the clutch."),
-            ("Per kill",    "individual", "One clip per kill (standard BEFORE/AFTER padding)."),
+            ("Kills only",   "kills_only",
+             "One clip per kill during the clutch (standard window: before/after).\n"
+             "Works like normal kills but restricted to the clutch phase."),
+            ("Full clutch",  "full_clutch",
+             "One clip from the moment the player is last alive\n"
+             "until he dies or the round ends (win or loss).\n"
+             "Ignores the BEFORE/AFTER sliders for this clip boundary."),
         ]:
-            _rb = hradio(_clip_row, lbl, self.v["clutch_clip_mode"], val)
+            _rb = hradio(_clutch_opts, lbl, self.v["clutch_mode"], val)
             _rb.pack(side="left", padx=(4, 0))
             add_tip(_rb, tip)
-        _req_win = hchk(_clip_row, "Win only", self.v["clutch_require_win"])
-        _req_win.pack(side="left", padx=(12, 0))
-        add_tip(_req_win, "Only capture clutches where the player's team won the round.")
 
-        self.after(50, self._on_clutch_toggle)
+        # 1vX size filters
+        _clutch_size_row = tk.Frame(sec, bg=BG2)
+        _clutch_size_row.pack(fill="x", pady=(2, 0))
+        mlabel(_clutch_size_row, "  Size filter:").pack(side="left", padx=(16, 0))
+        _size_hint = mlabel(_clutch_size_row, " (all off = all sizes)")
+        _size_hint.pack(side="left")
+        add_tip(_size_hint,
+                "Restrict clutch clips to specific 1vX scenarios.\n"
+                "Leave all unchecked to include every size.")
+        for n in range(1, 6):
+            _sz_cb = hchk(_clutch_size_row, f"1v{n}", self.v[f"clutch_1v{n}"])
+            _sz_cb.pack(side="left", padx=(6, 0))
+            add_tip(_sz_cb, f"Include rounds where the player faces exactly {n} opponent(s).")
 
-        sec = Sec(p, "TIMING")
-        sec.pack(fill="x", pady=(0, 6))
+        # Grey out sub-options when master toggle is off
+        def _clutch_toggle_state(*_):
+            st = "normal" if self.v["clutch_enabled"].get() else "disabled"
+            for w in (_wins_cb,
+                      *[c for c in _clutch_opts.winfo_children()],
+                      *[c for c in _clutch_size_row.winfo_children()]):
+                try:
+                    w.config(state=st)
+                except Exception:
+                    pass
+        self.v["clutch_enabled"].trace_add("write", _clutch_toggle_state)
+        _clutch_toggle_state()
+
+        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
 
         tg = tk.Frame(sec, bg=BG2)
         tg.pack(fill="x")
@@ -3306,6 +3402,9 @@ class App(tk.Tk):
         self._demo_tree.pack(side="left", fill="x", expand=True)
         _tree_sb.pack(side="right", fill="y")
         self._demo_tree.bind("<Button-1>", self._on_demo_tree_click)
+        self._demo_tree.bind("<MouseWheel>",
+                             lambda e: self._demo_tree.yview_scroll(
+                                 -1 * (e.delta // 120), "units"))
 
         # Per-row toggle buttons row
         pick_btns = tk.Frame(sec, bg=BG2)
@@ -4185,19 +4284,11 @@ class App(tk.Tk):
 
     # ── TROIS SHOT (v62) ──────────────────────────────────────────────────
     def _on_trois_shot_toggle(self, *_):
-        """Toggle TROIS SHOT. Mutually exclusive with Exclude and TROIS TAP.
-        If both TROIS SHOT + ONE TAP are now checked → auto-enable TROIS TAP."""
+        """Toggle TROIS SHOT. Mutually exclusive with Exclude only.
+        Independent of ONE TAP and TROIS TAP."""
         active = self.v["kill_mod_trois_shot"].get()
         if active and self.v["kill_mod_no_trois_shot"].get():
             self.v["kill_mod_no_trois_shot"].set(False)
-        if active and self.v["kill_mod_trois_tap"].get():
-            self.v["kill_mod_trois_tap"].set(False)
-            self._disengage_trois_tap()
-        if active and self.v["kill_mod_one_tap"].get():
-            self.v["kill_mod_trois_shot"].set(False)
-            self.v["kill_mod_one_tap"].set(False)
-            self.v["kill_mod_trois_tap"].set(True)
-            self._engage_trois_tap()
 
     def _on_no_trois_shot_toggle(self, *_):
         """Toggle Exclude (inverse TROIS SHOT).
@@ -4211,21 +4302,8 @@ class App(tk.Tk):
                 self._disengage_trois_tap()
 
     def _on_one_tap_toggle(self, *_):
-        """Toggle ONE TAP.
-        If both TROIS SHOT + ONE TAP are now checked → auto-enable TROIS TAP."""
-        active = self.v["kill_mod_one_tap"].get()
-        # Mutually exclusive with TROIS TAP
-        if active and self.v["kill_mod_trois_tap"].get():
-            self.v["kill_mod_trois_tap"].set(False)
-            self._disengage_trois_tap()
-        # Auto TROIS TAP: if both TROIS SHOT + ONE TAP active → engage TROIS TAP
-        if active and self.v["kill_mod_trois_shot"].get():
-            self.v["kill_mod_trois_shot"].set(False)
-            self.v["kill_mod_one_tap"].set(False)
-            self.v["kill_mod_trois_tap"].set(True)
-            self._engage_trois_tap()
-            return
-        self._refresh_hs_lock_state()
+        """Toggle ONE TAP. Fully independent of TROIS SHOT and TROIS TAP."""
+        pass  # No coupling logic — independent filter
 
     def _on_headshots_mode_change(self, *_):
         """Called when the user manually changes the HS radio — no-op if locked."""
@@ -4251,17 +4329,8 @@ class App(tk.Tk):
             pass
 
     def _on_trois_tap_toggle(self, *_):
-        """Toggle TROIS TAP checkbox — called by the UI widget only."""
-        if self.v["kill_mod_trois_tap"].get():
-            # Clear individual modifiers, engage locks
-            self.v["kill_mod_trois_shot"].set(False)
-            self.v["kill_mod_one_tap"].set(False)
-            self.v["kill_mod_no_trois_shot"].set(False)
-            self._engage_trois_tap()
-        else:
-            # User manually unchecked → simply disengage, do NOT restore sub-modifiers
-            self._disengage_trois_tap()
-        self._refresh_hs_lock_state()
+        """Toggle TROIS TAP checkbox. Independent of TROIS SHOT and ONE TAP."""
+        pass  # No coupling logic — independent filter
 
     def _on_logic_mode_change(self, category: str, *_):
         """Ensure ★ Must toggles are visible (fixed required+optional logic)."""
@@ -4359,21 +4428,7 @@ class App(tk.Tk):
         return v
 
     def _hs_only_is_required(self, cfg) -> bool:
-        if bool(self._cfg_scalar(cfg, "kill_mod_trois_tap", False)):
-            return True
-        if not bool(self._cfg_scalar(cfg, "kill_mod_one_tap", False)):
-            return False
-
-        active_dp2 = [k for k, *_ in self._DP2_FILTER_DEFS if bool(self._cfg_scalar(cfg, k, False))]
-        if "kill_mod_one_tap" not in active_dp2:
-            return False
-
-        req = [k for k in active_dp2 if bool(self._cfg_scalar(cfg, f"{k}_req", False))]
-        opt = [k for k in active_dp2 if not bool(self._cfg_scalar(cfg, f"{k}_req", False))]
-        if "kill_mod_one_tap" in req:
-            return True
-        if "kill_mod_one_tap" in opt and len(opt) == 1:
-            return True
+        """HS lock is no longer enforced automatically. Always returns False."""
         return False
 
     def _refresh_hs_lock_state(self):
@@ -4428,32 +4483,11 @@ class App(tk.Tk):
         req_var.trace_add("write", _on_req_change)
         enable_var.trace_add("write", _on_enable_change)
 
-    def _on_clutch_toggle(self, *_):
-        """Show/hide clutch options based on clutch_enabled."""
-        try:
-            if self.v["clutch_enabled"].get():
-                self._clutch_opts_inner.pack(fill="x")
-            else:
-                self._clutch_opts_inner.pack_forget()
-        except Exception:
-            pass
-
-    @staticmethod
-    def _clutch_allowed_sizes(cfg) -> set:
-        """Return the set of allowed clutch sizes (1..5) from config.
-        If all 1vX keys are False → all sizes allowed (empty set = no filter).
-        """
-        sizes = set()
-        for n in range(1, 6):
-            if cfg.get(f"clutch_1v{n}", False):
-                sizes.add(n)
-        return sizes  # empty = no restriction
-
     def _engage_trois_tap(self):
-        self._refresh_hs_lock_state()
+        pass  # No-op: HS lock removed
 
     def _disengage_trois_tap(self):
-        self._refresh_hs_lock_state()
+        pass  # No-op: HS lock removed
 
 
     def _retrigger_toggle_vars(self):
@@ -4999,23 +5033,44 @@ class App(tk.Tk):
 
             kill_tick  = int(evt.get("tick", 0))
             killer_sid = str(evt.get("killer_sid", ""))
+            weapon_raw = str(evt.get("weapon", "")).lower().strip()
+            # Normalise weapon suffix (same logic as _weapon_suffix_key)
+            kill_wpn_s = CSDM_TO_DP2_WEAPON.get(weapon_raw)
+            if kill_wpn_s:
+                kill_wpn_s = kill_wpn_s[7:] if kill_wpn_s.startswith("weapon_") else kill_wpn_s
+            elif weapon_raw.startswith("weapon_"):
+                kill_wpn_s = weapon_raw[7:]
+            else:
+                kill_wpn_s = weapon_raw.replace(" ","").replace("-","").replace("_","")
 
-            # Collect all weapon_fire entries for this player (all weapons)
-            all_entries: list = []
-            for (sid, _wpn), entries in fire_index.items():
-                if sid == killer_sid:
-                    all_entries.extend(entries)
+            # Collect weapon_fire entries for this player.
+            # Kill-weapon entries are kept separately so the shot-match step can
+            # prefer them over entries from other weapons fired at a similar tick.
+            kill_wpn_entries: list = []
+            other_entries: list = []
+            for (sid, wpn_s), entries in fire_index.items():
+                if sid != killer_sid:
+                    continue
+                if wpn_s == kill_wpn_s:
+                    kill_wpn_entries.extend(entries)
+                else:
+                    other_entries.extend(entries)
+            all_entries: list = kill_wpn_entries + other_entries
             all_entries.sort(key=lambda r: r[0])
 
             if not all_entries:
                 continue
 
-            # ── Find the kill shot ─────────────────────────────────────────
+            # ── Find the kill shot ──────────────────────────────────────────
+            # Prefer entries from the kill weapon; fall back to any weapon if needed.
             shot_entry = None
-            for ftick, acc, scoped, vel in all_entries:
-                if abs(kill_tick - ftick) <= SHOT_WINDOW:
-                    if shot_entry is None or abs(kill_tick - ftick) < abs(kill_tick - shot_entry[0]):
-                        shot_entry = (ftick, acc, scoped, vel)
+            for candidate_list in (kill_wpn_entries, other_entries):
+                if shot_entry is not None:
+                    break
+                for ftick, acc, scoped, vel in sorted(candidate_list, key=lambda r: r[0]):
+                    if abs(kill_tick - ftick) <= SHOT_WINDOW:
+                        if shot_entry is None or abs(kill_tick - ftick) < abs(kill_tick - shot_entry[0]):
+                            shot_entry = (ftick, acc, scoped, vel)
 
             if shot_entry is None:
                 continue
@@ -5033,15 +5088,20 @@ class App(tk.Tk):
                     continue
 
             # ── Condition 2: was moving before (on the peek) ──────────────
+            # Check velocity of shots fired in the APPROACH_WIN before the kill shot.
+            # approach_end = shot_tick so we capture the full 1-second approach window.
+            # The kill shot velocity is checked separately via shot_vel.
+            # Note: PRE_WINDOW is only used by Condition 1 (no-shot isolation check);
+            # it must NOT narrow the approach window here, which was a prior bug
+            # that reduced the effective window to only APPROACH_WIN - PRE_WINDOW = 16 ticks.
             approach_start = shot_tick - APPROACH_WIN
-            approach_end   = shot_tick - PRE_WINDOW
             approach_shots = [
                 vel for ftick, _acc, _sc, vel in all_entries
-                if approach_start <= ftick < approach_end
+                if approach_start <= ftick < shot_tick
             ]
             was_moving_before = (
                 (approach_shots and max(approach_shots) >= approach_thr)
-                or shot_vel >= approach_thr  # shot while running (no CS)
+                or shot_vel >= approach_thr  # shot while running / counter-strafe
             )
             if not was_moving_before:
                 continue
@@ -5061,11 +5121,17 @@ class App(tk.Tk):
         return filtered
 
     def _flick_filter(self, demo_path, events, cfg):
-        """Keep kills where the player made a large view-angle change just before the kill.
+        """Keep kills where the player made a large view-angle change relative to their prior kill.
 
-        Compares the yaw angle at the kill tick to the yaw ~0.5s (32 ticks) before.
+        Uses the attacker's yaw angle recorded at each player_death event (via demoparser2).
+        Compares the yaw at the current kill tick to the yaw at the most recent prior kill
+        that happened at least LOOK_BACK (32) ticks earlier.
+
         Angle delta ≥ kill_mod_flick_deg qualifies (default 50°).
-        Uses view_angles cache populated from player_death events.
+
+        Note: view_angles contains one angle sample per kill event (the attacker's yaw at
+        kill time), not a continuous per-tick history. The 32-tick (LOOK_BACK) guard
+        prevents using the immediately preceding sample if it is too close in time.
         """
         if not os.path.isfile(demo_path):
             return self._non_kill_only(events)
@@ -5115,8 +5181,12 @@ class App(tk.Tk):
         """Keep kills where the player killed an enemy who was hurting a teammate.
 
         A 'sauveur' kill: within SAUVEUR_WINDOW ticks before the kill, the
-        victim (the player's target) was attacking a player on the same side
-        as the active player. Requires hurt_index from player_death parse.
+        victim (the player's target) was attacking one of the tracked player SIDs.
+        Requires hurt_index from player_hurt parse.
+
+        The hurt_victim must be one of the tracked SIDs — without this check any
+        kill where the victim recently hurt *anyone* (including enemies) would
+        qualify, producing false positives in crossfire / damage-trade scenarios.
         """
         if not os.path.isfile(demo_path):
             return self._non_kill_only(events)
@@ -5130,30 +5200,34 @@ class App(tk.Tk):
 
         SAUVEUR_WINDOW = 128  # ~2s — the enemy was shooting at a teammate recently
 
-        # Build set of active player sids for side-checking
+        # Build set of tracked player SIDs — only events where they were the hurt victim count
         sids_set = {str(e.get("killer_sid","")) for e in events if e.get("type") == "kill"}
+
+        # Build a reverse index: attacker_sid → sorted list of ticks when they hurt a tracked player.
+        # This turns the per-kill scan from O(all_hurt_entries) → O(log n) via bisect.
+        # Only entries where hurt_victim ∈ sids_set are included (correctness filter).
+        attacker_hurt_ticks: dict = {}   # {attacker_sid: [tick, ...]}  (sorted)
+        for hurt_victim_sid, hurt_entries in hurt_index.items():
+            if hurt_victim_sid not in sids_set:
+                continue
+            for (ht, hatk) in hurt_entries:
+                attacker_hurt_ticks.setdefault(hatk, []).append(ht)
+        for v in attacker_hurt_ticks.values():
+            v.sort()
 
         filtered = []
         for evt in events:
             if evt.get("type") != "kill":
                 filtered.append(evt); continue
-            kill_tick   = int(evt.get("tick", 0))
-            victim_sid  = str(evt.get("victim_sid", ""))
-            # Check if the victim was hurting someone in the window before the kill
-            # hurt_index[victim_sid] = [(tick, attacker_sid), ...] where attacker=victim here
-            # We actually need: victim of this kill was attacking (as attacker) someone near tick
-            # hurt_index is keyed by the HURT VICTIM — need to find victim_sid as attacker
-            # Reconstruct: search for entries where attacker == victim_sid
-            # This is O(n) per kill — acceptable since hurt events per demo are bounded
-            hurt_in_window = False
-            for hurt_victim_sid, hurt_entries in hurt_index.items():
-                for (ht, hatk) in hurt_entries:
-                    if hatk == victim_sid and 0 <= kill_tick - ht <= SAUVEUR_WINDOW:
-                        hurt_in_window = True
-                        break
-                if hurt_in_window:
-                    break
-            if hurt_in_window:
+            kill_tick  = int(evt.get("tick", 0))
+            victim_sid = str(evt.get("victim_sid", ""))
+            ticks = attacker_hurt_ticks.get(victim_sid)
+            if not ticks:
+                continue
+            # Binary-search for any tick in (kill_tick - WINDOW, kill_tick]
+            lo = kill_tick - SAUVEUR_WINDOW
+            pos = bisect.bisect_left(ticks, lo)
+            if pos < len(ticks) and ticks[pos] <= kill_tick:
                 filtered.append(evt)
         return filtered
 
@@ -5329,7 +5403,9 @@ class App(tk.Tk):
 
     @staticmethod
     def _stamp_mf(events, cfg_key):
-        """Add cfg_key to the _mf (matched-filters) set on every kill event in events."""
+        """Add cfg_key to the _mf (matched-filters) set on every kill event.
+
+        """
         for e in events:
             if e.get("type") == "kill":
                 mf = e.get("_mf")
@@ -5378,13 +5454,13 @@ class App(tk.Tk):
                 continue
             kept.append(e)
         result = kept + non_kill
-        return result if result else None
+        return result or None
 
     def _apply_global_filter_gate_dict(self, evts, cfg):
         out = {}
         for dp, events in evts.items():
             gated = self._apply_global_filter_gate_events(events, cfg)
-            if gated:
+            if gated is not None:
                 out[dp] = gated
         return out
 
@@ -5407,9 +5483,10 @@ class App(tk.Tk):
             self._alog(
                 f"  {label} [{Path(dp).name}] : {n_before} kills → {n_after}",
                 "info" if n_after else "dim")
-            if filtered:
-                self._stamp_mf(filtered, cfg_key)
-                result[dp] = filtered
+            combined = filtered or []
+            if combined:
+                self._stamp_mf(combined, cfg_key)
+                result[dp] = combined
         return result
 
     def _apply_trois_shot_to_events(self, evts, cfg):
@@ -5745,8 +5822,8 @@ class App(tk.Tk):
         if not self.player_search.get_steam_ids():
             self._alog("[TAGS/config] Select at least one player account in Capture.", "err")
             return
-        if not any(v.get() for v in self.sel_events.values()) and not self.v["clutch_enabled"].get():
-            self._alog("[TAGS/config] Select at least one event or enable Clutch.", "err")
+        if not any(v.get() for v in self.sel_events.values()):
+            self._alog("[TAGS/config] Select at least one event.", "err")
             return
 
         ts = self._tags_schema
@@ -6993,9 +7070,10 @@ class App(tk.Tk):
         Filter badges: one per active kill filter (emojis only, blue).
         """
         badges = []
-        kill_events  = [e for e in events if e.get("type") == "kill"]
-        death_events = [e for e in events if e.get("type") == "death"]
-        round_events = [e for e in events if e.get("type") == "round"]
+        kill_events    = [e for e in events if e.get("type") == "kill"]
+        death_events   = [e for e in events if e.get("type") == "death"]
+        round_events   = [e for e in events if e.get("type") == "round"]
+        clutch_events  = [e for e in events if e.get("type") == "clutch_round"]
 
         def _wpn_str(event_list):
             """Return a compact weapon string for a list of events."""
@@ -7013,11 +7091,29 @@ class App(tk.Tk):
             if len(items) == 2: return f"{items[0][0]} + {items[1][0]}"
             return f"{items[0][0]} +{len(items)-1}"
 
-        # ── Kill content ──────────────────────────────────────────────────────
+        # ── Clutch full-round content ──────────────────────────────────────────
+        if clutch_events:
+            for ce in clutch_events:
+                n_opp  = ce.get("_clutch_opponents", "?")
+                won    = ce.get("_clutch_won", False)
+                result = "✓ WIN" if won else "✗ LOSS"
+                sub_kills = ce.get("_clutch_kills", [])
+                k_count   = len(sub_kills)
+                k_str     = f" {k_count}K" if k_count else ""
+                badge_txt = f" [🎯 1v{n_opp}{k_str} {result}]"
+                badges.append((badge_txt, "badge_kill" if won else "badge_warn"))
+
+        # ── Regular kill content ───────────────────────────────────────────────
         if kill_events:
             n = len(kill_events)
             wpn = _wpn_str(kill_events)
-            badge_txt = f" [{n}✕ {wpn}]" if n > 1 else f" [KILL {wpn}]"
+            # Add clutch annotation if any kill carries clutch metadata
+            clutch_tag = ""
+            if any(e.get("_clutch_opponents") for e in kill_events):
+                opp = kill_events[0].get("_clutch_opponents", "?")
+                won = kill_events[0].get("_clutch_won", False)
+                clutch_tag = f" 🎯1v{opp}{'✓' if won else '✗'}"
+            badge_txt = f" [{n}✕ {wpn}{clutch_tag}]" if n > 1 else f" [KILL {wpn}{clutch_tag}]"
             badges.append((badge_txt, "badge_kill"))
 
         # ── Death content ─────────────────────────────────────────────────────
@@ -7028,7 +7124,10 @@ class App(tk.Tk):
             badges.append((badge_txt, "badge_warn"))
 
         # ── Round marker ──────────────────────────────────────────────────────
-        if round_events and not kill_events and not death_events:
+        # Guard uses `not (kill_events or death_events or clutch_events)` so that
+        # removing the clutch block reduces to the original `not kill_events and
+        # not death_events` without leaving a dangling name reference.
+        if round_events and not (kill_events or death_events or clutch_events):
             badges.append((" [ROUND]", "badge_safe"))
 
         if not badges:
@@ -7038,7 +7137,6 @@ class App(tk.Tk):
         badges.extend(self._build_filter_badges(cfg, events))
 
         return badges
-
     def _build_demo_log_base(self, date_str, demo_name, event_count, seq_count, idx=None, total=None, timing_str=""):
         if idx is not None and total is not None:
             return f"\n[{idx}/{total}]  {date_str}  {demo_name}  ({event_count} events → {seq_count} seq){timing_str}"
@@ -7161,13 +7259,12 @@ class App(tk.Tk):
                 if not mkk or not mkm:
                     raise Exception("kills<->matches join column not found")
 
-                kills_on = cfg["events_kills"]
-                deaths_on = cfg["events_deaths"]
-                weapons = cfg["weapons"]
+                kills_on  = cfg.get("events_kills",  False)
+                deaths_on = cfg.get("events_deaths", False)
+                weapons   = cfg.get("weapons", [])
                 # Resolve headshots_mode — force ONLY only when logic guarantees HS-only output
                 _hsmode = cfg.get("headshots_mode", "all")
-                if self._hs_only_is_required(cfg):
-                    _hsmode = "only"
+                # HS mode is user-controlled; no automatic lock
                 headshots_only   = (_hsmode == "only")
                 headshots_exclude = (_hsmode == "exclude")
                 _tkmode = cfg.get("teamkills_mode", "include")
@@ -7336,6 +7433,16 @@ class App(tk.Tk):
                         extra += f',k."{dtc}"'
                         enames.append("dt")
 
+                    # Victim weapon — only needed for Eco-Frag detection.
+                    # Fetched once here so _apply_db_postfilters can compare vs full-buy weapons.
+                    _vwc = None
+                    if cfg.get("kill_mod_eco_frag"):
+                        _vwc = self._find_col("kills", ["victim_weapon_name", "victim_weapon",
+                                                         "killed_with", "weapon_victim"])
+                        if _vwc:
+                            extra += f',k."{_vwc}"'
+                            enames.append("vw")
+
                     # Fetch each resolved SQL-mod boolean column so we can tag
                     # _mf (matched filters) precisely per event row.
                     # _mod_extra: list of (cfg_key, col_name) for resolved active mods
@@ -7402,11 +7509,13 @@ class App(tk.Tk):
 
                         evt = {"tick": event_tick, "type": et, "weapon": weapon_raw,
                                "killer_sid": killer_sid, "victim_sid": victim_sid}
+                        if _vwc and ex.get("vw"):
+                            evt["victim_weapon"] = str(ex["vw"]).lower().strip()
                         if _mf:
                             evt["_mf"] = _mf
                         results.setdefault(dp, []).append(evt)
 
-                if cfg["events_rounds"] and self._db_schema.get("rounds"):
+                if cfg.get("events_rounds") and self._db_schema.get("rounds"):
                     rtc = self._find_col("rounds",
                                          ["start_tick", "freeze_time_end_tick", "tick", "end_tick"])
                     rmk = self._find_col("rounds", ["match_checksum", "match_id", "checksum"])
@@ -7437,41 +7546,6 @@ class App(tk.Tk):
                         except Exception:
                             pass
 
-                # ── Clutch events ─────────────────────────────────────────────
-                if cfg.get("events_clutch") and kc and vc:
-                    clutch_raw = self._query_clutch_events(
-                        cfg, conn, sids, dc, mkm, tc, kc, vc, wc, mkk, dtc, date_col)
-                    for dp, groups in clutch_raw.items():
-                        sizes = [g[0].get("clutch_size", "?") for g in groups if g]
-                        sizes_str = ", ".join(f"1v{s}" for s in sorted(sizes))
-                        self._alog(
-                            f"  🤝 CLUTCH [{Path(dp).name}]: "
-                            f"{len(groups)} clutch(es) — {sizes_str}",
-                            "info")
-                        results.setdefault(dp, [])
-                        # Build a sig→index map so we can stamp clutch metadata onto
-                        # kill events that were already added by the regular kills query.
-                        # Without this, clutch kills whose (tick, killer_sid) already
-                        # exist in results are silently skipped, leaving those events
-                        # without clutch_group/clutch_size and making clutch sequences
-                        # impossible to build in _show_preview / the run path.
-                        sig_to_idx = {
-                            (e["tick"], e.get("killer_sid")): i
-                            for i, e in enumerate(results[dp])
-                        }
-                        for group in groups:
-                            for kill in group:
-                                sig = (kill["tick"], kill.get("killer_sid"))
-                                if sig in sig_to_idx:
-                                    # Stamp clutch metadata onto the existing event so
-                                    # it is picked up by _build_clutch_sequences.
-                                    existing = results[dp][sig_to_idx[sig]]
-                                    existing["clutch_group"] = kill["clutch_group"]
-                                    existing["clutch_size"]  = kill["clutch_size"]
-                                else:
-                                    results[dp].append(kill)
-                                    sig_to_idx[sig] = len(results[dp]) - 1
-
         finally:
             pass  # persistent connection — kept open for reuse
 
@@ -7487,6 +7561,17 @@ class App(tk.Tk):
         # These operate on the already-fetched results dict and require knowledge
         # of the full event context per demo (all rounds, all kills in match).
         results = self._apply_db_postfilters(cfg, results, sids)
+
+        # ── Clutch filter ──────────────────────────────────────────────────
+        if cfg.get("clutch_enabled") and results:
+            demo_paths = set(results.keys())
+            all_kills_by_demo = self._fetch_all_kills_for_demos(demo_paths)
+            if all_kills_by_demo:
+                results = self._apply_clutch_filter(results, sids, cfg, all_kills_by_demo)
+            else:
+                self._alog(
+                    "  ⚠ Clutch: could not fetch all-kills data — clutch filter skipped.",
+                    "warn")
 
         return results
 
@@ -7528,28 +7613,43 @@ class App(tk.Tk):
         bour_n  = max(2, int(cfg.get("kill_mod_bourreau_n", 3)))
 
         # Pistols (lowercase suffixes) for Eco-Frag detection
-        PISTOLS = {"deagle","revolver","usp_silencer","hkp2000","glock","p250",
-                   "fiveseven","cz75a","tec9","elite",
-                   "usp-s","p2000","glock-18","five-seven","cz75-auto","tec-9",
-                   "dual berettas","desert eagle","r8 revolver"}
+        PISTOLS = {
+            # deagle / r8
+            "deagle","desert eagle","revolver","r8 revolver",
+            # USP-S / P2000
+            "usp_silencer","usp-s","hkp2000","p2000",
+            # glock / p250 / fiveseven / tec9
+            "glock","glock-18","p250","fiveseven","five-seven","tec9","tec-9",
+            # cz75 / elite
+            "cz75a","cz75-auto","elite","dual berettas","duals",
+        }
         # Full-buy weapons (victim must have one of these for eco-frag to count)
-        FULL_BUY = {"ak47","m4a1","m4a1_silencer","ak-47","m4a4","m4a1-s",
-                    "sg556","aug","galilar","famas","sg 553","galil ar",
-                    "scar20","g3sg1","awp","ssg08","ssg 08","scar-20",
-                    "m249","negev"}
+        # Covers all CSDM weapon name variants: internal short name, display name, slug
+        FULL_BUY = {
+            # Rifles
+            "ak47","ak-47",
+            "m4a1","m4a1-s","m4a1_silencer",
+            "m4a4",
+            "galilar","galil ar","galil-ar",
+            "famas",
+            "sg556","sg 553","sg553",
+            "aug",
+            # Snipers
+            "awp",
+            "ssg08","ssg 08","ssg-08",
+            "scar20","scar-20",
+            "g3sg1",
+            # LMGs
+            "m249","negev",
+        }
 
         sids_set = set(str(s) for s in sids)
         filtered = {}
 
         for dp, events in results.items():
-            # Clutch events carry a clutch_group key — they are validated separately
-            # by _query_clutch_events and must never be discarded here regardless of
-            # which DB situational filters (entry frag, ace, multi-kill…) are active.
-            clutch_events = [e for e in events if e.get("clutch_group") is not None]
-            non_clutch_events = [e for e in events if e.get("clutch_group") is None]
 
-            kill_events = [e for e in non_clutch_events if e.get("type") == "kill"]
-            non_kill    = [e for e in non_clutch_events if e.get("type") != "kill"]
+            kill_events = [e for e in events if e.get("type") == "kill"]
+            non_kill    = [e for e in events if e.get("type") != "kill"]
 
             if not kill_events:
                 filtered[dp] = events
@@ -7650,9 +7750,13 @@ class App(tk.Tk):
                 _sigs = set()
                 for e in player_kills:
                     kw = (e.get("weapon") or "").lower().strip()
+                    if kw.startswith("weapon_"):
+                        kw = kw[7:]
                     if kw not in PISTOLS:
                         continue
                     vw = (e.get("victim_weapon") or "").lower().strip()
+                    if vw.startswith("weapon_"):
+                        vw = vw[7:]
                     if not vw:
                         _sigs.add((e["tick"], str(e.get("killer_sid",""))))
                         continue
@@ -7662,9 +7766,6 @@ class App(tk.Tk):
 
             # ── Combine per-modifier sets ──────────────────────────────────
             if not per_mod_sigs:
-                # No modifier produced any qualifying sigs — keep clutch events untouched
-                if clutch_events:
-                    filtered[dp] = clutch_events + non_kill
                 continue
 
             logic_mode = cfg.get("kill_mod_logic_db", "any")
@@ -7706,11 +7807,354 @@ class App(tk.Tk):
                         e["_mf"] = existing | matched
                     kept_kills.append(e)
 
-            if kept_kills or non_kill or clutch_events:
-                filtered[dp] = kept_kills + non_kill + clutch_events
-            # If no kills survived AND no non-kill events AND no clutch events, drop the demo
+            if kept_kills or non_kill:
+                filtered[dp] = kept_kills + non_kill
+            # If no kills survived AND no non-kill events, drop the demo
 
         return filtered
+
+    # ═══════════════════════════════════════════════════════════════════════
+    #  CLUTCH detection helpers
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def _fetch_all_kills_for_demos(self, demo_paths):
+        """Return a dict {demo_path: [kill_row, ...]} with ALL kills (all players)
+        for the given demo paths.  Used by the clutch filter to determine team
+        alive-counts per round.
+
+        Each kill_row is a dict with keys:
+          tick, killer_sid, victim_sid, killer_team, victim_team, round_key
+        where round_key = (demo_path, approx_round_idx).
+
+        Returns {} on any DB error (clutch filter will be skipped gracefully).
+        """
+        if not demo_paths:
+            return {}
+        conn = self._pg()
+        try:
+            with conn.cursor() as cur:
+                dc  = self._find_col("matches",
+                                      ["demo_path", "demo_file_path", "demo_filepath",
+                                       "share_code", "file_path", "path"])
+                mkk = self._find_col("kills", ["match_checksum", "match_id", "checksum"])
+                mkm = self._find_col("matches", ["checksum", "id", "match_id"])
+                tc  = self._find_col("kills", ["tick", "killer_tick", "round_tick"])
+                kc  = self._find_col("kills", ["killer_steam_id", "attacker_steam_id"])
+                vc  = self._find_col("kills", ["victim_steam_id", "killed_steam_id"])
+                tkk = self._find_col("kills", ["killer_team_name", "killer_side", "killer_team"])
+                tvk = self._find_col("kills", ["victim_team_name", "victim_side", "victim_team"])
+                rnc = self._find_col("kills", ["round_number", "round_num", "round"])
+
+                if not all([dc, mkk, mkm, tc, kc, vc]):
+                    return {}
+
+                # Build a checksum→demo_path map for the requested demos
+                chk_to_dp = {}
+                for dp in demo_paths:
+                    chk = self._demo_checksums.get(dp)
+                    if chk:
+                        chk_to_dp[chk] = dp
+
+                if not chk_to_dp:
+                    # Fallback: query by demo path directly
+                    ph = ",".join(["%s"] * len(demo_paths))
+                    sql = (f'SELECT m."{dc}", k."{tc}", k."{kc}", k."{vc}"'
+                           + (f', k."{tkk}"' if tkk else "")
+                           + (f', k."{tvk}"' if tvk else "")
+                           + (f', k."{rnc}"' if rnc else "")
+                           + f' FROM kills k JOIN matches m ON m."{mkm}"=k."{mkk}"'
+                           + f' WHERE m."{dc}" IN ({ph}) ORDER BY m."{dc}", k."{tc}"')
+                    cur.execute(sql, list(demo_paths))
+                else:
+                    ph = ",".join(["%s"] * len(chk_to_dp))
+                    sql = (f'SELECT m."{dc}", k."{tc}", k."{kc}", k."{vc}"'
+                           + (f', k."{tkk}"' if tkk else "")
+                           + (f', k."{tvk}"' if tvk else "")
+                           + (f', k."{rnc}"' if rnc else "")
+                           + f' FROM kills k JOIN matches m ON m."{mkm}"=k."{mkk}"'
+                           + f' WHERE m."{mkm}" IN ({ph}) ORDER BY m."{dc}", k."{tc}"')
+                    cur.execute(sql, list(chk_to_dp.keys()))
+
+                out = {}
+                for row in cur.fetchall():
+                    dp_val = str(row[0])
+                    if dp_val not in demo_paths:
+                        # may have arrived via checksum; map back
+                        chk_hit = self._demo_checksums.get(dp_val)
+                        dp_val = chk_to_dp.get(chk_hit, dp_val)
+                    if dp_val not in demo_paths:
+                        continue
+                    tick_val = int(row[1]) if row[1] is not None else 0
+                    ks = str(row[2]) if row[2] else ""
+                    vs = str(row[3]) if row[3] else ""
+                    idx = 4
+                    kt = str(row[idx]).lower() if tkk and idx < len(row) and row[idx] else ""
+                    if tkk:
+                        idx += 1
+                    vt = str(row[idx]).lower() if tvk and idx < len(row) and row[idx] else ""
+                    if tvk:
+                        idx += 1
+                    rn_val = int(row[idx]) if rnc and idx < len(row) and row[idx] is not None else None
+                    out.setdefault(dp_val, []).append({
+                        "tick": tick_val,
+                        "killer_sid": ks,
+                        "victim_sid": vs,
+                        "killer_team": kt,
+                        "victim_team": vt,
+                        "round_num": rn_val,
+                    })
+        except Exception as e:
+            self._alog(f"  ⚠ Clutch: DB fetch error — {e}", "warn")
+            return {}
+        return out
+
+    def _apply_clutch_filter(self, results, sids, cfg, all_kills_by_demo):
+        """Filter results so that only events occurring during a clutch phase are kept.
+
+        A "clutch" is defined as the period starting from the tick of the kill
+        that makes the player the last alive on his team until the round ends
+        (player death or last opponent death).
+
+        cfg keys used:
+          clutch_enabled   — master guard (caller already checked, but kept for safety)
+          clutch_wins_only — only rounds where the player kills all remaining opponents
+          clutch_mode      — "kills_only" | "full_clutch"
+          clutch_1v1 … clutch_1v5 — size filters (all False = all sizes)
+
+        Returns a filtered copy of results with the same structure.
+        Events tagged with:
+          "_clutch_start_tick"  — tick at which the clutch started
+          "_clutch_opponents"   — number of opponents when the clutch began
+          "_clutch_won"         — bool: player killed all opponents
+          "type" == "clutch_round" (full_clutch mode only) — the synthetic full-round event
+        """
+        sids_set = set(str(s) for s in sids)
+        tickrate  = int(cfg.get("tickrate", 64))
+        wins_only = cfg.get("clutch_wins_only", False)
+        mode      = cfg.get("clutch_mode", "kills_only")
+        size_filter = {n for n in range(1, 6) if cfg.get(f"clutch_1v{n}", False)}
+        # All False = include every size
+        any_size_filter = bool(size_filter)
+
+        def _round_key_from_kill(kill, dp):
+            rn = kill.get("round_num")
+            if rn is not None:
+                return (dp, int(rn))
+            return (dp, kill["tick"] // max(1, tickrate * 115))
+
+        filtered = {}
+
+        for dp, events in results.items():
+            demo_kills = all_kills_by_demo.get(dp, [])
+            if not demo_kills:
+                # No all-kills data → cannot detect clutch → skip demo
+                continue
+
+            # ── Build per-round structures from ALL kills in this demo ────────
+            # round → sorted list of all kills
+            rounds_all: dict = {}
+            for k in demo_kills:
+                rk = _round_key_from_kill(k, dp)
+                rounds_all.setdefault(rk, []).append(k)
+
+            # Sort each round's kills by tick
+            for rk in rounds_all:
+                rounds_all[rk].sort(key=lambda x: x["tick"])
+
+            # ── For each round, determine if a clutch occurred ────────────────
+            # Clutch detection algorithm:
+            #   1. Identify the teams of our player (from kills where he is killer/victim).
+            #   2. Walk kills chronologically, tracking alive players per team.
+            #   3. Detect the tick when player's team drops to 1 alive (= player alone).
+            #   4. At that moment record how many opponents are alive = clutch size.
+            #   5. Track whether the player kills all opponents = clutch won.
+
+            # Collect clutch windows: {round_key: {start_tick, opponents, won, kill_ticks}}
+            clutch_windows: dict = {}
+
+            for rk, r_kills in rounds_all.items():
+                # Collect all participants in this round
+                all_sids_in_round: set = set()
+                for k in r_kills:
+                    if k["killer_sid"]:
+                        all_sids_in_round.add(k["killer_sid"])
+                    if k["victim_sid"]:
+                        all_sids_in_round.add(k["victim_sid"])
+
+                # Find our player(s) in this round
+                our_sids_in_round = sids_set & all_sids_in_round
+                if not our_sids_in_round:
+                    continue  # player not in this round
+
+                # Determine player's team from the kill rows
+                # Use the team column of the FIRST kill involving our player
+                our_team = ""
+                for k in r_kills:
+                    if k["killer_sid"] in our_sids_in_round and k.get("killer_team"):
+                        our_team = k["killer_team"]
+                        break
+                    if k["victim_sid"] in our_sids_in_round and k.get("victim_team"):
+                        our_team = k["victim_team"]
+                        break
+
+                # Build initial alive sets
+                # All players that participated: alive at round start
+                alive_set: dict = {}  # sid → team
+                for k in r_kills:
+                    if k["killer_sid"] and k["killer_sid"] not in alive_set:
+                        alive_set[k["killer_sid"]] = k.get("killer_team", "")
+                    if k["victim_sid"] and k["victim_sid"] not in alive_set:
+                        alive_set[k["victim_sid"]] = k.get("victim_team", "")
+
+                # If we have no team data at all, fall back to a heuristic:
+                # assume CS standard 5v5 and treat teams as "our player's team"
+                # vs "opponents".  We key the team by whether the sid is in sids_set.
+                no_team_data = all(not v for v in alive_set.values())
+                if no_team_data:
+                    for sid in alive_set:
+                        alive_set[sid] = "player_team" if sid in sids_set else "opp_team"
+                    our_team = "player_team"
+
+                if not our_team:
+                    continue
+
+                # Walk kills, remove victim from alive each time
+                alive = dict(alive_set)  # mutable copy
+                clutch_start_tick = None
+                clutch_opponents  = 0
+                clutch_kill_ticks = []
+                clutch_won        = False
+
+                for k in r_kills:
+                    vs = k["victim_sid"]
+                    if vs and vs in alive:
+                        del alive[vs]
+
+                    # Count alive per team after this kill
+                    our_alive  = [s for s, t in alive.items() if t == our_team]
+                    opp_alive  = [s for s, t in alive.items() if t != our_team]
+
+                    # Clutch start: exactly our player alive (1) on his team
+                    if (clutch_start_tick is None
+                            and len(our_alive) == 1
+                            and our_alive[0] in sids_set
+                            and len(opp_alive) >= 1):
+                        clutch_start_tick = k["tick"]
+                        clutch_opponents  = len(opp_alive)
+
+                    # Once clutch started, track kills by our player
+                    if clutch_start_tick is not None:
+                        if k["killer_sid"] in sids_set and k.get("victim_team", "") != our_team:
+                            clutch_kill_ticks.append(k["tick"])
+                        # Clutch won: no opponents alive
+                        if not opp_alive:
+                            clutch_won = True
+                            break
+                        # Clutch lost: our player is dead
+                        if not any(s in sids_set for s in alive):
+                            break
+
+                if clutch_start_tick is None:
+                    continue  # no clutch in this round
+
+                # Apply size filter
+                if any_size_filter and clutch_opponents not in size_filter:
+                    continue
+                # Apply wins_only
+                if wins_only and not clutch_won:
+                    continue
+
+                round_ticks = [k["tick"] for k in r_kills]
+                clutch_windows[rk] = {
+                    "start_tick":  clutch_start_tick,
+                    "opponents":   clutch_opponents,
+                    "won":         clutch_won,
+                    "kill_ticks":  clutch_kill_ticks,
+                    "round_tick_min": min(round_ticks) if round_ticks else clutch_start_tick,
+                    "round_tick_max": max(round_ticks) if round_ticks else clutch_start_tick,
+                }
+
+            if not clutch_windows:
+                continue
+
+            # ── Filter / generate events from the clutch windows ─────────────
+            kill_events   = [e for e in events if e.get("type") == "kill"]
+            non_kill      = [e for e in events if e.get("type") not in ("kill", "death", "round")]
+
+            if mode == "full_clutch":
+                # One synthetic event per clutch window
+                new_events = []
+                for rk, cw in sorted(clutch_windows.items(), key=lambda x: x[1]["start_tick"]):
+                    # Find last kill tick of round in all_kills for end boundary
+                    r_kills = rounds_all.get(rk, [])
+                    last_round_tick = max((k["tick"] for k in r_kills), default=cw["start_tick"])
+                    synthetic = {
+                        "tick":              cw["start_tick"],
+                        "type":              "clutch_round",
+                        "weapon":            "",
+                        "_clutch_start_tick":cw["start_tick"],
+                        "_clutch_end_tick":  last_round_tick,
+                        "_clutch_opponents": cw["opponents"],
+                        "_clutch_won":       cw["won"],
+                        "_seq_start_tick":   cw["start_tick"],  # exact start, no before-offset
+                        "_seq_end_tick":     last_round_tick,   # exact end, no after-offset
+                    }
+                    # Add kills from this clutch as sub-events for badge display.
+                    # Match by tick range: kill_tick in [clutch_start, round_end].
+                    r_tick_min = cw["round_tick_min"]
+                    r_tick_max = cw["round_tick_max"]
+                    clutch_kills = [e for e in kill_events
+                                    if e["tick"] >= cw["start_tick"]
+                                    and r_tick_min <= e["tick"] <= r_tick_max]
+                    if clutch_kills:
+                        synthetic["_clutch_kills"] = clutch_kills
+                    new_events.append(synthetic)
+                if new_events or non_kill:
+                    filtered[dp] = new_events + non_kill
+
+            else:  # kills_only
+                # Keep only kill events that fall within a clutch window for this round.
+                # Build a sorted list of (tick_min, tick_max, cw) for tick-based fallback
+                # in case the round_key method differs between all_kills and query_events rows.
+                _cw_by_key   = clutch_windows                        # primary: key lookup
+                _cw_by_ticks = sorted(                               # fallback: tick range
+                    [(cw["round_tick_min"], cw["round_tick_max"], cw)
+                     for cw in clutch_windows.values()],
+                    key=lambda x: x[0])
+
+                def _find_cw(e_tick, e_rk):
+                    cw = _cw_by_key.get(e_rk)
+                    if cw is not None:
+                        return cw
+                    # Fallback: find the window whose round tick-range contains e_tick
+                    for tmin, tmax, cw_fb in _cw_by_ticks:
+                        if tmin <= e_tick <= tmax:
+                            return cw_fb
+                    return None
+
+                kept_kills = []
+                for e in kill_events:
+                    if str(e.get("killer_sid", "")) not in sids_set:
+                        continue
+                    e_tick = e["tick"]
+                    e_rk = _round_key_from_kill(
+                        {"tick": e_tick, "round_num": e.get("round_num")}, dp)
+                    cw = _find_cw(e_tick, e_rk)
+                    if cw is None:
+                        continue
+                    if e_tick < cw["start_tick"]:
+                        continue
+                    # Tag the event with clutch metadata
+                    e = dict(e)
+                    e["_clutch_start_tick"] = cw["start_tick"]
+                    e["_clutch_opponents"]  = cw["opponents"]
+                    e["_clutch_won"]        = cw["won"]
+                    kept_kills.append(e)
+                if kept_kills or non_kill:
+                    filtered[dp] = kept_kills + non_kill
+
+        return filtered
+
     def _effective_before(self, cfg):
         """Return the effective BEFORE duration in seconds.
         In 'both' mode, victim_pre_s is added so the killer phase is fully
@@ -7725,12 +8169,24 @@ class App(tk.Tk):
     def _build_sequences(self, events, tickrate, before_s, after_s):
         """Build merged clip sequences from a list of events.
         Events must be sorted by tick (guaranteed by SQL ORDER BY in _query_events).
+
+        If an event carries _seq_start_tick / _seq_end_tick (set by clutch full_clutch
+        mode), those values override the normal before/after window for that event.
+        This lets the full-clutch clip span exactly from last-alive tick to
+        round-end tick without depending on the BEFORE/AFTER sliders.
         """
         if not events:
             return []
         bt, at = before_s * tickrate, after_s * tickrate
-        raw = [{"start_tick": max(0, e["tick"] - bt), "end_tick": e["tick"] + at, "events": [e]}
-               for e in events]
+        raw = []
+        for e in events:
+            if "_seq_start_tick" in e and "_seq_end_tick" in e:
+                s_tick = max(0, int(e["_seq_start_tick"]))
+                e_tick = max(s_tick + 1, int(e["_seq_end_tick"]))
+            else:
+                s_tick = max(0, e["tick"] - bt)
+                e_tick = e["tick"] + at
+            raw.append({"start_tick": s_tick, "end_tick": e_tick, "events": [e]})
         merged = [raw[0]]
         for s in raw[1:]:
             p = merged[-1]
@@ -7741,344 +8197,11 @@ class App(tk.Tk):
                 merged.append(s)
         return merged
 
-    def _build_clutch_sequences(self, clutch_groups, tickrate, before_s, after_s):
-        """Build one sequence per clutch group.
-
-        Each group is the player's kills in a clutch round.
-        The sequence spans from the FIRST kill minus before_s to the LAST kill
-        plus after_s. This is NOT the full CS round — it covers only the kill
-        window of the clutch (± padding).
-
-        clip_mode="individual": fall back to standard per-kill sequences.
-        """
-        sequences = []
-        for kills in clutch_groups:
-            if not kills:
-                continue
-            kills_sorted = sorted(kills, key=lambda e: e["tick"])
-            first_tick = kills_sorted[0]["tick"]
-            last_tick  = kills_sorted[-1]["tick"]
-            start = max(0, first_tick - before_s * tickrate)
-            end   = last_tick + after_s * tickrate
-            sequences.append({
-                "start_tick": start,
-                "end_tick":   end,
-                "events":     kills_sorted,
-            })
-        return sequences
-
-    def _query_clutch_events(self, cfg, conn, sids, dc, mkm, tc, kc, vc, wc, mkk, dtc, date_col):
-        """Detect true clutch situations: the active player was the last alive on
-        their team and then killed the remaining opponents in the same round.
-
-        A clutch is defined as:
-          1. At the tick of the player's first kill in the round, ALL teammates
-             are already dead (player is the sole survivor of their team).
-          2. The number of opponents still alive at that tick (clutch size) is in
-             the allowed set from _clutch_allowed_sizes(cfg). Empty set = all sizes.
-
-        Algorithm:
-          - Fetch ALL kills from every match the active player participated in
-            (needed to reconstruct who was alive on both sides at any tick).
-          - Reconstruct round brackets from the rounds table (or tick gaps).
-          - For each round where the player killed at least one opponent:
-              a. Determine the player's side from their kills in that round.
-              b. At the player's first kill tick in the round:
-                 - teammates_alive = teammates who hadn't died yet
-                 - if teammates_alive > 0 → not a clutch (player not alone)
-              c. Count opponents alive at that tick → clutch size.
-          - Apply allowed_sizes filter on clutch size.
-          - Optionally filter by round winner (require_win).
-
-        Returns {demo_path: [[kill_evt, …], …]} — one group per clutch.
-        """
-        # Allowed clutch sizes: empty set = no restriction (all 1v1..1v5)
-        allowed_sizes = App._clutch_allowed_sizes(cfg)
-        require_win = cfg.get("clutch_require_win", False)
-
-        results: dict = {}
-        sids_set = set(str(s) for s in sids)
-
-        try:
-            with conn.cursor() as cur:
-                if not tc or not kc or not vc or not dc or not mkk or not mkm:
-                    return {}
-
-                # Side/team columns
-                kside_col = self._find_col("kills", ["killer_team_name", "killer_side",
-                                                      "killer_team", "attacker_side"])
-                vside_col = self._find_col("kills", ["victim_team_name", "victim_side",
-                                                      "victim_team"])
-                rwin_col  = self._find_col("rounds", ["winner_name", "winner_side", "winner",
-                                                       "winning_side", "win_reason"])
-                rtc_col   = self._find_col("rounds", ["start_tick", "freeze_time_end_tick",
-                                                       "tick", "end_tick"])
-                retc_col  = self._find_col("rounds", ["end_tick", "official_end_tick"])
-                rmk_col   = self._find_col("rounds", ["match_checksum", "match_id", "checksum"])
-
-                # ── Step 1: find all match checksums the player participated in ──
-                sid_ph = ",".join(["%s"] * len(sids))
-                cur.execute(
-                    f'SELECT DISTINCT k."{mkk}" FROM kills k '
-                    f'WHERE k."{kc}" IN ({sid_ph}) OR k."{vc}" IN ({sid_ph})',
-                    list(sids) * 2)
-                match_chksums = [r[0] for r in cur.fetchall() if r[0]]
-                if not match_chksums:
-                    return {}
-
-                # ── Step 2: fetch ALL kills from those matches ────────────────
-                chk_ph = ",".join(["%s"] * len(match_chksums))
-                sel_ks = f',k."{kside_col}"' if kside_col else ""
-                sel_vs = f',k."{vside_col}"' if vside_col else ""
-                sel_wc = f',k."{wc}"'        if wc        else ""
-                sel_dt = f',k."{dtc}"'       if dtc       else ""
-                date_sel = f',m."{date_col}"' if date_col else ""
-
-                all_kills_sql = (
-                    f'SELECT m."{dc}",k."{tc}",m."{mkm}"{date_sel},'
-                    f'k."{kc}",k."{vc}"{sel_ks}{sel_vs}{sel_wc}{sel_dt} '
-                    f'FROM kills k JOIN matches m ON m."{mkm}"=k."{mkk}" '
-                    f'WHERE k."{mkk}" IN ({chk_ph}) '
-                    f'ORDER BY m."{dc}",k."{tc}"')
-                cur.execute(all_kills_sql, match_chksums)
-                all_rows = cur.fetchall()
-
-                # ── Step 3: fetch round brackets ─────────────────────────────
-                round_brackets: dict = {}  # {chk: [(start, end, winner), ...]}
-                if rtc_col and rmk_col:
-                    r_sel_ret  = f',r."{retc_col}"' if (retc_col and retc_col != rtc_col) else ""
-                    r_sel_rwin = f',r."{rwin_col}"' if rwin_col else ""
-                    r_sql = (f'SELECT r."{rmk_col}",r."{rtc_col}"{r_sel_ret}{r_sel_rwin} '
-                             f'FROM rounds r WHERE r."{rmk_col}" IN ({chk_ph}) '
-                             f'ORDER BY r."{rmk_col}",r."{rtc_col}"')
-                    try:
-                        cur.execute(r_sql, match_chksums)
-                        for rr in cur.fetchall():
-                            chk     = rr[0]
-                            r_start = int(rr[1] or 0)
-                            i = 2
-                            r_end = None
-                            if retc_col and retc_col != rtc_col:
-                                r_end = int(rr[i] or 0) if rr[i] else None
-                                i += 1
-                            r_win = rr[i] if rwin_col else None
-                            round_brackets.setdefault(chk, []).append([r_start, r_end, r_win])
-                    except Exception:
-                        pass
-                    for chk in round_brackets:
-                        brackets = round_brackets[chk]
-                        for i, b in enumerate(brackets):
-                            if b[1] is None:
-                                b[1] = brackets[i+1][0] - 1 if i+1 < len(brackets) else b[0] + 8000
-                    # Convert to tuples
-                    round_brackets = {c: [tuple(b) for b in bs]
-                                      for c, bs in round_brackets.items()}
-
-                def _round_idx_for(chk, tick):
-                    for i, (s, e, rw) in enumerate(round_brackets.get(chk, [])):
-                        if s <= tick <= e:
-                            return i, rw
-                    # Fallback: largest start ≤ tick
-                    best_i, best_rw = None, None
-                    for i, (s, e, rw) in enumerate(round_brackets.get(chk, [])):
-                        if s <= tick:
-                            best_i, best_rw = i, rw
-                    return best_i, best_rw
-
-                # ── Step 4: parse all kill rows into per-match/round structures ─
-                # Structure: {(dp, chk, round_idx): [kill_row_dict, ...]}
-                round_kills: dict = {}
-
-                # Column index mapping
-                # Fixed: 0=dp, 1=tick, 2=chk, (3=date?), then kc, vc, kside?, vside?, wc?, dtc?
-                base_off = 4 if date_col else 3
-                col_names = ["kc", "vc"]
-                if kside_col: col_names.append("ks")
-                if vside_col: col_names.append("vs")
-                if wc:        col_names.append("wc")
-                if dtc:       col_names.append("dt")
-
-                for row in all_rows:
-                    dp  = row[0]
-                    tick = row[1]
-                    chk  = row[2]
-                    if not dp or tick is None:
-                        continue
-                    ex = {}
-                    for ci, cn in enumerate(col_names):
-                        if base_off + ci < len(row):
-                            ex[cn] = row[base_off + ci]
-
-                    killer_sid = str(ex.get("kc", "") or "")
-                    victim_sid = str(ex.get("vc", "") or "")
-                    k_side     = str(ex.get("ks", "") or "").upper()
-                    v_side     = str(ex.get("vs", "") or "").upper()
-                    weapon_raw = ex.get("wc", "") or ""
-                    death_tick = ex.get("dt")
-
-                    if death_tick is not None and weapon_raw.lower() in DELAYED_EFFECT_WEAPONS:
-                        event_tick = int(death_tick)
-                    else:
-                        event_tick = int(tick)
-
-                    round_idx, round_winner = _round_idx_for(chk, event_tick)
-                    if round_idx is None:
-                        round_idx = event_tick // 8000  # coarse fallback
-
-                    key = (dp, chk, round_idx)
-                    round_kills.setdefault(key, []).append({
-                        "tick":        event_tick,
-                        "killer_sid":  killer_sid,
-                        "victim_sid":  victim_sid,
-                        "killer_side": k_side,
-                        "victim_side": v_side,
-                        "weapon":      weapon_raw,
-                        "round_winner": round_winner,
-                    })
-
-                    # Store demo date/checksum
-                    if date_col and dp not in self._demo_dates and len(row) > 3:
-                        if row[3] is not None:
-                            self._demo_dates[dp] = row[3]
-                    if dp not in self._demo_checksums and chk:
-                        self._demo_checksums[dp] = chk
-
-                # ── Step 5: clutch detection per round ───────────────────────
-                def _norm_side(s):
-                    s = (s or "").upper().replace("-", "_").replace(" ", "_")
-                    if s in ("CT", "COUNTER_TERRORIST", "COUNTER", "COUNTERTERRORIST",
-                             "CT_WIN", "CTS_WIN", "BOMB_DEFUSED",
-                             "COUNTER_TERRORIST_WIN"):
-                        return "CT"
-                    if s in ("T", "TERRORIST", "TERROR",
-                             "T_WIN", "TS_WIN", "TARGET_BOMBED", "BOMB_EXPLODED",
-                             "TERRORISTS_WIN", "TERRORIST_WIN"):
-                        return "T"
-                    return s
-
-                group_id = 0
-                for (dp, chk, round_idx), kills_in_round in round_kills.items():
-                    kills_sorted = sorted(kills_in_round, key=lambda k: k["tick"])
-
-                    # Only process rounds where at least one active player made a kill
-                    player_kills = [k for k in kills_sorted if k["killer_sid"] in sids_set]
-                    if not player_kills:
-                        continue
-
-                    # Determine active player and their side for this round
-                    player_sid = player_kills[0]["killer_sid"]
-                    player_side = _norm_side(player_kills[0].get("killer_side", ""))
-                    if not player_side:
-                        # Infer from victim side: if victim_side is CT → player is T and vice versa
-                        vs = _norm_side(player_kills[0].get("victim_side", ""))
-                        player_side = "T" if vs == "CT" else ("CT" if vs == "T" else "")
-
-                    # All deaths in this round before the player's first kill tick
-                    first_kill_tick = player_kills[0]["tick"]
-
-                    # Teammates = players on same side who died as victims (excluding the player)
-                    # Opponents = players on opposing side
-                    def _is_teammate(kill):
-                        v_s = _norm_side(kill.get("victim_side", ""))
-                        if player_side and v_s:
-                            return v_s == player_side and kill["victim_sid"] != player_sid
-                        # No side data: can't determine — treat as unknown
-                        return False
-
-                    def _is_opponent_death(kill):
-                        v_s = _norm_side(kill.get("victim_side", ""))
-                        if player_side and v_s:
-                            return v_s != player_side
-                        return False
-
-                    # Build the full set of known teammates: anyone on the player's side
-                    # who appeared in this round — either as a victim (died) OR as a killer
-                    # (made kills). Teammates who survived the whole round without killing
-                    # anything are invisible to this data, but teammates who killed at least
-                    # once are captured here, closing the main false-positive gap.
-                    all_teammates: set = set()
-                    for _k in kills_sorted:
-                        # Died on player's side (excluding the player themselves)
-                        if _is_teammate(_k):
-                            all_teammates.add(_k["victim_sid"])
-                        # Killed something while on player's side (and is not the player)
-                        if (_k["killer_sid"] != player_sid
-                                and _norm_side(_k.get("killer_side", "")) == player_side):
-                            all_teammates.add(_k["killer_sid"])
-
-                    # Which of these known teammates were already dead before first kill?
-                    teammates_dead_before = {k["victim_sid"] for k in kills_sorted
-                                              if k["tick"] < first_kill_tick and _is_teammate(k)}
-                    # Known teammates still alive at first kill tick
-                    teammates_alive_at_clutch = all_teammates - teammates_dead_before
-
-                    # If any known teammate was still alive at the first kill → not a clutch
-                    if teammates_alive_at_clutch:
-                        continue
-
-                    # If we have no side data at all → skip (can't verify)
-                    if player_side == "":
-                        continue
-
-                    # Opponents alive at first kill tick
-                    opponents_dead_before = {k["victim_sid"] for k in kills_sorted
-                                              if k["tick"] < first_kill_tick and _is_opponent_death(k)}
-                    all_opponents = {k["victim_sid"] for k in kills_sorted if _is_opponent_death(k)}
-                    opponents_alive = all_opponents - opponents_dead_before
-
-                    clutch_size = len(opponents_alive)
-                    if clutch_size < 1:
-                        continue  # 1v0 is a data artefact — no opponents alive, skip
-                    if allowed_sizes and clutch_size not in allowed_sizes:
-                        continue
-
-                    # require_win check
-                    if require_win:
-                        round_winner = player_kills[0].get("round_winner")
-                        winner_norm  = _norm_side(round_winner)
-                        if not winner_norm:
-                            # Rounds table missing or winner column empty/unresolvable —
-                            # cannot evaluate the win condition; warn once and let the
-                            # clutch through rather than silently dropping it.
-                            if not getattr(self, "_warned_require_win_no_data", False):
-                                self._alog(
-                                    "  ⚠ 'Win only' filter: round winner could not be "                                    "determined (rounds table missing or winner column "                                    "empty). Filter ignored for these clutches.",
-                                    "warn")
-                                self._warned_require_win_no_data = True
-                        elif player_side and player_side != winner_norm:
-                            continue  # lost the clutch round
-
-                    # Build clean kill events (only the player's kills in this round)
-                    clean_kills = []
-                    for k in player_kills:
-                        clean_kills.append({
-                            "tick":       k["tick"],
-                            "type":       "kill",
-                            "weapon":     k["weapon"],
-                            "killer_sid": k["killer_sid"],
-                            "victim_sid": k["victim_sid"],
-                            "clutch_group":  group_id,
-                            "clutch_size":   clutch_size,
-                        })
-                    results.setdefault(dp, []).append(clean_kills)
-                    self._alog(
-                        f"  🤝 1v{clutch_size} clutch "
-                        f"[{Path(dp).name}] tick={first_kill_tick} "
-                        f"({len(clean_kills)} kill{'s' if len(clean_kills)>1 else ''})",
-                        "info")
-                    group_id += 1
-
-        except Exception as e:
-            self._alog(f"  ⚠ Clutch query error: {e}", "warn")
-
-        return results
-
     def _build_run_cfg(self):
         cfg = self._collect_config()
         cfg["events_kills"]  = self.sel_events["Kills"].get()
         cfg["events_deaths"] = self.sel_events["Deaths"].get()
         cfg["events_rounds"] = self.sel_events["Rounds"].get()
-        cfg["events_clutch"] = self.v["clutch_enabled"].get()
         return cfg
 
     def _get_sids(self, cfg):
@@ -8632,8 +8755,8 @@ class App(tk.Tk):
         if not self.player_search.get_steam_ids():
             messagebox.showerror("", "Check at least one registered account.")
             return
-        if not any(v.get() for v in self.sel_events.values()) and not self.v["clutch_enabled"].get():
-            messagebox.showerror("", "Select at least one event or enable Clutch.")
+        if not any(v.get() for v in self.sel_events.values()):
+            messagebox.showerror("", "Select at least one event.")
             return
         ensure_csdm_dirs()
         cfg = self._build_run_cfg()
@@ -8797,6 +8920,9 @@ class App(tk.Tk):
         if not self.player_search.get_steam_ids():
             messagebox.showerror("", "Check at least one registered account.")
             return
+        if not any(v.get() for v in self.sel_events.values()):
+            messagebox.showerror("", "Select at least one event.")
+            return
         cfg = self._build_run_cfg()
         self._log(f"\n{'─' * 60}", "dim")
         self._log(f"  🔍 PREVIEW  —  {datetime.now().strftime('%H:%M:%S')}", "info")
@@ -8809,35 +8935,39 @@ class App(tk.Tk):
                 t0 = time.time()
                 evts = self._query_events(cfg)
                 t_query = time.time() - t0
+                # ── Signature-based DP2 pre-parse (cache preserved if same demo set) ──
+                t0 = time.time()
+                self._preparse_dp2(cfg, list(evts.keys()))
+                t_preparse = time.time() - t0
+                # Apply demoparser2 modifiers before preview.
+                t0 = time.time()
+                evts = self._apply_dp2_filters_to_events(evts, cfg)
+                evts = self._apply_global_filter_gate_dict(evts, cfg)
+                t_filters = time.time() - t0
+                t_total = time.time() - t0_total
+                timings = {
+                    "query":    t_query,
+                    "preparse": t_preparse,
+                    "filters":  t_filters,
+                    "total":    t_total,
+                }
+                self.after(0, lambda evts=evts, cfg=cfg, tm=timings:
+                           self._show_preview(evts, cfg, tm))
             except Exception as e:
-                self._alog(f"Error: {e}", "err")
-                return
-            # ── Signature-based DP2 pre-parse (cache preserved if same demo set) ──
-            t0 = time.time()
-            self._preparse_dp2(cfg, list(evts.keys()))
-            t_preparse = time.time() - t0
-            # ─────────────────────────────────────────────────────────────────
-            # Apply demoparser2 modifiers before preview (shared helper handles AND/OR logic).
-            t0 = time.time()
-            evts = self._apply_dp2_filters_to_events(evts, cfg)
-            evts = self._apply_global_filter_gate_dict(evts, cfg)
-            t_filters = time.time() - t0
-            t_total = time.time() - t0_total
-            timings = {
-                "query":    t_query,
-                "preparse": t_preparse,
-                "filters":  t_filters,
-                "total":    t_total,
-            }
-            self.after(0, lambda evts=evts, cfg=cfg, tm=timings:
-                       self._show_preview(evts, cfg, tm))
+                import traceback
+                self._alog(f"Preview error: {e}\n{traceback.format_exc()}", "err")
 
         threading.Thread(target=task, daemon=True).start()
 
     def _show_preview(self, evts, cfg, timings=None):
-        """Display preview results. Must be called on the main thread.
-        timings: optional dict with keys query/preparse/filters/total/seqbuild (seconds).
-        """
+        """Display preview results. Must be called on the main thread."""
+        try:
+            self._show_preview_impl(evts, cfg, timings)
+        except Exception as e:
+            import traceback
+            self._log(f"Preview display error: {e}\n{traceback.format_exc()}", "err")
+
+    def _show_preview_impl(self, evts, cfg, timings=None):
         self._drain_log_buffer_once()
         if not evts:
             self._log("No events.", "warn")
@@ -8862,10 +8992,6 @@ class App(tk.Tk):
         if cfg.get("events_kills"):   _ev_parts.append("Kills")
         if cfg.get("events_deaths"):  _ev_parts.append("Deaths")
         if cfg.get("events_rounds"):  _ev_parts.append("Rounds")
-        if cfg.get("events_clutch"):
-            _csizes = App._clutch_allowed_sizes(cfg)
-            _cs = " ".join(f"1v{n}" for n in sorted(_csizes)) if _csizes else "all"
-            _ev_parts.append(f"Clutch [{_cs}]")
         self._log(f"Events:  {' + '.join(_ev_parts) if _ev_parts else '—'}", "info")
 
         # Weapons row
@@ -8903,6 +9029,14 @@ class App(tk.Tk):
         if _kf_parts:
             self._log(f"Filters: {' | '.join(_kf_parts)}", "ok")
 
+        # Clutch info
+        if cfg.get("clutch_enabled"):
+            _cmode = "Full clutch" if cfg.get("clutch_mode") == "full_clutch" else "Kills only"
+            _csizes = [f"1v{n}" for n in range(1, 6) if cfg.get(f"clutch_1v{n}")]
+            _csize_str = " " + " ".join(_csizes) if _csizes else " (all sizes)"
+            _cwins = "  ·  Wins only" if cfg.get("clutch_wins_only") else ""
+            self._log(f"Clutch:  {_cmode}{_csize_str}{_cwins}", "ok")
+
         # Result counts
         self._log(f"Found:   {len(evts)} demo(s)  ·  {te} event(s)", "ok")
 
@@ -8915,37 +9049,14 @@ class App(tk.Tk):
         before_s  = self._effective_before(cfg)
         after_s   = cfg["after"]
         nb_clips  = 0
-        nb_clutch_clips = 0
         total_ticks = 0
-        clutch_ticks = 0
         sorted_demos = sorted(evts.keys(), key=self._demo_sort_key)
         # Populate demo picker with the range-filtered demo list
         self._demo_picker_populate(sorted_demos, keep_existing=False)
         demo_dates = {}
         t0_seqbuild = time.time()
         for dp in sorted_demos:
-            # Clutch full-round sequences
-            if (cfg.get("events_clutch") and
-                    cfg.get("clutch_clip_mode", "full") == "full"):
-                clutch_groups = {}
-                for evt in evts[dp]:
-                    gid = evt.get("clutch_group")
-                    if gid is not None:
-                        clutch_groups.setdefault(gid, []).append(evt)
-                non_clutch = [e for e in evts[dp] if e.get("clutch_group") is None]
-                seqs = []
-                if non_clutch:
-                    seqs = self._build_sequences(non_clutch, tickrate, before_s, after_s)
-                if clutch_groups:
-                    c_seqs = self._build_clutch_sequences(
-                        list(clutch_groups.values()), tickrate, before_s, after_s)
-                    seqs += c_seqs
-                    nb_clutch_clips += len(c_seqs)
-                    for s in c_seqs:
-                        clutch_ticks += s["end_tick"] - s["start_tick"]
-                seqs.sort(key=lambda s: s["start_tick"])
-            else:
-                seqs = self._build_sequences(evts[dp], tickrate, before_s, after_s)
+            seqs = self._build_sequences(evts[dp], tickrate, before_s, after_s)
             nb_clips += len(seqs)
             for s in seqs:
                 total_ticks += s["end_tick"] - s["start_tick"]
@@ -8984,21 +9095,9 @@ class App(tk.Tk):
 
         # Build adaptive summary line
         h = self._hms
-        nb_regular = nb_clips - nb_clutch_clips
         summary_txt = self._fmt_summary(nb_demos, nb_clips, total_sec, avg_sec)
         self._log(f"\n{'─'*56}", "dim")
-        avg_line = f"  ▶ {nb_clips} clips  |  total {h(total_sec)}"
-        if nb_clutch_clips > 0 and nb_regular > 0:
-            # Mixed: show separate averages
-            reg_sec   = (total_sec - clutch_ticks / tickrate) / nb_regular if nb_regular else 0
-            cl_sec    = (clutch_ticks / tickrate) / nb_clutch_clips if nb_clutch_clips else 0
-            avg_line += (f"  |  {nb_regular} clip{'s' if nb_regular!=1 else ''} avg. {h(reg_sec)}"
-                         f"  +  {nb_clutch_clips} clutch avg. {h(cl_sec)}")
-        elif nb_clutch_clips > 0:
-            # All clutch clips
-            avg_line += f"  |  avg. {h(avg_sec)}/clutch"
-        else:
-            avg_line += f"  |  avg. {h(avg_sec)}/clip"
+        avg_line = f"  ▶ {nb_clips} clips  |  total {h(total_sec)}  |  avg. {h(avg_sec)}/clip"
         self._log(avg_line, "ok")
         self._log(f"{'─'*56}", "dim")
         self._summary_lbl.config(text=summary_txt, fg=GREEN)
@@ -9185,6 +9284,7 @@ class App(tk.Tk):
         TROIS TAP always exclusive. Derived from _DP2_FILTER_DEFS.
         Returns filtered events or None if no kills remain.
         """
+
         if cfg.get("kill_mod_trois_tap"):
             n_before = _count_kills(events)
             events   = self._trois_tap_filter(dp, events, cfg)
@@ -9210,6 +9310,7 @@ class App(tk.Tk):
                   for k, fn, _afn, ll, rl, sl in self._DP2_FILTER_DEFS
                   if cfg.get(k) and k != "kill_mod_no_trois_shot"]
         if not active:
+            # when no dp2 modifier is active (the most common case).
             return events
 
         logic = cfg.get("kill_mod_logic_dp2", "any")
@@ -9528,6 +9629,12 @@ class App(tk.Tk):
             self._alog("🚫 Teamkills excluded", "info")
         elif _tkm == "only":
             self._alog("⚔ Teamkills only", "info")
+        if cfg.get("clutch_enabled"):
+            _cmode = "Full clutch" if cfg.get("clutch_mode") == "full_clutch" else "Kills only"
+            _csizes = [f"1v{n}" for n in range(1, 6) if cfg.get(f"clutch_1v{n}")]
+            _csize_str = " " + " ".join(_csizes) if _csizes else " (all sizes)"
+            _cwins = " · Wins only" if cfg.get("clutch_wins_only") else ""
+            self._alog(f"🎯 Clutch: {_cmode}{_csize_str}{_cwins}", "info")
         batch_start = time.time()
         _df = cfg.get("date_from", "")
         _dt = cfg.get("date_to", "")
@@ -9642,8 +9749,31 @@ class App(tk.Tk):
                 self.after(0, lambda: _ask_user(n_already, demo_names))
                 _ev.wait()
                 choice = _choice[0]
+
+                def _uncheck_in_picker(paths=_already_tagged_paths):
+                    """Uncheck a set of demo paths in the picker. Must run on main thread."""
+                    for dp in paths:
+                        if dp in self._demo_picker_state:
+                            self._demo_picker_state[dp] = False
+                            try:
+                                self._demo_tree.item(dp, values=("✕",
+                                    self._demo_picker_fmt_date(dp),
+                                    self._demo_picker_fmt_name(dp)),
+                                    tags=("off",))
+                            except Exception:
+                                pass
+                    n_on  = sum(1 for v in self._demo_picker_state.values() if v)
+                    n_tot = len(self._demo_picker_state)
+                    try:
+                        self._picker_count_lbl.config(
+                            text=f"{n_on}/{n_tot} selected",
+                            fg=ORANGE if n_on < n_tot else MUTED)
+                    except Exception:
+                        pass
+
                 if choice is None:
-                    # Cancel → redo preview without already-tagged demos
+                    # Cancel → uncheck already-tagged in picker, redo preview without them.
+                    self.after(0, _uncheck_in_picker)
                     filtered_events = {dp: ev for dp, ev in all_events.items()
                                        if dp not in _already_tagged_paths}
                     self._alog(f"  ⏭ Cancelled — preview restarted without {n_already} already-tagged demo(s)", "info")
@@ -9652,13 +9782,10 @@ class App(tk.Tk):
                         self._log(f"  PREVIEW (without already tagged)  —  {datetime.now().strftime('%H:%M:%S')}", "info")
                         self._log(f"{'─' * 60}", "dim")
                         self._summary_lbl.config(text="  Computing…", fg=YELLOW)
-                        # Run DP2 filters in background thread for the redo preview too
                         _fe = filtered_events
                         def _bg():
                             nonlocal _fe
-                            # Pre-parse (no-op if already cached from the previous preview)
                             self._preparse_dp2(cfg, list(_fe.keys()))
-                            # Apply dp2 modifiers via shared helper (handles AND/OR logic)
                             _fe = self._apply_dp2_filters_to_events(_fe, cfg)
                             _fe = self._apply_global_filter_gate_dict(_fe, cfg)
                             self.after(0, lambda: self._show_preview(_fe, cfg))
@@ -9671,6 +9798,8 @@ class App(tk.Tk):
                     self._alog(f"  ▶ {n_already} already-tagged demo(s) → included anyway", "info")
                 else:
                     skip_already_tagged = True
+                    # No → skip during this run AND uncheck in picker for future runs.
+                    self.after(0, _uncheck_in_picker)
                     self._alog(f"  ⏭ {n_already} already-tagged demo(s) → ignored", "info")
 
         for i, (dp, events) in enumerate(demo_list, 1):
@@ -9691,37 +9820,20 @@ class App(tk.Tk):
             # ── demoparser2 kill modifiers ─────────────────────────────────────
             t0_dp2 = time.time()
             events = self._apply_dp2_modifiers(dp, events, cfg)
-            events = self._apply_global_filter_gate_events(events, cfg) if events else None
+            # Use 'is not None' — _apply_dp2_modifiers signals "skip this demo"
+            # with an explicit None return; an empty list is a valid (though unusual)
+            # result and must not be conflated with the skip sentinel.
+            events = self._apply_global_filter_gate_events(events, cfg) if events is not None else None
             t_dp2 = time.time() - t0_dp2
             if events is None:
                 summary.append((Path(dp).name, "SKIP", 0, 0, "0 kills after filter"))
                 skip += 1
                 continue
 
-            # Clutch clip_mode="full": rebuild sequences spanning whole clutch groups
             t0_seq = time.time()
-            if (cfg.get("events_clutch") and
-                    cfg.get("clutch_clip_mode", "full") == "full"):
-                clutch_groups = {}
-                for evt in events:
-                    gid = evt.get("clutch_group")
-                    if gid is not None:
-                        clutch_groups.setdefault(gid, []).append(evt)
-                non_clutch = [e for e in events if e.get("clutch_group") is None]
-                seqs = []
-                if non_clutch:
-                    seqs = self._build_sequences(
-                        non_clutch, cfg["tickrate"],
-                        self._effective_before(cfg), cfg["after"])
-                if clutch_groups:
-                    seqs += self._build_clutch_sequences(
-                        list(clutch_groups.values()), cfg["tickrate"],
-                        self._effective_before(cfg), cfg["after"])
-                seqs.sort(key=lambda s: s["start_tick"])
-            else:
-                seqs = self._build_sequences(
-                    events, cfg["tickrate"],
-                    self._effective_before(cfg), cfg["after"])
+            seqs = self._build_sequences(
+                events, cfg["tickrate"],
+                self._effective_before(cfg), cfg["after"])
             t_seq = time.time() - t0_seq
             if not seqs:
                 continue

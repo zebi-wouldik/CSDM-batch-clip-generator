@@ -3,1750 +3,929 @@
 All notable changes to this project are documented in this file.  
 Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
----
-
-## [v143.0]
-### Fixed
-
-- **Clutch detection false positives — teammates who made kills were invisible**: the teammate check built `all_teammates` exclusively from *victims* on the player's side (`_is_teammate(kill)` ↔ `victim_side == player_side`). A teammate who made one or more kills during the round but hadn't yet died at the player's first kill tick was never added to `all_teammates` — so they were absent from `teammates_alive_at_clutch` — and the round was incorrectly classified as a clutch. Fixed: `all_teammates` is now built by scanning every kill in the round and collecting anyone on the player's side who appears as **killer** *or* victim (excluding the player themselves). This closes the primary false-positive gap; the only remaining undetectable case is a teammate who did nothing at all in the round (no kills, no deaths), which cannot be inferred from the kills table alone.
-
-- **`require_win` ("Win only") semantics clarified and corrected**: the option clips the player's kills (or whatever event type is selected) only when the player's team *won* that clutch round. A round is won by the player's team when `round_winner` matches `player_side`. The existing implementation was correct in logic but previously broken by the `_norm_side` gap for `win_reason`-style values (fixed in v133.41) and the silent-pass-through when rounds data is missing (also v133.41).
-
-### Added
-
-- **Configurable isolation window for ONE TAP filter**: the isolation window was a hardcoded `DP2_TICK_WINDOW = 128` ticks (≈ 2s at 64 tick/s). It is now driven by a new per-filter config value `kill_mod_one_tap_s` (integer seconds, default `2`). A `Window: [N] s` entry field appears inline on the ONE TAP filter row in the dp2 section — same style as the `Min angle` field on FLICK. The value is converted to ticks at filter time via `int(kill_mod_one_tap_s × tickrate)`, so it scales correctly with both 64- and 128-tick demos. Minimum clamped to 0.5s to prevent degenerate zero-width windows.
-
-### Changed
-
-- **Version jump to v143.0**: reflects the scope of the clutch logic rewrite.
+> **Version numbering note:** sub-releases previously written as `133.xx` or `143.x` have been
+> renumbered as sequential integers. `133.33` → `134`, `133.34` → `135`, …, `133.42` → `143`,
+> `143.0` → `144`, `143.1` → `145`, …, `143.8` → `152`. Each dot was always one real increment.
 
 ---
 
-## [v133.42]
-### Fixed
+## [v157]
 
-- **1v0 clutch artefact included when "all sizes" is selected**: when no 1vX checkboxes are checked (`clutch_allowed_sizes` returns an empty set, meaning no size restriction), a round where `all_opponents` was empty — due to missing or incomplete data in the DB — produced `clutch_size = 0`. The size-filter guard `if allowed_sizes and clutch_size not in allowed_sizes` was skipped entirely (because `allowed_sizes` is empty in "all" mode), so the 1v0 round was logged and processed as a clutch. Added an unconditional `if clutch_size < 1: continue` guard before the size filter so data artefacts are always discarded regardless of which sizes are selected.
+### **🎯 CLUTCH — Complete rewrite. The previous implementation was not functional.**
 
-- **Version bump**: script version moved to `v133.42`.
+The clutch feature existed in the codebase since v82 but had been rewritten, patched, and re-patched across more than a dozen versions without ever reaching a working state. This version replaces the entire mechanism from scratch with a clean, reliable implementation.
 
----
+**What changed for users:**
 
-## [v133.41]
-### Fixed
+- Clutch detection now actually works. Enable the 🎯 CLUTCH toggle, pick your size filter (1v1 to 1v5), choose **Kills only** or **Full clutch** mode, optionally check **Wins only** — and you get clips.
+- **Kills only** — one clip per kill made during the clutch, using the normal Before/After window. Same behaviour as the regular Kills capture, but restricted to the clutch phase only.
+- **Full clutch** — one continuous clip from the exact tick you became last alive until the last kill of the round. Before/After sliders are ignored; the clip spans the entire clutch sequence.
+- Size filter: leave all boxes unchecked to capture every clutch, or check specific sizes (1v1, 1v3, etc.) to restrict.
+- **Wins only**: only rounds where you killed all remaining opponents are included.
+- Clutch is stackable with all other kill filters — other filters narrow the kill set first, clutch restricts to the clutch phase last.
 
-- **`require_win` filter silently ignored when rounds table is unavailable**: if `rtc_col` or `rmk_col` could not be resolved (rounds table absent or missing columns), `round_brackets` stayed empty, every kill's `round_winner` was `None`, `_norm_side` returned `""`, and the guard `if player_side and winner_norm` evaluated to `False` — causing the "Win only" checkbox to do nothing. A warning is now emitted once per session via `self._warned_require_win_no_data` and the clutch is allowed through rather than silently dropped, so the user knows the data needed to evaluate the filter is missing.
+**Technical details:**
 
-- **`_norm_side` rejects all `win_reason`-style winner values**: when `rwin_col` resolved to a `win_reason` column (the last-resort fallback after `winner_name`, `winner_side`, `winner`, `winning_side`), values such as `"ct_win"`, `"t_win"`, `"bomb_defused"`, `"target_bombed"`, `"bomb_exploded"` were returned verbatim by `_norm_side` and never matched `"CT"` or `"T"`. This caused `player_side != winner_norm` to be true for every clutch, filtering them all out when `require_win=True`. `_norm_side` now maps the full set of known `win_reason` values: CT-side wins (`ct_win`, `cts_win`, `bomb_defused`, `counter_terrorist_win`) → `"CT"`; T-side wins (`t_win`, `ts_win`, `target_bombed`, `bomb_exploded`, `terrorists_win`, `terrorist_win`) → `"T"`.
+The old implementation tried to infer team state from which players appeared as killers in the kills table — missing teammates who hadn't made a kill yet. It also had a separate `_query_clutch_events` DB function with round-bracket logic, side normalisation bugs, winner column detection issues, and was tightly coupled to a `clutch_group` field that multiple downstream filter stages silently dropped.
 
-- **Version bump**: script version moved to `v133.41`.
+The new implementation:
 
----
-
-## [v133.40]
-### Fixed
-
-- **Clutch clips never generated when Kills and Clutch events are both enabled**: in `_query_events`, after the regular kills query populated `results[dp]`, the clutch merging loop used a set of `(tick, killer_sid)` signatures to skip duplicate entries. When a clutch kill matched an already-present regular kill event, the clutch version was silently dropped — leaving the existing event without the `clutch_group` / `clutch_size` fields that `_build_clutch_sequences` (and the run path) rely on to identify and assemble clutch clips. The result: with Kills + Clutch both active, every clutch round whose kills overlapped with the player's regular kill set produced zero clutch clips. Clutch-only mode (Kills disabled) was unaffected because `results[dp]` was empty when the merging ran.
-
-  **Fix:** replaced the skip-on-duplicate set with a `sig→index` dict built from the current `results[dp]`. When a clutch kill's signature already exists, the code now looks up the existing event by index and stamps `clutch_group` / `clutch_size` directly onto it, preserving the `_mf` and weapon data already on that event while making it visible to the clutch sequence builder. New signatures are appended as before and registered in the map.
-
-- **Version bump**: script version moved to `v133.40`.
-
----
-
-## [v133.39]
-### Fixed
-
-- **Clutch section header rendered in gray instead of accent color**: the `🤝 Clutch:` label was built with `mlabel` (which uses `MUTED` gray) instead of `slabel` (bold, accent-colored). Every other subsection header in the KILL FILTERS panel — *Mods*, *demoparser2 modifiers*, *Situation (DB + Clutch)* — correctly used `slabel`; the clutch block was the only one left behind. A separator line (`BORDER`-colored `tk.Frame`, 1px height) was also added above the block so it aligns visually with the other subsections.
-
-- **Scroll stopping when cursor moves over Sec frames, checkboxes, or any child widget** (`ScrollableFrame`): the `<MouseWheel>` binding was controlled by `<Enter>`/`<Leave>` on the canvas only. Because Tk fires `<Leave>` on the canvas the moment the pointer enters a child widget inside it (e.g., a `Sec` LabelFrame, a `hchk` checkbox, a `mlabel`), scrolling died as soon as the user hovered any UI element in the panel — even while the cursor was visually still inside the scroll area.
-
-  **Fix:** the `<Leave>` handler now checks the actual pointer position via `winfo_pointerxy()` against the scrollable widget's bounding box before deciding to unbind. If the pointer is still within the widget's bounds, `unbind_all` is skipped and scrolling remains active. A matching `<Enter>` binding was added to `self.inner` (the inner content frame) so scroll is re-enabled immediately when the mouse enters the content area regardless of which sub-widget it enters through.
-
-- **Clutch events silently discarded by `_apply_db_postfilters`**: clutch events carry a `clutch_group` key and are validated entirely by `_query_clutch_events` (which checks team isolation, opponent count, and optionally win/loss before adding an event to results). However, `_apply_db_postfilters` — which enforces DB situational filters like entry frag, ace, multi-kill, eco-frag — was receiving the raw `results` dict including clutch events and treating them as ordinary kills. Any demo where only clutch events existed (no regular kills) produced an empty `per_mod_sigs` list and fell through a bare `continue`, silently dropping every clutch event for that demo. Even in mixed scenarios, the `kept_kills`/`filtered[dp]` assembly never re-added clutch kills.
-
-  **Fix:** at the start of the per-demo loop in `_apply_db_postfilters`, clutch events are separated from the rest (`clutch_group is not None`). They are never passed into the modifier-matching logic, and are unconditionally appended to the output at every exit point in the loop — including the early `not kill_events` return, the `not per_mod_sigs` continue, and the final `kept_kills + non_kill` assembly.
-
-- **Version bump**: script version moved to `v133.39`.
+- Is a **pure post-query filter** (`_apply_clutch_filter`) applied after all existing DB filters inside `_query_events`. No schema changes. No new DB queries beyond one all-kills fetch per batch.
+- Fetches all kills for all relevant demos in one SQL query (`_fetch_all_kills_for_demos`), groups them by round using `round_number` if available or a tick-heuristic fallback.
+- Walks kills chronologically per round, maintains a per-team alive-set, and detects the exact tick when the tracked player becomes last alive. Records clutch size and whether the player won.
+- Handles DB schemas with or without team/side columns. Without team data, falls back to a SID-set heuristic (player's SIDs vs everyone else).
+- Stores `round_tick_min`/`round_tick_max` per clutch window to resolve round-key mismatches between the all-kills query (which may have `round_number`) and the main kills query (which does not).
+- `_build_sequences` patched to honour `_seq_start_tick`/`_seq_end_tick` overrides on events, enabling exact-boundary full-clutch clips without touching the Before/After sliders.
+- Fully removable: integration points are a guarded call in `_query_events`, an `if/else` branch in `_build_sequences` (safe when keys absent), and a badge branch in `_build_clip_badges`. None break if the clutch block is deleted.
 
 ---
 
-## [v133.38]
-### Fixed
+### Renamed: "Full round" → "Full clutch"
 
-- **`KeyError: 'kill_mod_hv_one_shot'` on startup** (regression from v133.37): the registry refactor replaced the manual `bool_keys` filter list with `*_FILTER_BOOL_KEYS`, which only covers primary filter enable/req keys. `kill_mod_hv_one_shot` is a sub-option bool inside `kill_mod_high_velocity`'s `extra_config` — it was in the old manual list but not in `_FILTER_BOOL_KEYS`, so no `BooleanVar` was created for it, causing a `KeyError` the moment the Ferrari Peek row tried to use `self.v["kill_mod_hv_one_shot"]`.
-
-  **Fix (DRY):** `bool_keys` and `int_keys` now both auto-derive their filter sub-option entries from `extra_config` fields in the registry:
-  - `bool_keys` adds `*[k for f in KILL_FILTER_REGISTRY if f.extra_config for k, v in f.extra_config.items() if isinstance(v, bool)]` → picks up `kill_mod_hv_one_shot`
-  - `int_keys` adds the equivalent for int values (not bool) → picks up `kill_mod_high_vel_thr`, `kill_mod_flick_deg`, `kill_mod_multi_kill_n`, `kill_mod_multi_kill_s`, `kill_mod_bourreau_n`
-
-  Adding a new filter with bool or int sub-options in `extra_config` now automatically creates the correct `BooleanVar` or `IntVar` without touching `bool_keys` or `int_keys`.
-
-- **Version bump**: script version moved to `v133.38`.
+The old label implied the clip covered the entire CS round (up to 115 seconds). It covers the clutch phase only. Renamed everywhere: UI radio button, config value (`"full_clutch"`), log headers, docstrings.
 
 ---
 
+### UI: CAPTURE and TIMING sections merged into CAPTURE & TIMING
 
-### Architecture — Kill Filter Registry
-
-**Problem:** every kill modifier existed in 7+ scattered places — `DEFAULT_CONFIG`, `bool_keys`, `PRESET_KEYS`, `KILL_FILTER_LABELS`, `_FILTER_BADGE_DEFS`, `_DP2_FILTER_DEFS`, `_MOD_COLS`, and 340 lines of hardcoded per-filter UI code. Adding or removing a filter required touching all of them.
-
-**Solution:** a single `KILL_FILTER_REGISTRY` — a list of `FilterDef` NamedTuples. Everything else is derived:
-
-| Structure | Before | After |
-|---|---|---|
-| `DEFAULT_CONFIG` filter entries | 40 manual lines | `**_FILTER_CONFIG_DEFAULTS` (1 line) |
-| `bool_keys` filter entries | 20 manual entries | `*_FILTER_BOOL_KEYS` (1 entry) |
-| `PRESET_KEYS["player"]` filter entries | 40 manual entries | `*_FILTER_PRESET_PLAYER_KEYS` (1 entry) |
-| `KILL_FILTER_LABELS` | 20 manual entries | derived dict (1 line) |
-| `_FILTER_BADGE_DEFS` | 20-entry class list | cached property from registry |
-| `_DP2_FILTER_DEFS` | 11-entry class list | cached property from registry |
-| `_MOD_COLS` | local dict in `_query_events` | `KILL_FILTER_SQL_COLS` (module-level, from registry) |
-| Kill filter UI | ~340 lines of per-filter code | ~130 lines of data-driven loops |
-
-**`FilterDef` fields:** `key`, `label`, `badge`, `category` (mods/dp2/db), `tip`, `sql_cols`, `dp2_filter`, `dp2_apply`, `dp2_log/result/skip`, `special`, `hide_ui`, `extra_config`.
-
-**`_build_filter_row(parent, fdef, must_list)`** — DRY UI builder. Renders label + Enable + ★ Must + optional dp2_badge for any standard filter row. TROIS SHOT's "Exclude" hchk, FERRARI PEEK's expandable panel, FLICK's degree entry, MULTI-KILL's N/s entries, and BULLY's repeat-# combobox are added to the returned row frame after the call.
-
-**To add a new filter now:** add one `FilterDef(...)` entry to `KILL_FILTER_REGISTRY`. Config keys, bool_keys, preset keys, badge, dp2 filter table, SQL column lookup, and UI row all follow automatically. Nothing else changes.
-
-### Performance
-- `from functools import lru_cache` added — `_weapon_category` and filter-def property caches avoid repeated derivation.
-- `_FILTER_BADGE_DEFS` and `_DP2_FILTER_DEFS` are now cached properties (computed once per session, not every call).
-
-### Code reduction
-- Kill filter UI: ~340 lines → ~130 lines (−62%)
-- Registry replaces 7 scattered data structures with 1
-
-- **Version bump**: script version moved to `v133.37`.
+Two adjacent sections with tightly related settings merged into one, reducing scrolling and visual noise.
 
 ---
 
+### Fixed: ROUNDS capture not working
 
-### Changed & Fixed
-
-- **Demo picker selection reworked**: clicking a row in the demo picker now uses native Treeview multi-selection (click, Shift+click, Ctrl+click) without immediately toggling its check state. The old "↕ Toggle selected" button (which toggled in one click — making it impossible to just highlight a row) has been replaced with two explicit buttons:
-  - **✓ Check selected** — checks all currently highlighted rows
-  - **✕ Uncheck selected** — unchecks all currently highlighted rows
-
-  The workflow is now: select one or more demos (mouse/keyboard) → press the appropriate button. All four picker buttons (Check all / Uncheck all / Check selected / Uncheck selected) use green/red colouring consistently.
-
-- **"✕ Unselect all" kill filters button** now RED (`fg=RED`) with a `✕` prefix — visually consistent with the demo picker's uncheck buttons.
-
-- **`demoparser2` badge always at the far right** of every filter row — previously it was packed left after the buttons/toggles, meaning it appeared mid-row next to ★ Must. Now `side="right"` on all 8 call sites.
-
-- **Kill filter names now use `flabel` (bright text)** to distinguish them from control labels: all 14 filter name labels (💨 SMOKE:, 🧱 WALLBANG:, 🎲 TROIS SHOT:, 🎯 ONE TAP:, 🏎 FERRARI PEEK:, ↩ FLICK:, 🛡 SAVIOR:, 🚀 ENTRY FRAG:, 🃏 ACE:, ⚡ MULTI-KILL:, 💀 BULLY:, 💰 ECO FRAG:, 🎯 Headshots:, and the loop-built Mods/dp2-flag rows) now render in `TEXT` colour instead of `MUTED`.
-
-- **Subcategory section headers use `slabel` (bold accent)**: "Kill filters (Mods + demoparser2):", "Mods — none checked = all kills:", "demoparser2 modifiers:", and "Situation (DB + Clutch):" are now bold and accent-coloured, making them visually pop as section dividers.
-
-- **`flabel()` and `slabel()` helper functions added** alongside `mlabel()`:
-  - `flabel` — same as `mlabel` but `fg=TEXT` (full brightness, for filter names)
-  - `slabel` — bold, `fg=ORANGE` (accent colour, for subcategory headers)
-
-- **Version bump**: script version moved to `v133.36`.
+`cfg["events_rounds"]` was a direct dict key access inside `_query_events`. A missing key (config loaded from disk before the Rounds toggle existed) raised a `KeyError` silently swallowed by `except Exception: pass` — no rounds, no error. Changed to `cfg.get("events_rounds")`. Same fix applied to `cfg["events_kills"]` and `cfg["events_deaths"]`.
 
 ---
 
+### Fixed: pre-existing crash in `_worker` — `seqs` was unreachable dead code
 
-### Fixed
-
-- **DB connection leak in `_connect_and_load`**: the psycopg2 connection opened at the start of the DB connect task was closed inside the `try` block (`conn.close()`). If any exception occurred anywhere in the ~170 lines of schema/player/tag queries between open and close, the `except` handler fired and called `_on_load_fail` — but `conn.close()` was never reached, leaking the connection. Fixed by wrapping the entire `with conn.cursor()` block in a `try/finally: conn.close()`, guaranteeing the connection is always closed regardless of outcome.
-
-- **SyntaxError introduced in previous session repaired**: the partial indentation refactor from the previous session left the inner `for` loop body at the wrong indent level, producing `SyntaxError: expected an indented block`. The entire `task()` function has been rewritten with correct indentation.
-
-- **Version bump**: script version moved to `v133.35`.
+`seqs = self._build_sequences(...)` and `t0_seq = time.time()` were placed inside the `if events is None: ... continue` block — completely unreachable. Yet `seqs` and `t_seq` were used immediately after, causing `NameError` on every demo with events. Moved to the correct position after the guard.
 
 ---
 
+### Improved: player list pagination
 
-### Fixed
+The DB search listbox previously showed 4 rows — all players were loaded but almost none were visible. Replaced with an 8-row paginated display:
 
-- **OOM crash on large batches with dp2 filters** — the dp2 cache (`self._dp2_cache`) accumulated parsed demo data for the entire session with no eviction. Each entry holds `fire_detail`, `fire_ticks`, `view_angles`, `hurt_index`, and `death_flags` — typically 0.5–2 MB of Python objects per demo. A batch of 200+ demos with multiple dp2 filters active (WALLBANG, AIRBORNE, TROIS SHOT, etc.) could silently consume 400 MB–1 GB, eventually crashing with an `MemoryError` or being killed by the OS.
-
-  **Fix — LRU eviction:** added `_dp2_cache_put_locked(demo_path, data)` as the single write entry-point for the cache (called under the existing lock). It maintains `_dp2_cache_order` (insertion-order list) and evicts the oldest entry whenever `len(_dp2_cache) > _DP2_CACHE_MAX` (default: **150 demos**). Evicted demos are re-parsed on demand if needed again. The DRY helper replaces the two former raw `self._dp2_cache[demo_path] = …` assignments.
-
-- **Log Text widget growing unbounded** — the `self.log` Tk Text widget accumulated every log line for the entire session with no cap. On batches of 300+ demos with verbose dp2 logging, this caused progressive UI slowdown as Tk managed an ever-growing text buffer. Added `_LOG_MAX_LINES = 8000`: after each pump flush, if the line count exceeds the limit, the oldest lines are trimmed via a single `log.delete("1.0", f"{trim_to+1}.0")` call.
-
-- **Tempfile cleanup lambda evaluated at creation time instead of inside the thread** — the per-demo JSON tempfile cleanup was:
-  ```python
-  target=lambda p=tp: (time.sleep(10), os.unlink(p))
-  if os.path.exists(p) else None   # ← evaluated NOW
-  ```
-  If the file didn't exist at thread-creation time, `target=None` caused `Thread(target=None).start()` which raises `TypeError` (silently swallowed), leaking the tempfile on disk. Fixed: the `os.path.exists` check is now inside the lambda, evaluated after the 10-second sleep.
-
-- **Version bump**: script version moved to `v133.34`.
+- **◀ / ▶** buttons navigate pages.
+- `p.2/14 (110 total)` label shows current position.
+- Searching always resets to page 1.
+- `_select_by_label` jumps to the correct page automatically.
+- `_on_lb_select` maps listbox row index to the correct absolute position in the full filtered list.
 
 ---
 
+### Fixed: already-tagged demos — picker not updated on "No" answer
 
-### Changed
+Choosing **No** in the already-tagged dialog correctly skipped those demos but left them checked (✓) in the picker. On the next Run they were queued again.
 
-- **"Minimize on launch" replaced by "Send to back on launch"**: instead of minimizing CS2 (which interrupts its taskbar state and can cause issues with HLAE injection timing), the new behaviour uses `SetWindowPos(HWND_BOTTOM)` to push CS2 to the bottom of the Windows Z-order. CS2 keeps running fully in the background — it is simply placed behind every other window so your desktop stays on top. No minimize animation, no taskbar icon change, no playback interruption.
-
-- **Config key renamed**: `cs2_minimize` → `cs2_send_to_back`. Old configs with `cs2_minimize: true` are automatically migrated to `cs2_send_to_back: true` at load time via backward-compat in both `load_config` and `_apply_config`.
-
-- **Log message updated**: `🗕 CS2 minimized.` → `🔙 CS2 sent to back.`
-
-- **UI label/tooltip updated**: "Minimize on launch" → "Send to back on launch" with an updated tooltip explaining the Z-order behaviour.
-
-- **README updated**: pywin32 requirement note updated to reflect the new behaviour.
-
-- **Version bump**: script version moved to `v133.33`.
+Both **No** and **Cancel** now call a shared `_uncheck_in_picker()` helper that unchecks the already-tagged demos immediately, updates row visuals (✕, greyed text), and refreshes the selection counter. **Yes** leaves the picker unchanged.
 
 ---
 
+## [v156]
 
-### Fixed
+### Fixed: `_build_clip_badges` — `[ROUND]` badge `NameError` if clutch removed
 
-- **Minimize-on-launch behavior reverted**:
-  `cs2_minimize` now triggers on each CSDM game launch (per demo run) instead of once per batch.
-- **No camera/targeting logic changes** in this bump.
-- **Version bump**: script version moved to `v133.3`.
+The `[ROUND]` condition referenced `clutch_events` by name. If the clutch block were deleted, this would raise `NameError`. Rewritten as `not (kill_events or death_events or clutch_events)` — removing clutch terms reduces naturally to the original condition without a dangling name.
+
+---
+
+## [v155]
+
+### Fixed: already-tagged dialog — duplicate inner functions
+
+Cancel and No branches each defined identical `_uncheck_tagged` / `_uncheck_skipped` inner functions. Deduplicated into one `_uncheck_in_picker(paths)` helper called from both.
+
+---
+
+## [v154]
+
+### Added: clutch filter wired into `_query_events`; config keys, UI, and preset support
+
+Clutch filter runs after `_apply_db_postfilters`, gated behind `cfg.get("clutch_enabled")`. Config keys: `clutch_enabled`, `clutch_wins_only`, `clutch_mode`, `clutch_1v1`–`clutch_1v5`. All clutch keys in `PRESET_KEYS["player"]`. UI: master toggle, Wins only, Kills only / Full clutch radio, 1v1–1v5 checkboxes, greyed sub-controls when master is off.
+
+---
+
+## [v153]
+
+### Added: `_fetch_all_kills_for_demos` and `_apply_clutch_filter`
+
+Core clutch detection methods. Both are self-contained and zero-overhead when `clutch_enabled` is False.
+
+### Fixed: `_build_sequences` — `_seq_start_tick`/`_seq_end_tick` override support
+
+Events carrying these keys use them directly as clip boundaries. Normal events (keys absent) hit the unchanged `else` branch.
+
+---
+
+## [v152] *(was v143.8)*
+
+### Fixed: clutch — zero results with TEAM_A / TEAM_B format
+
+`_norm_side("TEAM_A")` returned unrecognised value → hardcoded fallback `"T"` → no victim matched. Fix: detection reads raw `killer_team_name` as `player_team`, classifies by direct string equality. Works for CT/T, TEAM_A/TEAM_B, any scheme.
+
+**Validated:** 23 true 1v3 clutches found across 310 matches, 13 remaining after Win Only.
+
+---
+
+## [v151] *(was v143.6)*
+
+### Fixed: clutch size always reported as 1v5
+
+`op_team_sz − dead_before` = 5 when player kills all opponents alone (deaths happen after last-alive tick, so `dead_before = 0`). Fix: `clutch_size = len(opponent_death) − dead_before`.
+
+---
+
+## [v150] *(was v143.5)*
+
+### Fixed: correct timeline-based last-alive algorithm
+
+Old algorithm required all 4 teammates dead before the player's **first kill** — wrong if the player kills before teammates die. New: `last_alive_tick` = tick of (N−1)th teammate death. Player confirmed in clutch if they have at least one kill strictly after `last_alive_tick`.
+
+---
+
+## [v149] *(was v143.4)*
+
+### Fixed: diagnostic logging; TROIS SHOT/ONE TAP/TROIS TAP decoupled; HS auto-lock removed
+
+Step-by-step diagnostic logging in `_query_clutch_events`. Three dp2 filters made fully independent — automatic coupling removed. Headshot mode always user-controlled.
+
+---
+
+## [v148] *(was v143.3)*
+
+### Fixed: `_norm_side` NameError; missing victim_side inference
+
+`_norm_side()` defined in Step 5, called in Step 2b → `NameError` swallowed silently. When `victim_team_name` absent, `v_side` inferred as opposite of `k_side` (CT↔T).
+
+---
+
+## [v147] *(was v143.2)*
+
+### Fixed: clutch — clean-room rewrite; scroll bugs fixed
+
+New team-size-aware last-alive algorithm using victim deaths only. Peak unique victim SIDs per side infers team size. `bind_all("<MouseWheel>")` replaced with per-widget bindings; scroll on log console and demo list restored.
+
+---
+
+## [v146] *(was v143.1)*
+
+### Fixed: clutch events dropped by four filter stages
+
+Systematic audit: `_apply_global_filter_gate_events`, `_apply_filter_to_events`, `_union`/`mixed` merge loops, and all dp2 worker logic modes all silently dropped clutch events. Fixed in all cases: clutch events separated before logic, unconditionally re-appended at every exit point. `_stamp_mf` skips clutch events.
+
+---
+
+## [v145] *(was v143.0)*
+
+### Fixed: clutch false positives — invisible teammates; configurable ONE TAP window
+
+`all_teammates` built from victims only → teammate who killed but hadn't died was invisible. Fix: includes anyone on player's side appearing as killer **or** victim. `kill_mod_one_tap_s` config key (default 2s) replaces hardcoded tick window.
+
+---
+
+## [v144] *(was v143.0 base)*
+
+### Fixed: clutch 1v0 artefact; require_win as ★ Must
+
+Unconditional `if clutch_size < 1: continue` guard added. Data artefacts (empty round, missing DB rows) always discarded regardless of size filter setting.
+
+---
+
+## [v143] *(was v133.42)*
+
+### Fixed: 1v0 clutch artefact included in "all sizes" mode
+
+`allowed_sizes` empty (all-sizes mode) skipped the size filter → `clutch_size = 0` logged as valid.
+
+---
+
+## [v142] *(was v133.41)*
+
+### Fixed: `require_win` silently ignored when rounds table unavailable; `_norm_side` maps win_reason values
+
+Empty `round_brackets` → `round_winner = None` → guard never fires → Win Only did nothing. `_norm_side` now maps `ct_win`, `bomb_defused`, `t_win`, `target_bombed`, etc.
+
+---
+
+## [v141] *(was v133.40)*
+
+### Fixed: clutch clips never generated when Kills + Clutch both active
+
+Deduplication sig-set dropped clutch versions of kills that already existed. Replaced with `sig→index` dict; existing events stamped with clutch fields in-place.
+
+---
+
+## [v140] *(was v133.39)*
+
+### Fixed: clutch header colour; scroll stops on child widgets; clutch events dropped by `_apply_db_postfilters`
+
+Clutch header used `mlabel` (gray) instead of `slabel` (accent). `<Leave>` checks pointer position before unbinding. `_apply_db_postfilters` now separates and re-appends clutch events unconditionally.
+
+---
+
+## [v139] *(was v133.38)*
+
+### Fixed: `KeyError: 'kill_mod_hv_one_shot'` on startup
+
+Sub-option bool in `extra_config` not in `_FILTER_BOOL_KEYS` → no `BooleanVar` created. `bool_keys`/`int_keys` now auto-derive sub-option entries from `extra_config` fields.
+
+---
+
+## [v138] *(was v133.37)*
+
+### Architecture: Kill Filter Registry
+
+Single `KILL_FILTER_REGISTRY` of `FilterDef` NamedTuples. Kill filter UI: ~340 → ~130 lines (−62%). Adding a filter = one `FilterDef(...)` entry.
+
+---
+
+## [v137] *(was v133.36)*
+
+### Changed: demo picker rework; UI polish
+
+Native multi-select + **✓ Check selected** / **✕ Uncheck selected** buttons. dp2 badge always at far right. Filter name labels use `flabel`, section headers use `slabel`.
+
+---
+
+## [v136] *(was v133.35)*
+
+### Fixed: DB connection leak; SyntaxError from prior session
+
+`try/finally: conn.close()` in `_connect_and_load`. Indentation error repaired.
+
+---
+
+## [v135] *(was v133.34)*
+
+### Fixed: OOM crash on large batches; log widget growing unbounded; tempfile cleanup
+
+LRU eviction on dp2 cache (max 150 demos). `_LOG_MAX_LINES = 8000`. Tempfile `os.path.exists` check moved inside lambda.
+
+---
+
+## [v134] *(was v133.33)*
+
+### Changed: "Minimize on launch" → "Send to back on launch"
+
+`SetWindowPos(HWND_BOTTOM)` instead of minimize. Config key: `cs2_minimize` → `cs2_send_to_back`.
 
 ---
 
 ## [v133]
-### Fixed
 
-- **Camera/player targeting logic rebuilt for multi-player batches**:
-  active player order is now deterministic and no longer derived from unordered set iteration.
-- **Sequence anchor targeting**:
-  each sequence now anchors camera start to the first relevant active player in that sequence (killer first, then victim), reducing wrong-player focus at clip start.
-- **Player visibility/highlight hardening**:
-  camera target players are now always eligible in `playersOptions` for killer/victim modes.
-- **Run log observability**:
-  per-sequence logs now include the initial camera target (`name(sid)`) for immediate verification.
-- **Version bump**: script version moved to `v133`.
+### Fixed: camera/player targeting for multi-player batches
+
+Active player order deterministic. Sequence anchor targets first relevant active player.
 
 ---
 
 ## [v132]
-### Fixed
 
-- **Regression rollback in global filter gate**:
-  reverted cross-propagation of filter reasons into `DEATHS` events, which could cause wrong-player focus and early/full-demo-style playback in some runs.
-- **Kill-filter gating restored to kill-event-only enforcement**:
-  required/optional filter matching now gates only kill events while preserving non-kill events as context, matching the pre-regression behavior.
-- **Kept v131 minimize improvement**:
-  `Minimize on launch` still runs once per batch.
-- **Version bump**: script version moved to `v132`.
+### Fixed: regression rollback in global filter gate
+
+Kill-filter gating restored to kill-event-only enforcement.
 
 ---
 
 ## [v131]
-### Fixed
 
-- **Global filter gate now applies to both KILLS and DEATHS events**:
-  filtered demo/clip inclusion is now based on matched reasons for both frag event types, preventing unfiltered death events from slipping through and causing wrong-player/early-tick clip starts.
-- **Reason propagation for DEATHS**:
-  when a matching KILL carries filter reasons, equivalent DEATH events at the same `(tick, killer_sid)` inherit those reasons for consistent gating and badges.
-- **CS2 minimize behavior during batch**:
-  `Minimize on launch` now triggers once per batch instead of once per demo command, avoiding repeated forced minimization between demos.
-- **Version bump**: script version moved to `v131`.
+### Fixed: filter gate applied to KILLS and DEATHS; CS2 minimize once per batch
 
 ---
 
 ## [v130]
-### Fixed
 
-- **HLAE recording payload hardening**:
-  JSON now always includes `hlaeOptions` when `recordingSystem` is `HLAE`, even when there are no extra args.
-- **Prevents silent fallback-style behavior in HLAE runs**:
-  ensures CSDM receives an explicit HLAE options block for every HLAE clip job.
-- **Version bump**: script version moved to `v130`.
+### Fixed: `hlaeOptions` always included in HLAE recording payload
 
 ---
 
 ## [v129]
-### Fixed
 
-- **Recording system normalization hardening (HLAE vs CS)**:
-  `recsys` values are now normalized at config load, config collect, JSON build, and worker start.
-- **Prevents accidental CS-mode behavior while UI shows HLAE**:
-  malformed/legacy `recsys` values no longer silently bypass HLAE path and no longer risk sending an invalid `recordingSystem` to CSDM.
-- **Version bump**: script version moved to `v129`.
+### Fixed: recording system normalisation hardening
 
 ---
 
 ## [v128]
-### Fixed
 
-- **Collateral over-detection reduced with stricter same-shot validation**:
-  collateral now requires:
-  - penetrated multi-kill grouping (`killer + tick + weapon`), and
-  - exactly one nearby `weapon_fire` event for that grouped shot window.
-- **Weapon-key normalization for shot-chain matching**:
-  collateral/wallbang grouping now uses normalized weapon suffix keys to align kill events with dp2 `fire_ticks`.
-- **Version bump**: script version moved to `v128`.
+### Fixed: collateral over-detection — stricter same-shot validation
 
 ---
 
 ## [v127]
-### Fixed
 
-- **Wallbang/Collateral semantic split aligned to in-game intent**:
-  - `WALLBANG`: penetrating kill through obstacle context that is not part of a same-shot multi-kill chain.
-  - `COLLATERAL`: penetrating shot chain where the same bullet kills multiple players (grouped by killer+tick+weapon).
-- **Airborne and Blind Fire wording aligned to shot-time semantics**:
-  they now explicitly describe the bullet being fired while airborne/blinded.
-- **DP2 death-flag helper DRY refactor**:
-  shared kill→death-flag lookup now powers wallbang/collateral classification and generic flag filters.
-- **Version bump**: script version moved to `v127`.
+### Fixed: wallbang/collateral semantic split; dp2 death-flag helper DRY refactor
 
 ---
 
 ## [v126]
-### Fixed
 
-- **Per-demo filter badges now reflect actual matched reasons instead of pass-through noise**:
-  dp2 filters no longer mark kills as matched when required dp2 evidence is missing.
-- **Fail-closed matching for dp2 reason tagging**:
-  when a dp2 source is unavailable for a filter (missing file/cache/flag data), kill events are no longer passed through as implicit matches for that filter.
-- **Affected filters**:
-  TROIS SHOT, ONE TAP, SPRAY TRANSFER, FERRARI PEEK, FLICK, SAVIOR, and player_death-flag filters (WALLBANG/AIRBORNE/BLIND/COLLATERAL) now avoid false-positive tagging.
-- **Version bump**: script version moved to `v126`.
+### Fixed: per-demo filter badges fail-closed — no false-positive tagging when dp2 evidence missing
 
 ---
 
 ## [v125]
-### Fixed
 
-- **Global non-★ OR semantics restored for kill filters**:
-  when no filter is marked `★ Must`, checked filters now behave as global `AT LEAST ONE` across categories, so adding a filter expands (or keeps) results instead of unexpectedly narrowing them.
-- **Required filters remain strict**:
-  all enabled `★ Must` filters are enforced as hard requirements.
-- **Pipeline consistency (preview/run)**:
-  query, dp2, and DB postfilter stages now tag matches and defer final optional gating to a shared global gate so behavior is consistent and DRY across preview and batch worker.
-- **Version bump**: script version moved to `v125`.
+### Fixed: global non-★ OR semantics — adding a filter expands results, not narrows
 
 ---
 
 ## [v124]
-### Changed
 
-- **Removed logic mode selectors from UI**:
-  `AT LEAST ONE / ALL AT ONCE / MIXED` controls are removed for kill filters and situation filters.
-- **Fixed logic model is now always required+optional**:
-  each section now uses one behavior by default:
-  all `★ Must` filters must match, plus at least one enabled optional filter must match (or only required filters when no optional is enabled).
-- **Kept quick reset action**:
-  `Unselect all` remains available and still clears both filter enables and `★ Must` flags.
-- **Config/runtime normalization**:
-  internal logic keys are normalized to `mixed` during config collection to avoid drift from old saved values.
-- **Version bump**: script version moved to `v124`.
+### Changed: logic mode selectors removed; fixed model always used
 
 ---
 
 ## [v123]
-### Fixed
 
-- **dp2 `🚫🎲 Exclude` logic in combined filter scenarios**:
-  `Exclude` now behaves as an exclusion gate (removes lucky kills first) before other dp2 matching logic, instead of acting like a broad OR-positive selector that could unexpectedly inflate results in `ANY` mode.
-- **Preview/run consistency**:
-  the same exclusion-first behavior now applies in both preview (`_apply_dp2_filters_to_events`) and batch worker (`_apply_dp2_modifiers`) paths.
-- **Tooltip clarity**:
-  Exclude tooltip now states that when combined with other dp2 filters it acts as an exclusion gate first.
-- **Version bump**: script version moved to `v123`.
+### Fixed: `🚫🎲 Exclude` acts as exclusion gate first in combined scenarios
 
 ---
 
 ## [v122]
-### Added
 
-- **Kill filters quick action — "Unselect all"**:
-  added a button in the Kill filters logic header to disable all active kill/situation modifiers at once and clear all `★ Must` flags in one click.
-- **Version bump**: script version moved to `v122`.
+### Added: kill filters "Unselect all" button
 
 ---
 
 ## [v121]
-### Changed
 
-- **Updated "DEATHS BY" capture tooltip** to explicitly reflect current behavior:
-  it now states that deaths use the same active weapon, kill-filter, and situation-filter logic as kills, with the selected player(s) on the victim side.
-- **Version bump**: script version moved to `v121`.
+### Changed: "DEATHS BY" tooltip updated
 
 ---
 
 ## [v120]
-### Changed
 
-- **Kill filter logic selector is now single-source in UI**:
-  replaced duplicated `AT LEAST ONE / ALL AT ONCE / MIXED` blocks for Mods and demoparser2 with one shared selector: **Kill filters logic (Mods + demoparser2)**.
-- **DB modifiers moved to Situation category with Clutch**:
-  DB postfilters and Clutch are now grouped under **Situation (DB + Clutch)** for clearer mental model and less UI noise.
-- **Situation logic remains additive after kill filters**:
-  situation modifiers apply after kill-filter selection (`kill_mod_logic_db`), preserving pipeline behavior while improving clarity.
-- **DRY cleanup**:
-  kill-logic synchronization now goes through one handler (`_on_kill_logic_change`) that keeps internal Mods/dp2 logic state aligned.
-- **Version bump**: script version moved to `v120`.
+### Changed: unified kill filters logic selector; DB modifiers under Situation
 
 ---
 
 ## [v119]
-### Fixed
 
-- **Headshots auto-lock logic is now context-aware**:
-  `🎯 Headshots = Only` is no longer forced just because `ONE TAP` is checked in every case.
-- **Force-only now applies only when HS-only output is guaranteed by active logic**:
-  - Always forced for `TROIS TAP`.
-  - Forced for `ONE TAP` only in HS-strict combinations (for example dp2 `ALL`, or dp2 `MIXED` when ONE TAP is required / sole optional).
-  - Not forced for broad OR combinations where non-HS clips can still validly pass.
-- **UI + runtime alignment**:
-  - HS radio lock/unlock now uses one shared evaluator.
-  - DB query headshot coercion uses the same evaluator, avoiding over-filtering.
-- **Version bump**: script version moved to `v119`.
+### Fixed: headshots auto-lock context-aware
 
 ---
 
 ## [v118]
-### Changed
 
-- **DP2 pre-parse is now section-aware** instead of parsing every dataset unconditionally per demo:
-  - Parses only required sections by active filters (`fire`, `death`, `hurt`).
-  - Avoids heavy `weapon_fire` parsing when only death-flag filters (e.g. WALLBANG/AIRBORNE/BLIND/COLLATERAL) are enabled.
-- **DRY refactor for parse requirements**:
-  - Added `_dp2_required_sections(cfg)` as single source of truth for filter → required data mapping.
-  - `_preparse_dp2` and `_dp2_parse_demo` now share this section model.
-- **Incremental cache coverage**:
-  - Cache now tracks parsed sections per demo and only fills missing sections, instead of treating cache as all-or-nothing per file.
-- **Version bump**: script version moved to `v118`.
+### Changed: dp2 pre-parse section-aware; `_dp2_required_sections(cfg)` as single source of truth
 
 ---
 
 ## [v117]
-### Fixed
 
-- **AT LEAST ONE logic across Mods + dp2 now behaves as expected when stacking more filters**:
-  when both categories are set to `ANY`, adding dp2 filters no longer unintentionally narrows results through an implicit cross-category AND caused by SQL pre-filtering before dp2 pass.
-- **Cross-engine OR union added for `Mods[ANY] + dp2[ANY]`**:
-  SQL-backed mod matches (`SMOKE`, `NO-SCOPE`, `VIC.FLASH`) are preserved as `_mf` matches and unioned with dp2 OR results in both preview and batch worker paths.
-- **Graceful handling when SQL mod columns are missing in this union mode**:
-  if SQL mods cannot be applied from DB but dp2 ANY is active, the query no longer hard-returns empty solely due to missing SQL mod columns.
-- **Version bump**: script version moved to `v117`.
+### Fixed: AT LEAST ONE logic across Mods + dp2 — cross-engine OR union
 
 ---
 
 ## [v116]
-### Fixed
 
-- **Enable + ★ Must conflict resolved** — previously, checking ★ Must on a filter while its Enable checkbox was unchecked caused Must to be silently ignored. The filter was never added to the `active` list (built by `cfg.get(key)` which requires Enable=True), so `_split_required_optional` never saw it and the required constraint had no effect.
-
-  **Fix — `_wire_enable_must(enable_var, req_var)`**: new method wires bidirectional `trace_add("write")` coupling between every Enable/Must pair:
-  - Checking ★ Must while Enable is off → **auto-enables** the filter
-  - Unchecking Enable while Must is on → **auto-clears** Must
-
-  Called at UI build time for every modifier row across all three categories (Mods, dp2, DB). The coupling list is stored in `self._must_couplings` for reference.
-
-  Pairs wired: all `_mods` loop entries, all `_dp2` loop entries + TROIS SHOT / TROIS TAP / ONE TAP / SPRAY TRANSFER / FERRARI PEEK / FLICK / SAVIOR individually, and all five DB rows (ENTRY FRAG, ACE, MULTI-KILL, BULLY, ECO FRAG).
+### Fixed: Enable + ★ Must conflict — `_wire_enable_must` bidirectional coupling
 
 ---
 
 ## [v115]
-### Fixed
 
-- **UI freeze during dp2 pre-parse scan eliminated**: preview and batch-run no longer make the window unresponsive while scanning demos.
-
-  **Root cause:** `_alog` was implemented as `self.after(0, lambda: self._log(...))`. Every call from a background thread scheduled one event-loop callback with zero delay. During parallel dp2 pre-parsing (N demos × M threads), hundreds of `after(0)` lambdas piled up in Tk's event queue. Each callback forced a full `Text.configure(state=normal) → insert → see("end") → configure(state=disabled)` redraw cycle. With the queue saturated, mouse and keyboard events couldn't get through — the window appeared frozen.
-
-  **Fix — batched log pump:**
-  - `_alog` and `_alog_parts` now append to `self._log_buf: deque` (thread-safe via `_log_buf_lock`) instead of calling `after(0)`.
-  - `_log_pump()` runs on the main thread every `_LOG_PUMP_MS = 50` ms via `self.after(50, self._log_pump)`. It drains the entire deque in **one** `Text` operation: one `configure(normal)`, N `insert` calls, one `see("end")`, one `configure(disabled)`. N log messages = 1 redraw regardless of volume.
-  - The progress label update inside `_preparse_dp2` is throttled — fires every 5 completed demos and on the last one, instead of every single completion.
-
-- **WALLBANG / AIRBORNE / BLIND FIRE / COLLATERAL were silently skipped during pre-parse** (bug introduced in v112): `_preparse_dp2` had a hardcoded `needs_dp2` guard that only listed the original 8 filters. The 4 new `player_death`-flag filters added in v112 were absent, so enabling only those mods caused the entire dp2 pre-parse to be skipped — the filters then degraded gracefully (passed all kills) rather than actually filtering. Fixed and made **permanently DRY**: `needs_dp2` is now derived directly from `_DP2_FILTER_DEFS` via `{k for k, *_ in self._DP2_FILTER_DEFS}` so it can never fall out of sync with the filter table again.
-
-- **Version bump**: script version moved to `v115`.
+### Fixed: UI freeze during dp2 pre-parse (batched log pump, 50ms drain); WALLBANG/AIRBORNE/BLIND/COLLATERAL skipped during pre-parse
 
 ---
 
+## [v114]
 
-### Fixed
-
-- **UI freeze during dp2 pre-parse scan eliminated**: preview and batch-run no longer make the window unresponsive while scanning demos.
-
-  **Root cause:** `_alog` was implemented as `self.after(0, lambda: self._log(...))`. Every call from a background thread scheduled one event-loop callback with zero delay. During parallel dp2 pre-parsing (N demos × M threads), hundreds of `after(0)` lambdas piled up in Tk's event queue. Each callback forced a full `Text.configure(state=normal) → insert → see("end") → configure(state=disabled)` redraw cycle. With the queue saturated, mouse and keyboard events couldn't get through — the window appeared frozen.
-
-  **Fix — batched log pump:**
-  - `_alog` and `_alog_parts` now append to `self._log_buf: deque` (thread-safe via `_log_buf_lock`) instead of calling `after(0)`.
-  - `_log_pump()` runs on the main thread every `_LOG_PUMP_MS = 50` ms via `self.after(50, self._log_pump)`. It drains the entire deque in **one** `Text` operation: one `configure(normal)`, N `insert` calls, one `see("end")`, one `configure(disabled)`. N log messages = 1 redraw regardless of volume.
-  - The progress label update inside `_preparse_dp2` is now throttled — it fires every 5 completed demos and on the last one, instead of on every single completion.
-
-- **Version bump**: script version moved to `v115`.
+### Added: MIXED logic mode; ★ Must checkboxes; `_split_required_optional` DRY helper
 
 ---
 
+## [v113]
 
-### Added
-
-- **MIXED logic mode for all three kill filter categories**:
-  Each category (Mods, demoparser2, DB) now has a third option alongside AT LEAST ONE and ALL AT ONCE:
-
-  > **MIXED** — required filters (★ Must) must ALL match, AND at least one of the remaining (optional) filters must also match.
-
-  Example: WALLBANG as ★ Must + SMOKE + BLIND as optional → the kill must be a wallbang AND at least one of smoke/blind.
-
-  Each filter row gains a **★ Must** checkbox, visible only when MIXED mode is active for its category. In AT LEAST ONE or ALL AT ONCE mode, ★ Must checkboxes are hidden.
-
-- **`_on_logic_mode_change(category)`** — single DRY method handles all three category show/hide behaviours via `self._must_widgets: {category: [widget, ...]}`.
-
-- **20 new `_req` config keys** (`kill_mod_<key>_req: False`) — one per filter — stored in config, presets, and session.
-
-### Technical
-
-- **`_split_required_optional(cfg, keys)`** — static DRY helper shared by all three filter engines. Splits active filter keys into `(required, optional)` based on `<key>_req` flags. Used by:
-  - SQL mods engine: builds `(req1 AND req2 AND (opt1 OR opt2))` SQL clause.
-  - DB postfilter: intersects required sig sets, unions optional sig sets, then intersects both.
-  - dp2 worker (`_apply_dp2_modifiers`): AND-chains required filters, OR-unions optionals, intersects results with `_mf` merge.
-  - dp2 preview (`_apply_dp2_filters_to_events`): same via nested `_chain`/`_union` closures.
-
-- **Preview header** `Filters:` line shows `★` prefix on required filters in MIXED mode (e.g. `dp2 [MIXED]: ★ 🧱 WALLBANG · 💨 SMOKE`).
-
-- **Version bump**: script version moved to `v114`.
+### Removed: "Output: video" radio (hardcoded). Fixed: accent button colour on theme switch.
 
 ---
 
+## [v112]
 
-### Removed & Fixed
-
-- **"Output: video" radio group removed** — it was the only option and served no purpose. Purged completely: `REC_OUTPUT_OPTIONS` constant, `recording_output` key in `DEFAULT_CONFIG`, `str_keys`, `PRESET_KEYS`, `_collect_config`, `_apply_config`. The CSDM JSON field `recordingOutput` is now hardcoded to `"video"`. The Output column no longer appears in the Video tab RECORDING SYSTEM section.
-
-- **Accent colour preset buttons no longer change colour when switching themes**: the generic `_apply_theme_to_widgets` walker remapped any `fg` that matched the old accent hex — including the fixed per-button colours on the accent row. Fixed by:
-  - Storing button references in `self._ac_btn_refs: list[(widget, fixed_fg)]` at build time.
-  - Passing a `exclude_ids: frozenset` to `_apply_theme_to_widgets` so those specific widgets are skipped entirely by the walker.
-  - After the walk, `_change_theme` explicitly updates only `bg` and `activebackground` on accent buttons to match the new background theme — their `fg` is never touched.
-  - `_retrigger_toggle_vars()` is now also called in `_change_theme` (was missing), ensuring all `hchk`/`hradio` widgets re-read `_t()` after every theme switch.
-
-- **Version bump**: script version moved to `v113`.
+### Fixed: WALLBANG/AIRBORNE/BLIND FIRE/COLLATERAL via demoparser2 `player_death` fields
 
 ---
 
+## [v111]
 
-### Fixed & Added
-
-- **WALLBANG, AIRBORNE, BLIND FIRE, COLLATERAL now work via demoparser2**:
-  These four mods produced `⚠ Modifiers not found in DB` on every run because CSDM's PostgreSQL `kills` table never stores those columns — confirmed by auditing the CSDM source and the CS2 `player_death` game-event schema. They are now implemented entirely via demoparser2, reading the native fields embedded in every `.dem` file:
-  - `🧱 WALLBANG` — `player_death.penetrated > 0`
-  - `🪂 AIRBORNE` — `player_death.attackerinair = true`
-  - `😵 BLIND FIRE` — `player_death.attackerblind = true`
-  - `🎯 COLLATERAL` — `player_death.penetrated > 0` (same bullet-penetration flag)
-
-- **`⚠ Modifiers not found in DB` warning will no longer appear** for these four mods. They no longer go through `_MOD_COLS` at all; only `SMOKE`, `NO-SCOPE`, and `VIC.FLASH` remain as SQL-backed mods (those columns do exist in the DB).
-
-### Technical
-
-- **`_dp2_parse_demo`** — the existing `player_death` parse is extended to also extract `noscope`, `thrusmoke`, `attackerblind`, `penetrated`, `attackerinair` into a new `death_flags: {(tick, killer_sid): {flag: value}}` dict, stored in the dp2 cache alongside `fire_detail`, `view_angles`, `hurt_index`. No additional demo scan.
-
-- **`_death_flag_filter(flag_name, threshold)`** — single DRY generic filter. All four concrete methods delegate to it:
-  - `_wall_bang_dp2_filter` → `penetrated ≥ 1`
-  - `_airborne_dp2_filter` → `attackerinair = True`
-  - `_attacker_blind_dp2_filter` → `attackerblind = True`
-  - `_collateral_dp2_filter` → `penetrated ≥ 1`
-  Uses `_TICK_MATCH_WINDOW = 2` tick tolerance for matching kill event ticks. Degrades gracefully (passes all kills) when `death_flags` is empty.
-
-- **`_DP2_FILTER_DEFS`** — all four new filters added. They are automatically picked up by `_apply_dp2_modifiers` (worker) and `_apply_dp2_filters_to_events` (preview), including full `_mf` tagging for clip badges.
-
-- **`_FILTER_BADGE_DEFS`** — all four moved from `"mods"` to `"dp2"` category.
-
-- **UI** — the four mods now show a `demoparser2` badge in the Capture tab, clearly indicating they require demoparser2.
-
-- **Version bump**: script version moved to `v112`.
+### Added: UI theme system — background presets, accent presets, custom hex, persists across sessions
 
 ---
 
+## [v110]
 
-### Added
-
-- **UI theme system — background presets + accent colour + custom picker**:
-  A new **UI THEME** section in the Tools tab lets you change the entire interface colour scheme in real time without restarting.
-
-  **Background presets** (4):
-  - `Dark` — the original near-black dark theme
-  - `AMOLED` — true pure black (`#000000`), saves battery on OLED panels
-  - `Deep Blue` — dark navy blue tones
-  - `White` — light theme with dark text
-
-  **Accent presets** (8): Green (default), Blue, Orange, Purple, Red, Cyan, Pink, Yellow
-
-  **Custom accent** — `🎨 Custom colour…` opens the Windows native colour picker (`colorchooser.askcolor`). A darker shade (`ACCENT2`) is derived automatically at 72% brightness for hover/selected states.
-
-  A coloured swatch next to the picker shows the current active accent at a glance.
-
-- **Theme persists across sessions**: `theme_bg` and `theme_accent` keys in `csdm_config.json`. The theme is applied before any widget is built at startup — no flash of default colours.
-
-### Technical
-
-- **`_build_theme(bg_name, accent)`** — single function building a complete 14-key colour dict. All theme data is in two module-level dicts (`_BG_PRESETS`, `_ACCENT_PRESETS`); adding a new preset is one dict entry.
-- **`_apply_theme_globals()`** — atomically updates all module-level colour globals (`BG`, `BG2`, `ORANGE`, etc.) so new widgets built after a theme change automatically use the right colours.
-- **`_change_theme()`** — App method that calls `_apply_theme_globals`, walks all existing widgets via `_apply_theme_to_widgets()`, re-applies `ttk.Style`, updates log text tags, and calls `_retrigger_toggle_vars()` to re-fire `hchk`/`hradio` closures.
-- **`hchk` / `hradio`** — internal `_update()` closures now call `_t(key)` for live theme lookups instead of being bound to the module-global values at creation time. Theme changes are reflected immediately on all existing checkboxes and radio buttons.
-- **`_retrigger_toggle_vars()`** — nudges every `BooleanVar` and `StringVar` to re-trigger the `_update` traces registered by `hchk`/`hradio` across the whole UI.
-
-- **Version bump**: script version moved to `v111`.
+### Fixed: "Modifiers not found" warning fires at most once per session per unique missing set
 
 ---
 
+## [v109]
 
-### Fixed
-
-- **"Modifiers partially not found" warning no longer repeats every preview/run**: the warning for DB columns that don't exist in the user's schema (e.g. `wall_bang`, `airborne`, `attacker_blind`, `collateral`) now fires **at most once per session per unique set of missing modifiers**. Subsequent previews and batch runs are silent about the same absent columns. The warning resets automatically on reconnect, so if a CSDM update adds the columns it will be reported correctly again.
-
-- **Implementation**: added `self._warned_missing_mods: set` (reset on DB reconnect in `_on_load_success`) that caches the `frozenset` of missing modifier keys. The warning block compares against it and only logs when the set changes.
-
-- **Version bump**: script version moved to `v110`.
+### Changed: headshots filter — tri-state radio (All/Only/Exclude), independent of Mods
 
 ---
 
+## [v108]
 
-### Changed
-
-- **Headshots filter redesigned — tri-state, fully independent of Mods logic**:
-  Replaced the old `headshots_only: bool` checkbox (which lived inside the Mods group and was subject to the ANY/ALL toggle) with a dedicated `🎯 Headshots: All / Only / Exclude` radio group on its own row, alongside Suicides and TK — completely separate from the Mods category and its logic selector.
-  - **All** (default) — no headshot filtering.
-  - **Only** — keep headshot kills only (`is_headshot = TRUE`).
-  - **Exclude** — keep non-headshot kills only (`is_headshot = FALSE`).
-  - ONE TAP and TROIS TAP still force `Only` when enabled and lock the radio buttons. They release the lock on disable.
-
-- **New config key `headshots_mode`** (`"all"` | `"only"` | `"exclude"`), replaces `headshots_only: bool`. Stored and restored through existing config persistence.
-
-- **Backward compatibility**: old configs/presets with `headshots_only: true` are automatically migrated to `headshots_mode: "only"` at load time and in `_apply_config`.
-
-- **Preview header** — HS mode is shown on the `Filters:` misc line (`🎯 HS only` / `🎯 no HS`) when active.
-
-- **DRY lock/unlock helpers**: `_lock_hs_to_only()` and `_unlock_hs()` centralise the radio-button disable/enable logic used by ONE TAP, TROIS TAP (`_engage_trois_tap` / `_disengage_trois_tap`).
-
-- **Version bump**: script version moved to `v109`.
+### Fixed: clip badges per-kill accurate; `_mf` tagging across all three filter stages; `_DP2_FILTER_DEFS` single source of truth
 
 ---
 
+## [v107]
 
-### Changed & Fixed
-
-- **Clip filter badges are now per-kill accurate** — each demo line shows only the filter(s) that the kills in that specific clip actually triggered, not every globally-active filter. Previously `[KILL AK-47] [💨 SMOKE] [🔭 NOSCOPE] [🧱 WALLBANG] … ` appeared on every line regardless of which filter matched. Now only the relevant badge(s) are shown, e.g. `[KILL AK-47] [😵 BLIND]`.
-
-- **`_mf` (matched-filters) tagging implemented across all three filter stages**:
-  - **SQL Mods** (`_query_events`) — each resolved boolean column (smoke, no-scope, wallbang, airborne, victim-flash, attacker-blind, collateral) is fetched alongside the row. `headshots_only` is also tagged via the `is_headshot` column. `_mf` is populated per event at query time with only the keys whose column value is `TRUE` for that row.
-  - **DB postfilters** (`_apply_db_postfilters`) — `per_mod_sigs` now carries `(cfg_key, set)` pairs. A `sig_to_keys` map accumulates which filter(s) each kill sig matched; `_mf` is stamped on kept kills accordingly.
-  - **dp2 filters** — `_stamp_mf` is called on surviving events in every path: `_apply_filter_to_events` (all AND dict-level passes), TROIS TAP short-circuit, AND chain in worker, and OR union in worker.
-
-- **DRY — `_stamp_mf(events, cfg_key)` static helper**: replaces the repeated 3-line `_mf` set-mutation pattern. One definition, three call sites.
-
-- **DRY — `_DP2_FILTER_DEFS` class-level table**: single source of truth for all 7 dp2 filters `(cfg_key, filter_fn_attr, apply_fn_attr, log_label, result_label, skip_label)`. Both `_apply_dp2_modifiers` (worker) and `_apply_dp2_filters_to_events` (preview) derive their active filter lists from it via `getattr(self, attr)`. The two previously separate inline `_DP2_MODS` local lists are gone. Adding a new dp2 filter now requires touching exactly one place.
-
-- **AND chain `_mf` gap fixed** (`_apply_dp2_modifiers`): the AND path in the per-demo worker was calling raw `filter_fn` without stamping `_mf`. It now calls `_stamp_mf(events, cfg_key)` after each step.
-
-- **TROIS TAP `_mf` gap fixed** (`_apply_dp2_modifiers`): the TROIS TAP short-circuit path was not stamping `_mf`. Now stamps `kill_mod_trois_tap` on all surviving events.
-
-- **Version bump**: script version moved to `v108`.
+### Changed: filter context badges appended after content badge; `_FILTER_BADGE_DEFS` DRY
 
 ---
 
+## [v106]
 
-### Changed
-
-- **Clip badges — filter context appended after content badge**:
-  Each demo line now shows the content badge *and* one compact badge per active kill filter, e.g.:
-  `[KILL AK-47] [😵 BLIND] [💨 SMOKE]`
-  Filter badges are blue (`badge_filter` tag) to visually distinguish them from the red content badge.
-
-- **DRY — single source of truth for filter badge definitions**:
-  Introduced `_FILTER_BADGE_DEFS` (class-level tuple list with `cfg_key`, `emoji_label`, `category`) and two helpers built from it:
-  - `_build_filter_badges(cfg)` — per-clip badge list (used by `_build_clip_badges`).
-  - `_build_filter_header_parts(cfg)` — grouped header strings (used by the preview `Filters:` line).
-  The three previously hardcoded filter lists in `_show_preview` are gone.
-
-- **Version bump**: script version moved to `v107`.
+### Changed: clip badges content-aware; structured multi-line preview header
 
 ---
 
+## [v105]
 
-### Changed
-
-- **Clip badges rewritten — content-aware instead of filter-aware**:
-  Badges no longer show which filters were active during the search. They now describe what each individual sequence **contains**:
-  - Kill clips: `[KILL AK-47]`, `[2✕ M4A1-S]`, `[3✕ AK-47 + M4A1-S]` — weapon(s) used, kill count when > 1.
-  - Death clips: `[DEATH by AWP]`, `[2✕ DEATH by AK-47]` — weapon the player was killed by.
-  - Round-only clips: `[ROUND]`.
-
-- **Preview header redesigned** — replaced the single bloated `Order: … | N demo(s) 😵 BLIND` line with a structured multi-line block:
-  ```
-  Player:  …
-  Tag:     …          (only when auto-tag is active)
-  Dates:   … → …      (only when a date range is set)
-  Events:  Kills + Deaths + Clutch [1v3 1v4]
-  Weapons: 🎯 Rifles(1)
-  Rec:     POV Killer  |  TrueView: ON  |  Order: Chronological
-  Filters: Mods [ANY]: 😵 BLIND · 💨 SMOKE  |  DB [ANY]: 🚀 ENTRY
-  Found:   17 demo(s)  ·  23 event(s)
-  Output:  …
-  Dates:   .info › mtime .dem › DB
-  ```
-  Active kill filters are now grouped by category (Mods / dp2 / DB) with their logic mode on a dedicated `Filters:` line. The `Filters:` line is omitted entirely when no kill filter is active.
-
-- **Version bump**: script version moved to `v106`.
+### Added: logic mode selector per kill filter category; `_apply_dp2_filters_to_events` DRY
 
 ---
 
+## [v104]
 
-### Added
-
-- **Logic mode selector for each kill filter category**:
-  Each of the three kill filter sections now has its own **AT LEAST ONE / ALL AT ONCE** radio toggle:
-  - **Mods** (DB boolean columns — smoke, wallbang, airborne, etc.): toggles the SQL `WHERE` clause between `OR` and `AND` across the checked mods.
-  - **demoparser2 modifiers** (TROIS SHOT, ONE TAP, SPRAY, FERRARI PEEK, FLICK, SAVIOR): in OR mode each filter runs independently on the original kill list and results are unioned; in AND mode filters are chained (each narrows the surviving set). TROIS TAP is always exclusive and bypasses this setting.
-  - **DB modifiers** (ENTRY, ACE, MULTI-KILL, BULLY, ECO): in OR mode the per-modifier sig sets are unioned; in AND mode they are intersected — a kill must satisfy every checked modifier simultaneously.
-  - All three selectors default to **AT LEAST ONE** (OR), preserving existing behaviour.
-
-- **New config keys** (saved/restored through existing config persistence):
-  - `kill_mod_logic_mods` — `"any"` | `"all"`
-  - `kill_mod_logic_dp2`  — `"any"` | `"all"`
-  - `kill_mod_logic_db`   — `"any"` | `"all"`
-
-### Changed
-
-- **DRY refactor — dp2 filter application**:
-  The three previously identical inline blocks that applied demoparser2 filters (preview path, tag-redo path, and a prior shared helper) have been consolidated into a single `_apply_dp2_filters_to_events(evts, cfg)` method. All three call sites now delegate to it. The per-demo worker path goes through `_apply_dp2_modifiers` which was also rewritten to support both logic modes.
-
-- **Version bump**: script version moved to `v105`.
-
----
-
-
-### Changed
-
-- **DRY refactor for demo log entries**:
-  - Added shared log-entry builders for both Preview and Run paths.
-  - `Preview` and `Run` now use the same rendering logic for base line format + badges.
-  - This prevents future drift between the two flows.
-- **Version bump**: script version moved to `v104`.
+### Changed: DRY demo log entry builders (Preview and Run share same rendering)
 
 ---
 
 ## [v103]
-### Fixed
 
-- **Preview log now shows clip badges**:
-  - Inline indicators (`[KILL FILTER: ...]`, `[CONTAINS: ...]`, `[SAFE]`) are now rendered in **Preview** rows too, not only during batch run.
-  - Badge visibility still follows `Badges: ON/OFF`.
-- **Version bump**: script version moved to `v103`.
+### Fixed: preview log shows clip badges
 
 ---
 
 ## [v102]
-### Added & Changed
 
-- **Resizable UI layout controls**:
-  - Added editable UI settings for window width/height and main split percentage.
-  - Added buttons: `Apply`, `Auto`, and `Reset default`.
-  - Added option `Remember current layout` to persist manual window resize and splitter moves.
-- **Persistent layout config keys**:
-  - `ui_window_w`, `ui_window_h`, `ui_split_pct`, `ui_remember_layout`.
-  - Layout is auto-saved through existing config persistence.
-- **Startup behavior updated**:
-  - App now starts using saved window dimensions and saved split ratio.
-- **Version bump**: script version moved to `v102`.
+### Added: resizable UI layout (window size, split %, Remember layout)
 
 ---
 
 ## [v101]
-### Added & Changed
 
-- **Log badge indicators for clip entries**:
-  - Each clip line can now show inline, human-readable badges:
-    - `[KILL FILTER: ...]` for active kill-filter matches
-    - `[CONTAINS: ...]` for detected content terms in clip events
-    - `[SAFE]` when no indicator condition is met
-  - Added consistent color coding in the log:
-    - red for kill-filter indicators
-    - amber for contains/warning indicators
-    - green for safe indicators
-- **Collapsible badge mode**:
-  - New log toggle button `Badges: ON/OFF` plus keyboard shortcut `Ctrl+B`.
-  - When OFF, badges are collapsed to reduce log density.
-- **Accessibility/UX improvements**:
-  - Indicator labels are plain text (screen-reader friendly) and keyboard toggleable.
-  - Tooltip explains badge toggle and shortcut.
-- **Version bump**: script version moved to `v101`.
+### Added: log badge indicators; `Badges: ON/OFF` toggle (Ctrl+B)
 
 ---
 
 ## [v100]
-### Changed
 
-- **VirtualDub removed** from the app configuration and UI.
-- **Image export modes removed** (`images`, `images_and_video`): output is now fixed to `video`.
-- **Backward compatibility safety**:
-  - if an old config/preset contains `encoder=VirtualDub`, it is coerced to `FFmpeg`.
-  - if an old config/preset contains non-video `recording_output`, it is coerced to `video`.
-- **Version bump**: script version moved to `v100`.
+### Changed: VirtualDub and image export modes removed; output hardcoded to video
 
 ---
 
 ## [v99]
-### Added & Changed
 
-- **CS mode vanilla injection implemented**: CS2 vanilla commands are now injected in CS mode through a managed runtime cfg pipeline instead of being only logged.
-- **New shared injection layer**:
-  - `_common_cs2_injection(cfg)` builds a common set of vanilla launch arguments and console commands shared by HLAE and CS.
-  - Shared section now includes physics/effects commands (`cl_ragdoll_gravity`, `ragdoll_gravity_scale`, `sv_gravity`, `cl_ragdoll_physics_enable`, `violence_hblood`, `r_dynamic`) and window-mode launch flags mapping.
-- **HLAE adapter refactor**:
-  - `_inject_hlae_extra_args(cfg, shared)` now consumes the shared section and appends HLAE-specific options (`hideSpectatorUi`, scope FOV fix, workshop download, custom extra args) in one place.
-  - Keeps `mirv_fov`, `host_timescale`, `afxStream` explicit fields while sharing vanilla commands through `extraArgs`.
-- **CS adapter added**:
-  - `_inject_cs_runtime_cfg(cfg, shared)` writes `csdm_batch_runtime.cfg` into the detected CS2 cfg directory and ensures `autoexec.cfg` executes it via a managed block.
-  - This enables vanilla commands in CS mode at game launch without relying on a non-existent CSDM JSON `csOptions.extraArgs`.
-  - If launch-only options are requested, the app now logs a clear warning that they are not injectable through current CSDM CS JSON.
-- **Steam library autodetection added**:
-  - `_resolve_cs2_cfg_dir(cfg)` resolves CS2 cfg folder from common Steam paths and `libraryfolders.vdf`.
-  - Optional manual override via new config key `cs2_cfg_dir`.
-- **Version bump**: script/doc version moved to `v99`.
-- **Game speed UI refactor**:
-  - `Slow-motion (%)` replaced with **`Game Speed (%)`**.
-  - Direct numeric input now supports `1..1000` with immediate live feedback (`%` + `x` multiplier).
-  - Preset buttons now include >100% values (`125`, `150`, `200`, `500`, `1000`).
-  - Value is sanitized/clamped and persists through existing config autosave.
-- **CFG robustness hardening**:
-  - Added strict parsers (`_cfg_int`, `_cfg_float`, `_cfg_bool`) with fallback + warning logs for invalid values.
-  - Runtime cfg injection no longer crashes on malformed config values.
+### Added: CS mode vanilla injection; Steam library autodetection; Game Speed % slider; strict config parsers
 
 ---
 
 ## [v98]
-### Fixed & Changed
 
-**Ferrari Peek — tightened logic + tooltip rewrite:**
-- `APPROACH_WIN` reduced from 192 ticks (3s) to 64 ticks (1s). A fast approach 3s before the shot followed by camping is not a ferrari peek — the movement window must be recent.
-- When `one-shot=True`, no prior shot exists in the pre-window (condition 1 eliminates them), so only the velocity at shot time matters. The wide window had no effect in that case.
-- Tooltip rewritten around the real concept: *kill faster than the opponent can react* — exposure window shorter than human reaction time (~150–250ms).
-- Internal docstring updated to document the actual behaviour of each condition.
-
-**README — Recording section corrected:**
-- `CS2 effects` marked ❌ for CS mode (was ✅, incorrect). The physics commands (`cl_ragdoll_gravity`, `sv_gravity`, etc.) are standard CS2 console commands — they work in any mode. The real issue is that CSDM's CS mode JSON schema has no `extraArgs` field to inject them through, so the script logs them but cannot forward them. HLAE is not required for the physics themselves.
+### Fixed: Ferrari Peek approach window 3s → 1s
 
 ---
 
 ## [v97]
-### Changed — Section restructure, Mods (OR) redesign
 
-**Sections renamed and reorganised in the Capture tab:**
-- `EVENTS & CAMERA` → **`CAPTURE`** — KILLS / DEATHS BY / ROUNDS + Perspective only.
-- New section **`KILL FILTERS`** — all kill filters grouped together.
-- `TIMING & ROBUSTNESS` → **`TIMING`**
-- `DATE RANGE & DEMO SELECTION` → **`DEMO SELECTION`**
-
-**Mods (OR) redesigned as per-line layout** (matching DB modifiers style): each mod gets its own label and Enable checkbox on its own row. HS ONLY is now part of this list. Suicides and TK remain on a compact row at the top of the section.
-
----
-
-## [v97 — Ferrari Peek logic refactor, CS2 Effects fix]
-### Changed
-
-**Ferrari Peek — detection logic revised:**
-The goal is "faster than the opponent can react" — minimal exposure window. The old logic checked 3 conditions: movement before (3s window), isolated shot, movement after. Condition 3 was noise (the player can retreat without firing again).
-
-New logic — two conditions only:
-1. **High velocity at shot time**: max speed in a ±0.5s window around the kill shot ≥ threshold. This directly measures "you were in their FOV for the shortest possible time".
-2. **Isolated shot** (optional, `kill_mod_hv_one_shot`): no prior shot within ~0.75s.
-
-Default threshold: **150 u/s** (above walking speed, clearly an active peek). UI label: "Min speed at shot:". Tooltip fully rewritten.
-
-**CS2 EFFECTS — corrections:**
-- Physics commands (`cl_ragdoll_gravity`, `sv_gravity`, etc.) are standard CS2 console commands — HLAE is not required for them. In HLAE mode the script injects them via `hlaeOptions.extraArgs`. In CS mode, CSDM's JSON schema has no equivalent field, so they are logged but not forwarded — pending CSDM support.
-- README Recording table corrected accordingly.
+### Changed: section names (CAPTURE / KILL FILTERS / TIMING / DEMO SELECTION); Mods per-line layout
 
 ---
 
 ## [v96]
-### Fixed & Changed
 
-**Demo picker — double-toggle on first click fixed:** `_on_demo_tree_click` now returns `"break"` to absorb the native Treeview selection event, which was toggling the row state a second time immediately after the first click.
-
-**Clutch options placement fixed:** `_clutch_opts_row` was pack()-ed unconditionally at build time, causing it to appear below all subsequently added widgets. It is now created without packing — `_on_clutch_toggle` controls visibility entirely.
-
-**Player list — sort by name or date:** the DB query now fetches each player's last match date (`MAX(match_date)` via a LEFT JOIN on matches). Two sort buttons added to the DB search widget: **Name ↑↓** and **Date ↑↓** (newest first by default). Clicking the active sort button reverses order. The sort persists across search queries.
-
-**Ferrari Peek — One-shot option:** new `kill_mod_hv_one_shot` bool (default `True`). When checked, condition 1 (no prior fire within ~0.75s) is enforced. Uncheck to allow spray finishers as long as the approach and resume conditions still hold. Added as a checkbox next to Enable in the UI.
+### Fixed: demo picker double-toggle; clutch options placement; player sort by name/date
 
 ---
 
 ## [v95]
-### Changed — Ferrari Peek: logic refactor
 
-**Old filter:** velocity at shot time ≥ threshold (player was moving fast when they shot).
-
-**New filter — one-shot moving peek:** three conditions, all required:
-
-1. **Isolated shot** — no other fire from the player in the ~0.75s (48 ticks) before the kill shot. Proves it's a one-shot kill, not a spray where the victim died on the last bullet.
-2. **Was moving before** — either a prior shot in the 3s approach window had velocity ≥ threshold, or the kill shot itself was at velocity ≥ threshold (no counter-strafe). Counter-strafe is not required ("ou non").
-3. **Resumes movement after** — at least one fire from the player within 2s after the kill has velocity ≥ 80 u/s. If no post-kill fire is found the check is skipped (graceful degradation).
-
-**`kill_mod_high_vel_thr`** repurposed as minimum *approach* speed (default 100 u/s, down from 30 u/s "max at shot"). UI label changed from "Max vel at shot:" → "Min approach:". Tooltip rewritten with the three conditions and a CS2 speed reference table.
+### Changed: Ferrari Peek — three-condition logic (isolated shot, moving before, resumes after)
 
 ---
 
 ## [v94]
-### Changed — Stop/Kill refactor, event toggles, UI fixes, naming
 
-**Stop/Kill refactor:**
-- **⏸ STOP** now immediately kills the current CSDM process (instead of waiting for the demo to finish), marks the demo as failed, then stops the batch. No next demo is started.
-- **⛔ KILL** kills CSDM + sends `taskkill /F /IM cs2.exe` to terminate CS2 immediately. Assembly is skipped.
-- Both actions trigger a **tag rollback**: any demo tagged during the interrupted batch has its tag removed from the DB (`DELETE FROM checksum_tags`). A rollback summary is logged.
-
-**Events row — styled toggle buttons:**
-- "Kills" and "Deaths" checkboxes replaced by styled toggle buttons: **KILLS** and **DEATHS BY**. Green when active, muted when off. "Rounds" gets the same treatment.
-- "Deaths" label renamed to **DEATHS BY** to clarify it captures the player dying (from the killer's POV).
-
-**CS mode warning improved:** now explicitly warns that CS2 plays the demo from tick 0 to reach each target tick, making batch recording extremely slow. HLAE is strongly recommended.
-
-**Perspective moved to bottom of section:** the Perspective row and Switch delay slider now appear at the very end of the EVENTS & CAMERA section, after Clutch — no longer interrupting the modifier flow.
-
-**SAUVEUR → SAVIOR:** UI label and log strings updated. Config key `kill_mod_sauveur` unchanged.
-
-**Ferrari Peek default threshold: 280 → 230 u/s:** corrected to reflect actual CS2 max run speeds (knife/C4 = 250, AK-47 = 215, pistols ≈ 240). 230 u/s sits above max rifle speed and captures real aggressive peeks. Tooltip updated with accurate values.
-
-**Spray Transfer tooltip:** now explicitly mentions CZ75-Auto as the only full-auto pistol included.
+### Changed: Stop/Kill refactor with tag rollback; event styled toggle buttons; SAUVEUR → SAVIOR
 
 ---
 
 ## [v93]
-### Changed — UI cleanup & modifier reorganisation
 
-**Clutch — Custom range removed:** `clutch_custom_enabled`, `clutch_custom_min`, `clutch_custom_max` removed entirely. The 1v1–1v5 checkboxes are sufficient; the custom range was redundant. Config keys, UI row, `_on_clutch_custom_toggle`, and `_clutch_allowed_sizes` logic all cleaned up accordingly.
-
-**Perspective moved:** now sits above the modifier list (between the HS/TK options and Mods), instead of below the clutch block.
-
-**Blind Fire moved into Mods row:** `😵 Blind Fire` is now part of the `Mods (OR)` inline row alongside Smoke, Wallbang, etc. The separate `ab_row` block is gone.
-
-**BOURREAU → BULLY:** label renamed in UI and comments.
-
-**Tooltips simplified:** verbose multi-line technical descriptions reduced to 1–2 user-facing lines across all modifiers.
-
-**`demoparser2` badge centralised:** `dp2_badge(parent)` helper introduced — creates the blue label and attaches the tooltip in one call. Replaces the repeated `tk.Label(... "demoparser2")` + `add_tip(...)` pattern used in every dp2-powered modifier row.
+### Changed: clutch custom range removed; Blind Fire into Mods row; BOURREAU → BULLY; `dp2_badge()` DRY
 
 ---
 
 ## [v92]
-### Added — 9 new kill modifiers
 
-**DB-only (no demoparser2):**
-- **🚀 Entry Frag** — first kill of the round (earliest tick). Identifies space-makers. Uses kills table + round grouping.
-- **🃏 Ace** — player eliminates all 5 opponents in one round. Detected by counting distinct victim SIDs per round.
-- **⚡ Multi-Kill** — ≥N kills in one round within T seconds. Configurable N (2–5) and window (seconds). Triple = 3, Quadra = 4.
-- **💀 Bourreau** — kills the same victim for the Nth time in the match. Only the Nth+ kill is kept. Configurable repeat threshold.
-- **💰 Eco Frag** — pistol kill against a full-buy opponent (rifle/LMG/auto-sniper). Uses `victim_weapon` column if present; falls back to including all pistol kills if column absent.
-- **😵 Blind Fire** — player was blinded (flashed) at shot time. Uses `attacker_blind`/`is_blind` column.
-
-**demoparser2-powered:**
-- **🏎 Ferrari Peek** — kill while moving above a velocity threshold (default 280 u/s). Velocity is already in the `fire_detail` cache from the existing `weapon_fire` parse — no new parse needed.
-- **↩ Flick** — large view-angle change in the ~0.5s before the kill. Configurable minimum degrees (default 50°). Uses `view_angle_Y` from a new `player_death` parse added to `_dp2_parse_demo`.
-- **🛡 Sauveur** — player kills an enemy who was actively hurting a teammate within ~2s before the kill. Uses `player_hurt` events from a new parse added to `_dp2_parse_demo`.
-
-### Changed
-- **`_dp2_parse_demo`** extended: now also parses `player_death` (view angles) and `player_hurt` (damage events) in the same demo parse pass. Both stored in `_dp2_cache` as `view_angles` and `hurt_index`. Cached for the session — no re-parse on batch.
-- **`kill_mod_assisted_flash` UI label** corrected: "Flashed" → "Victim flashed" (the *victim* was blinded). Previously ambiguous.
-- **`kill_mod_attacker_blind`** added as a separate modifier for when the *killer* was blinded. Previously `is_blind`/`attacker_blind` was incorrectly merged into `assisted_flash`.
-- **`_apply_db_postfilters()`** new method: runs Entry Frag, Ace, Multi-Kill, Bourreau, Eco-Frag as post-query filters on the already-fetched results dict. Called at the end of `_query_events` — no extra DB round-trip, no SQL complexity added to the main query.
-- `_show_preview` summary line extended with all new modifier badges.
-- New `int` config keys: `kill_mod_multi_kill_n`, `kill_mod_multi_kill_s`, `kill_mod_bourreau_n`, `kill_mod_high_vel_thr`, `kill_mod_flick_deg`.
+### Added: 9 new kill modifiers (Entry Frag, Ace, Multi-Kill, Bully, Eco Frag, Blind Fire, Ferrari Peek, Flick, Sauveur)
 
 ---
 
 ## [v91]
-### Fixed
-- **`_effective_before` perspective leak**: `victim_pre_s` was added to `before` regardless of perspective mode because `victim_pre_s=2` is stored in config and persisted across sessions. A saved config with `perspective=both` would inflate clip duration even after switching back to `POV Killer`. Added `max(0, ...)` guard and clarified docstring: only `perspective == "both"` triggers the addition.
 
-### Changed
-- **"Full round" → "Full clutch"** everywhere (UI radio label, clutch tooltip, config comment, `_build_clutch_sequences` docstring). A clutch clip spans `first_kill_tick − before` to `last_kill_tick + after` — not the entire CS round. The old name implied the full 115s round was recorded.
-- **Adaptive preview avg line**: The `▶ N clips | avg. Xs/clip` line is now context-aware:
-  - Regular clips only → `avg. Xs/clip`
-  - Clutch clips only → `avg. Xs/clutch`
-  - Mixed → `N clips avg. Xs  +  M clutch avg. Ys` (separate averages, since clutch duration is structurally different from per-kill clips)
-
-### Notes — TROIS SHOT scoped behaviour (confirmed, no change)
-For AWP/SSG08, the lucky condition is `(not scoped) OR (acc > 0.010)`. A **scoped** shot is still caught as "lucky" if `acc > 0.010` — this covers the case where the player scoped in and fired before the sway settled (CS2 accuracy_penalty doesn't drop to minimum the instant you scope). This is correct: "aiming" doesn't guarantee a precise shot if the scope isn't fully steadied. No threshold change needed.
+### Fixed: `_effective_before` perspective leak; "Full round" → "Full clutch" (first attempt)
 
 ---
 
 ## [v90]
-### Changed
-- **Header active player label** now mirrors the exact text from the Capture tab's active-accounts label (`_active_lbl`) in real time. Previously `_hdr_player_lbl` was updated by `_on_player_change` only — which only fired on DB-list selection and showed a truncated single-player shortname. The header now always shows the same string as the tab (e.g. `3 active: PLURTH WURTH, MAMMOUTH, TROIS SHOT TROIS`).
-- `_update_active_lbl` (in `PlayerSearchWidget`) now also calls `app._hdr_player_lbl.config(...)` with the same text and colour via `winfo_toplevel()`.
-- `_on_player_change` simplified: delegates to `player_search._update_active_lbl()` instead of computing its own truncated label — removes a divergence between the two display points.
-- Fixed French string: `"Actif : {name}"` → `"Active: {name}"`.
+
+### Changed: header active player label mirrors Capture tab in real time
 
 ---
 
 ## [v89]
-### Performance
-All optimisations are transparent — no behaviour change.
 
-- **`_ts_cache`**: `_get_demo_ts()` now caches the result of reading `.info` files and calling `stat()` on the first call per demo path. With 127 demos and 3–5 calls per Preview (sort key, date filter, format date, picker), this reduces disk reads from ~400–600 to 127.
-
-- **`_col_cache`**: `_find_col(table, candidates)` results are memoised in `self._col_cache`. The DB schema never changes between calls, so the 12+ repeated list scans per `_query_events()` call are replaced by a single dict lookup.
-
-- **Persistent DB connection** (`_pg()` / `_pg_fresh()`): `self._pg()` now returns a cached `psycopg2` connection, creating a new one only on the first call or if the connection was closed/broken. Background threads (load, tag searches, demo picker manual mode) use `_pg_fresh()` to avoid sharing the main-thread connection. Saves ~12 TCP handshakes per session.
-
-- **`_query_events` `finally` block**: no longer calls `conn.close()` on the persistent connection (replaced by `pass`).
-
-- **`_build_sequences` sort removed**: `sorted(events, key=…)` was called on every demo's event list. Since `_query_events` already issues `ORDER BY m."dc",k."tc"`, events arrive pre-sorted. The O(n log n) sort is now O(n).
-
-- **`_demo_sort_key` normalises in-place**: raw date values from `_demo_dates` are normalised to `int` timestamps on the first parse and written back. Subsequent calls for the same demo skip the `strptime` / `timestamp()` conversion entirely.
-
-- **`_dp2_verbose = False`**: per-kill log lines inside `_trois_shot_filter`, `_one_tap_filter`, and `_spray_transfer_filter` are suppressed by default. Each `_alog()` call dispatches a `self.after(0, lambda…)` to the Tk event queue — with 200 kills × 2 active filters this was flooding the queue with 400+ idle callbacks on every Preview. Set `self._dp2_verbose = True` in the constructor to re-enable for debugging.
-
-- **`_spray_transfer_filter` rewritten** (single-pass burst segmentation): the old algorithm walked shots backward and forward for each kill tick — O(kills × shots) with two nested closure functions redefined per loop iteration. The new algorithm segments `shots` into bursts in a single O(shots) pass, then assigns kills to bursts in a single O(kills + bursts) sweep. Also fixed a latent bug: the forward walk used `shots[i-1]` as the reference for gap detection, which could reference a shot from before the kill tick rather than the previous shot in the forward scan.
-
-### Fixed
-- Last 3 French strings in UI/logs: `"Connexion..."` → `"Connecting..."`, `"Tags erreur:"` → `"Tags error:"`, `"Assemblage: FFmpeg introuvable."` → `"Assembly: FFmpeg not found."`.
-- `_ts_cache` and `_col_cache` cleared in `_on_load_ok` so reconnecting to a different DB doesn't serve stale column lookups or demo dates.
-- `_db_conn = None` added to `__init__`; `_dp2_verbose = False` added to `__init__`.
+### Performance: `_ts_cache`, `_col_cache`, persistent DB connection, sort removal, `_spray_transfer_filter` O(shots); last French strings translated
 
 ---
 
 ## [v88]
-### Performance
-- **`_ts_cache`** — `_get_demo_ts()` now caches results in `self._ts_cache`. On a 127-demo Preview, the `.info` file read + `stat()` fallback was called 3–5× per demo (sort key, date filter, display, picker). Now called once per demo per session. Cleared on DB reconnect.
-- **`_col_cache`** — `_find_col()` now memoizes results in `self._col_cache` keyed by `(table, tuple(candidates))`. The DB schema does not change between runs; repeated list scans are eliminated. Cleared on DB reconnect.
-- **Persistent DB connection** — `_pg()` reuses `self._db_conn` (liveness-checked before reuse) instead of opening a new psycopg2 TCP connection on every call (~14 connections per session → 1). Background threads (load, tags, picker, clutch) call `_pg_fresh()` to avoid sharing the main-thread connection. `_query_events` no longer closes the persistent connection in its `finally` block.
-- **`_build_sequences` sort removed** — kills arrive pre-sorted by `ORDER BY m."dc",k."tc"` in SQL. The `sorted(..., key=lambda x: x["tick"])` call is now skipped (O(n log n) → O(n) per demo).
-- **`_demo_sort_key` date normalisation** — raw datetime/string values from `_demo_dates` are parsed with `strptime` only once and written back as `int` timestamps, avoiding repeated parsing of the same value on subsequent sort calls.
-- **Per-kill filter logging suppressed** — `_dp2_verbose = False` flag added. The 3 per-kill `_alog()` calls inside `_trois_shot_filter`, `_one_tap_filter`, and `_spray_transfer_filter` are now no-ops by default. Each `_alog()` call queues a `self.after(0, lambda…)` dispatch to the Tk main thread — on 200 kills × 2 active filters this produced ~400 Tk queue events per Preview just for debug lines. Flag can be set to `True` in code for diagnosis.
-- **`_spray_transfer_filter` rewritten** — replaced O(kills²) nested walk (per-kill: `_find_burst_start` backward scan + forward scan) with a single O(shots) pass that segments all shots into bursts upfront, then a single O(kills) pass to assign kills to bursts. Also fixes a latent bug: the previous forward walk used `shots[i-1]` when `i == pos_end` which could reference a shot before the kill tick rather than the previous shot in the forward sequence.
 
-### Fixed
-- Last 3 French strings: `"Connexion..."` → `"Connecting..."`, `"Tags erreur:"` → `"Tags error:"`, `"Assemblage: FFmpeg introuvable."` → `"Assembly: FFmpeg not found."`
+### Performance (preliminary): same as v89 core optimisations, first introduced here
 
 ---
 
 ## [v87]
-### Added
-- **🔫 SPRAY TRANSFER** modifier — new filter in the Capture tab (demoparser2 required):
-  - Captures kills that are part of a continuous automatic-weapon burst: the player kills ≥2 opponents without releasing the trigger between shots.
-  - Detection: gap between consecutive `weapon_fire` events for the same player+weapon must stay ≤ `SPRAY_MAX_GAP_TICKS` (22 ticks ≈ 0.34s at 64 tick/s) across all kills in the burst.
-  - Eligible weapons: all full-auto rifles (AK-47, M4A4, M4A1-S, Galil AR, FAMAS, SG 553, AUG), all SMGs (MAC-10, MP9, MP7, MP5-SD, UMP-45, P90, PP-Bizon), M249, Negev, CZ75-Auto.
-  - Explicitly excluded: AWP, SSG 08, SCAR-20, G3SG1 (snipers/auto-snipers), all shotguns, all other pistols.
-  - New constants: `SPRAY_TRANSFER_WEAPONS_LOWER`, `SPRAY_MAX_GAP_TICKS = 22`.
-  - New method: `_spray_transfer_filter()` + `_apply_spray_transfer_to_events()`.
-  - Wired into `_preparse_dp2`, `_apply_dp2_modifiers`, `_dry_run`, `_redo`, `_show_preview` summary.
 
-- **Demo picker** — the DATE FILTER section becomes DATE RANGE & DEMO SELECTION:
-  - After every Preview, the list of found demos populates a `ttk.Treeview` (7 rows visible, scrollable) with columns: ✓ (checked state), `dd-mm-yyyy hh:mm` date, demo name (truncated to last 43 chars with `…` prefix for long names like `match730_…668.dem`).
-  - Click any row or the ✓ column to toggle inclusion. Check all / Uncheck all / Toggle selected buttons.
-  - **Manual mode** checkbox: loads all demos from the DB, allowing full individual selection regardless of date range. Preserves existing checked state when switching.
-  - Picker filter applied in `_worker`: demos unchecked in the picker are excluded from the batch. If picker is empty (no preview yet), no filter applied.
-  - Clear all button also clears the picker.
-  - New methods: `_demo_picker_populate()`, `_demo_picker_clear()`, `_on_demo_tree_click()`, `_demo_picker_set_all()`, `_demo_picker_toggle_selected()`, `_on_picker_mode_change()`, `_demo_picker_get_active()`, `_demo_picker_fmt_name()`, `_demo_picker_fmt_date()`.
-
-### Changed
-- **TROIS SHOT — weapon lock removed entirely**:
-  - `TROIS_SHOT_ELIGIBLE_LOWER` constant deleted.
-  - `_refresh_weapons_lock()` method deleted.
-  - Weapon deselection blocks removed from `_on_trois_shot_toggle()`, `_engage_trois_tap()`.
-  - `_trois_shot_filter()` no longer skips kills on "ineligible" weapons — it tries to evaluate any weapon against `CSDM_TO_DP2_WEAPON`; weapons with no threshold are simply not kept (no weapon filter side-effect in the UI).
-  - Tooltips on TROIS SHOT and TROIS TAP updated: "locks ineligible weapons" removed.
-  - `_no_trois_shot_filter` and `_trois_tap_filter` docstrings updated.
-
-- **Clutch tooltip simplified**: removed technical detail about column names. New concise version fits one hover panel.
-- **Preview log**: "Armes: toutes" / "Armes: …" → "Weapons: all" / "Weapons: …" (last French strings in UI log).
-
-### Fixed
-- Last call to `_refresh_weapons_lock(False)` in `_on_no_trois_shot_toggle` removed.
-- `_on_picker_mode_change`: removed erroneous `self.v["clutch_enabled"]` guard.
-- `sp_str` now correctly included in the preview summary log line.
+### Added: 🔫 Spray Transfer; Demo picker with Manual mode; TROIS SHOT weapon lock removed
 
 ---
 
 ## [v86]
-### Fixed
-- **`DEFAULT_CONFIG` clutch comment was stale** — still read `"multi-kill sequences in a single round"` (description from the original wrong implementation). Updated to `"player is last alive on team, kills remaining opponents"`.
-- **Recording system tooltip was inaccurate** — still said physics/effects are "NOT injected by this tool in CS mode". Updated to reflect v83 behaviour: CS2 Effects are injected in HLAE mode; in CS mode they are not yet supported due to the absence of `extraArgs` in the CS JSON schema.
 
-### Notes
-- Clutch detection logic has been correct since v82: the algorithm fetches all kills per match, checks that all teammates died before the player's first kill tick in the round, counts opponents still alive at that moment, and compares against min/max. The tooltip and labels ("Min 1v:" / "Max 1v:") already described this correctly — only the config comment was stale.
+### Fixed: stale DEFAULT_CONFIG comment; inaccurate recording system tooltip
 
 ---
 
 ## [v85]
-### Changed
-- **Clutch detection completely rewritten** — now detects *real* clutch situations instead of simple multi-kills per round:
 
-  **Old behaviour (wrong)**: grouped kills by the same player in the same round where they made ≥ N kills. A player making 3 kills while 4 teammates were still alive was counted as a "clutch."
-
-  **New behaviour (correct)**: a clutch is defined as:
-  1. At the tick of the player's first kill in the round, **all teammates are already dead** (player is the sole survivor of their team).
-  2. The number of opponents still alive at that exact tick ≥ `clutch_min_kills` and ≤ `clutch_max_kills`.
-
-  **Algorithm change**: `_query_clutch_events` now fetches **all kills from all matches** the player participated in (not just their own kills), reconstructs per-round who was alive on each side at every tick, and verifies the last-alive condition before accepting a clutch.
-
-  **Requires**: `killer_side` / `victim_side` columns in the kills table. Without side data, clutches cannot be verified and nothing is captured (rather than capturing incorrect data).
-
-  **Logs**: each detected clutch now logs the clutch size explicitly: `🤝 1v3 clutch [demo.dem] tick=12345 (3 kills)`.
-
-- **UI labels corrected**:
-  - "Min kills" → "Min 1v" / "Max 1v" — reflects that the number is opponents alive at clutch start, not a kill count.
-  - Combo now includes `1` as an option (1v1 clutch).
-  - Tooltip fully rewritten to accurately describe detection logic, side-data requirement, and Win only behaviour.
-
-### Fixed
-- `require_win` was previously only applied if both side *and* winner were found; the side inference from victim_side now provides a reliable fallback when `killer_side` column is absent.
-- Clutch log in `_query_events` now shows `1v2, 1v3…` notation instead of raw kill counts.
+### Changed: clutch detection rewritten — real last-alive detection using all kills per match
 
 ---
 
 ## [v84]
-### Fixed
-- **`clutch_require_win` was never actually filtering** — the entire body of the `if require_win:` block was a `pass` (TODO stub). Implemented properly:
-  - The clutch kill query now also fetches `killer_side` / `killer_team_name` / `attacker_side` from the kills table.
-  - Both killer side and round winner values are normalised to `"CT"` or `"T"` from all known CSDM schema variants (`COUNTER_TERRORIST`, `Counter-Terrorist`, `counter_terrorist` → `"CT"`; `TERRORIST`, `Terrorist` → `"T"`).
-  - If killer side and winner both known and don't match → clutch skipped.
-  - If either is absent (old schema / missing column) → clutch included rather than silently dropped.
-  - `_killer_side` added to the `_internal` fields stripped from clean kill dicts before storage.
-- **3 remaining French comments translated**:
-  - `# date inconnue + filtre actif → on exclut` → `# unknown date + active filter → exclude`
-  - `# timeout 60s pour trouver CS2` → `# 60s timeout to find CS2`
-  - `# Phase 1 : attendre CS2 (polling rapide 100ms)` → `# Phase 1: wait for CS2 (fast polling 100ms)`
+
+### Fixed: `clutch_require_win` was a stub; side normalisation for all CT/T schema variants
 
 ---
 
 ## [v83]
-### Fixed
-- **CS2 EFFECTS not injected in CS recording mode**: the physics console commands (`cl_ragdoll_gravity`, `ragdoll_gravity_scale`, `sv_gravity`, `cl_ragdoll_physics_enable`, `violence_hblood`, `r_dynamic`) were still inside the `if recsys == "HLAE":` block in `_build_json`, meaning they had no effect when System = CS. They are now built unconditionally. In HLAE mode they are appended to `hlaeOptions.extraArgs` as before. In CS mode they are logged for informational purposes (CSDM CS mode does not currently expose an `extraArgs` equivalent — will be wired when CSDM adds that field).
+
+### Fixed: CS2 EFFECTS not injected in CS recording mode
 
 ---
 
 ## [v82]
-### Added
-- **🤝 CLUTCH mode** — new capture type in the Capture tab:
-  - Grouped kills: one clutch = all kills by the same player in the same round where they achieved ≥ `clutch_min_kills` kills.
-  - Round detection uses the `rounds` table tick brackets when available; falls back to coarse 2-minute windows otherwise.
-  - **Min kills** (2–5) and **Max kills** (2–5) sliders — e.g. Min=2 Max=3 captures only 1v2 and 1v3.
-  - **Full round** clip mode: one continuous sequence from first kill − BEFORE to last kill + AFTER.
-  - **Per kill** clip mode: standard individual sequences (normal merging applies).
-  - **Win only** option: restricts to rounds with a recorded winner (requires `winner`/`winner_side` in the rounds table).
-  - Deduplicated against regular Kill events — enabling Kills + Clutch simultaneously never produces duplicates.
-  - `_query_clutch_events(...)` — full DB query with round brackets, tick assignment, and group filtering.
-  - `_build_clutch_sequences(groups, ...)` — builds one contiguous sequence per clutch group.
-  - `_on_clutch_toggle()` — shows/hides clutch options row.
-  - `events_clutch` added to `_build_run_cfg`.
 
-### Changed
-- **Video tab — HLAE/CS2 sections properly separated**:
-  - **⚡ HLAE OPTIONS** (hidden in CS mode): FOV, slow-motion, AFX stream, No spectator UI, Fix scope FOV, Auto Workshop download, window mode, Minimize on launch, extra HLAE args.
-  - **🎮 CS2 EFFECTS** (always visible): window mode, Minimize on launch, `cl_ragdoll_gravity`, `ragdoll_gravity_scale`, `sv_gravity`, ragdoll physics, blood on walls, dynamic lighting. Section title and description make it clear these work in both modes.
+### Added: 🤝 CLUTCH mode — initial implementation (grouped kills, later corrected)
 
 ---
 
 ## [v81]
-### Fixed
-- **Inaccurate CS mode tooltip** — the claims added in v78/v80 were still partially wrong:
-  - "slow-motion not supported in CS mode" — **false**: `host_timescale` is a native CS2 command that works without HLAE.
-  - "physics overrides not supported in CS mode" — **false**: `cl_ragdoll_gravity`, `ragdoll_gravity_scale`, `sv_gravity`, `cl_ragdoll_physics_enable`, `violence_hblood`, `r_dynamic` are all native CS2 console commands.
-  - "window mode not supported in CS mode" — **false**: `-windowed`, `-noborder`, `-fullscreen` are standard CS2 launch options.
-  - Corrected to: these are **native CS2 features that work in CS mode but are not injected by this tool** (the CSDM JSON has no `csOptions` equivalent of `hlaeOptions` to pass them through).
-  - What IS genuinely HLAE-exclusive: `mirv_fov` (custom FOV), AFX streams, `hideSpectatorUi`, scope FOV fix (`mirv_fov handleZoom`), and all `mirv_*` commands.
+
+### Fixed: inaccurate CS mode tooltip
 
 ---
 
 ## [v80]
-### Fixed
-- **Incorrect CS mode descriptions** — two claims added in v78 were factually wrong and have been corrected:
-  1. *"CS2 plays the demo interactively from start to finish — the demo viewer UI is visible"* — removed. According to the official CSDM documentation, CS mode uses CS2's `startmovie` command to generate raw files (.tga + .wav), exactly like HLAE does internally. There is no difference in how CS2 launches or plays the demo between the two modes.
-  2. *"do NOT minimize CS2 during recording"* in the batch log warning — removed. The `cs2_minimize` watcher works in both modes and minimizing is safe in both.
-- Tooltip now correctly states: `CS = native CSDM recording via CS2's startmovie command`.
+
+### Fixed: incorrect CS mode descriptions (startmovie, not interactive)
 
 ---
 
 ## [v79]
-### Added
-- **Fix scope FOV** checkbox in HLAE OPTIONS (enabled by default). Injects `+mirv_fov handleZoom enabled 1` into HLAE extraArgs. Without this, setting a custom FOV via HLAE overrides the zoom FOV when a player uses a scoped weapon (AWP, SSG 08, SCAR-20, G3SG1) — the scope appears at the custom FOV instead of the correct zoomed-in FOV. This is the only CS2-specific HLAE fix recommended by the official HLAE documentation and the community; `mirv_fix animations` was removed from HLAE as CS2 now handles animation smoothing natively. Saved in config, included in Video presets, logged in batch header as `ScopeFOV:fix`.
+
+### Added: Fix scope FOV checkbox (`+mirv_fov handleZoom enabled 1`)
 
 ---
 
 ## [v78]
-### Fixed
-- **CS mode: "Game error" on every demo** — root cause was a bad demo file, not the minimize watcher. The `cs2_minimize` watcher works in both HLAE and CS modes and is left unchanged.
-- **CS mode / HLAE mode UI bleed** — `_on_recsys_change` only changed the section title color, leaving all HLAE widgets (FOV, slow-motion, physics, window mode) permanently visible and editable even in CS mode. It now calls `pack_forget()` on the entire `_hlae_sec` when CS is selected, and restores it with `pack()` when HLAE is selected. Window mode and Minimize remain in RESOLUTION & FRAMERATE (always visible, unchanged).
 
-### Added
-- **Per-demo extended logging** in batch run: each demo now logs sequence tick ranges and duration (`seq 1/2  tick 1234→5678  (6.0s)`), active RecSys/Output/TrueView/Concat settings, and HLAE options actually injected (FOV, timescale, AFX, extraArgs).
-- **CS mode runtime warning** in batch log: `ℹ RecSys CS: HLAE options ignored. CS2 plays the demo interactively — do NOT minimize CS2 during recording.`
-- **RECORDING SYSTEM tooltip for CS** now documents exactly what CS mode does and doesn't support (no FOV, no slow-motion, no physics, no window mode; demo plays from start to finish interactively).
-- **Tooltips in TIMING & ROBUSTNESS**: Seconds BEFORE, Seconds AFTER, Close CS2 after demo, Retries, Delay, Demo pause, Order — all now have hover tooltips with recommended values and behavior notes.
-- `_slider()` now returns its frame so `add_tip()` can be attached to it.
-
-### Changed
-- **HLAE section fully hidden in CS mode** (not just greyed-out title). Switching back to HLAE restores it. Window mode and Minimize on launch remain in RESOLUTION & FRAMERATE and are always accessible regardless of recording system.
-- Remaining French in `_build_json` camera comments translated: `Notre joueur meurt`, `Notre joueur tue`, `Phase victim`, `Cible initiale`, `title="Couleur"`.
+### Fixed: CS/HLAE UI bleed; HLAE section hidden in CS mode; extended per-demo logging
 
 ---
 
 ## [v77]
-### Changed
-- **demoparser2 architecture fully refactored** — single point of entry, partial persistent cache:
 
-  **`_dp2_parse_demo(demo_path)`** — new core method, the only place in the codebase that calls `DemoParser`. Parses `weapon_fire` once per demo with all needed player fields (`accuracy_penalty`, `is_scoped`, `velocity_X/Y`, `player_steamid`). Builds and stores two derived indexes under `_dp2_cache[demo_path]`:
-    - `"fire_detail"`: `{(sid, wpn_suffix) → [(tick, acc, scoped, vel), …]}` — for TROIS SHOT / NO TROIS SHOT
-    - `"fire_ticks"`: `{(sid, wpn_suffix) → [tick, …]}` — for ONE TAP / TROIS TAP (derived from `fire_detail`, no second parse)
-
-    **To add a future filter on a new event type**: add a `parser.parse_event(...)` call here, store the result under a new key, read it in the new filter via `_dp2_cache.get(path, {}).get("new_key", {})`. No other method changes.
-
-  **`_preparse_dp2`** — rewritten around partial cache hits. No more signature check, no more full cache flush. Uses `missing = [dp for dp in paths if dp not in _dp2_cache]` — only unprocessed demos are dispatched to the thread pool. On Preview → Batch with the same demo set, the pre-parse is skipped entirely (`all N demo(s) already cached — skipping`). On a date range change that adds new demos, only the new ones are parsed.
-
-  **`_trois_shot_filter`** — parse/cache block replaced by `_dp2_parse_demo(demo_path)` call + `data.get("fire_detail", {})` read. `from demoparser2 import DemoParser` removed.
-
-  **`_one_tap_filter`** — same: parse/cache block replaced, reads `data.get("fire_ticks", {})`.
-
-- **`_dp2_cache` key scheme changed**: from `("trois_shot"|"one_tap", demo_path)` → `demo_path` directly (unified entry per demo).
-- **`_dp2_cache_sig`** removed from `__init__` and `_preparse_dp2` — no longer needed.
-
-### Fixed
-- **Pre-parse repeated on Preview → Batch**: with the old signature check, any difference in the cfg between the two calls (even irrelevant fields) would invalidate the sig and flush the full cache. The new partial cache never flushes — demo data persists for the entire session once parsed.
-- **`weapon_fire` parsed twice per demo**: `_trois_shot_filter` and `_one_tap_filter` previously each issued a separate `DemoParser.parse_event("weapon_fire", ...)` call. Now one parse populates both `fire_detail` and `fire_ticks`.
+### Changed: demoparser2 architecture — single parse entry point, partial persistent cache, unified key scheme
 
 ---
 
 ## [v76]
-### Fixed
-- **ONE TAP always returned 0 results** (`✗ not isolated` on every kill across all demos): `_one_tap_filter` was indexing weapon_fire shots by `sid` alone — any shot fired by the player with *any* weapon within ±128 ticks invalidated the kill. Since players constantly fire different weapons, every kill was rejected. The index is now keyed by `(sid, weapon_suffix)` matching exactly `_trois_shot_filter`'s approach, so isolation is checked per-weapon: a Desert Eagle kill is only rejected if the player fired another Desert Eagle within the window.
-- **TROIS TAP always returned 0 results**: inherited the same bug via `_trois_tap_filter → _one_tap_filter`.
-- **Log improved**: `_is_isolated` now logs the weapon name alongside tick and sid for easier diagnosis (`🎯 [Desert Eagle] [tick=…] sid=… → ✓/✗`).
+
+### Fixed: ONE TAP / TROIS TAP always returned 0 — weapon-specific shot index
 
 ---
 
 ## [v75]
-### Added
-- **`_one_tap_filter`** implemented: uses demoparser2 `weapon_fire` events to verify that exactly one shot was fired within ±128 ticks (~2s at 64 tick/s) around the kill tick. Headshot is pre-guaranteed by the DB query. Result cached under key `("one_tap", demo_path)`.
-- **`_no_trois_shot_filter`** implemented: inverse of `_trois_shot_filter` — keeps only kills on eligible weapons that are *not* lucky (precise shots). Non-eligible weapon kills are always passed through.
-- **`_trois_tap_filter`** implemented: chains `_trois_shot_filter` → `_one_tap_filter` (TROIS SHOT ∩ ONE TAP). Previously referenced but never defined, causing `AttributeError` on every run with ONE TAP or TROIS TAP enabled.
 
-### Fixed
-- **`AttributeError: '_tkinter.tkapp' object has no attribute '_one_tap_filter'`**: all three filter methods (`_one_tap_filter`, `_no_trois_shot_filter`, `_trois_tap_filter`) were referenced in `_apply_filter_to_events`, `_apply_dp2_modifiers`, and `_preparse_dp2` but never defined — crashing every preview and batch run that used ONE TAP or TROIS TAP.
-- **ONE TAP / TROIS SHOT do not uncheck TROIS TAP**: enabling ONE TAP or TROIS SHOT while TROIS TAP was already active left TROIS TAP checked alongside the individual modifier. `_on_one_tap_toggle` and `_on_trois_shot_toggle` now call `_disengage_trois_tap()` and clear the TROIS TAP variable when activated.
-
-### Changed
-- **Full English translation** of all remaining French strings in comments, tooltips, and log messages (excluding proper nouns containing "Trois"):
-  - Comments: `tir precise immobile` → `precise stationary shot`, `tir en mouvement` → `shot while moving`, `spam (2e+ tir rapide)` → `spam (2nd+ rapid shot)`, `lucky si` → `lucky if`, `pas premier tir immobile` → `not first stationary shot`, `Noms internes` → `Internal names`, `inclure les suicides` → `include suicides`, `kill sans scope` → `no-scope kill`, `kill en wallbang` → `wallbang kill`, `killer en l'air` → `killer airborne`, `Preset encodage … uniquement — sans effet sur GPU` → `Encoding preset … only — no effect on GPU`, `% de vitesse : 100 = normal, 50 = demi-vitesse` → `% of speed : 100 = normal, 50 = half-speed`, `Utilitaires` → `Utilities`, `Lookup plat construit … au lieu de` → `Flat lookup built … instead of`, `Depuis le 1er du mois en cours` → `From the 1st of the current month`, `Depuis le 1er janvier` → `From January 1st`, `la date d'import et non la date de partie` → `the import date and not the actual match date`, `Les codecs GPU … ignorent` → `GPU codecs … ignore`, `Écrire la liste FFmpeg concat` → `Write the FFmpeg concat list`, `Pas d'apostrophes … on utilise les guillemets doubles` → `No apostrophes or quotes … use double quotes`
-  - UI / tooltips: `Choisir une couleur` → `Choose a color`, `Kill sans scope (sniper seulement)` → `No-scope kill (sniper only)`, `l'apparence des cadavres et la physique du jeu` → `the appearance of ragdolls and game physics`, `+cl_downloadfilter all dans les Launch Options Steam, pas ici` → `+cl_downloadfilter all in Steam Launch Options, not here`
-  - Log messages: `ECHEC:` → `FAILED:`, `=== Tag '…' sur N demo(s) ===` → `=== Tag '…' on N demo(s) ===`
-  - Inline comments: `Auto-activer si c'est le premier` → `Auto-activate if it's the first`, `Debug: montrer ce qui est dans la table` → `Debug: show what is in the table`, `tag_on_export = premier tag actif (compat batch) ; les autres sont dans _tags_active` → `tag_on_export = first active tag (batch compat) ; others are in _tags_active`, `Construire la clause joueur pour N SIDs` → `Build the player clause for N SIDs`, `Colonne headshot (optionnelle)` → `Headshot column (optional)`, `ONE TAP et TROIS TAP impliquent headshot obligatoire en BDD` → `ONE TAP and TROIS TAP require mandatory headshot in DB`, `Construire une timeline … explicite` → `Build an explicit … timeline`, `LIKE sur le nom de fichier` → `LIKE on the filename`, `Tk elide sur les tags : on cache ce qui porte un tag "hidden"` → `Tk elide on tags: hide items carrying the "hidden" tag`, `Lignes portant le tag cible` → `Lines carrying the target tag`, `Slider "Avant switch" — visible seulement en mode victim/both` → `"Before switch" slider — visible only in victim/both mode`, `Tout : vider les deux champs` → `All: clear both fields`, `Bloc Ratio d'aspect` → `Aspect Ratio block`, `Arrondir la largeur au multiple de 2 le plus proche (requis par la plupart des codecs)` → `Round width to nearest multiple of 2 (required by most codecs)`, `Trace recsys pour afficher/masquer` → `Trace recsys to show/hide`, `Fallback BDD (souvent = date d'import)` → `Fallback DB (often = import date)`, `Multi-tags : on utilise _tags_active si disponible, sinon tag_name seul` → `Multi-tags: use _tags_active if available, else tag_name alone`
-  - Section headers: `TAB CAPTURER` → `TAB CAPTURE`, `TAB OUTILS` → `TAB TOOLS`, `PLAGE DES TAGS` → `TAG DATE RANGE`, `OPÉRATIONS` → `OPERATIONS`
-  - Calendar day abbreviations: `Lu Ma Me Je Ve Sa Di` → `Mo Tu We Th Fr Sa Su`
-  - Log format: `seuil=` → `threshold=`, `et propose d'appliquer ces dates comme filtre dans Capturer` → `and suggests applying these dates as a filter in Capture`
-  - French guillemets `«…»` replaced with standard double quotes `"…"` in all f-strings and log messages
+### Added: `_one_tap_filter`, `_no_trois_shot_filter`, `_trois_tap_filter` implemented; full English translation
 
 ---
 
 ## [v74]
-### Added
-- **TROIS TAP auto-toggle**: checking both TROIS SHOT + ONE TAP simultaneously auto-enables TROIS TAP and clears the two individual modifiers. Unchecking TROIS TAP does not restore them — it simply disengages. Logic split into `_engage_trois_tap()` / `_disengage_trois_tap()` helpers.
-- **DP2 threads** slider in Tools → Performance (1–8, default 2): parallel demo pre-parsing via `ThreadPoolExecutor`. Logs `⚡ Pre-parsing N demo(s) with X thread(s)…` / `✓ Pre-parse done`.
-- Per-demo parse cache (`_dp2_cache`): each `.dem` parsed at most once per run, even when TROIS TAP chains both filters. Protected by `threading.Lock` (`_dp2_cache_lock`) against race conditions during parallel pre-parse.
-- `_preparse_dp2(cfg, demo_paths)`: centralized pre-parse helper called by both `_worker` and `_dry_run` — replaces duplicated inline blocks.
-- **Tag selection persisted**: active (checked) tags are now saved in config as `active_tags` (list of names) and restored on startup. Uses deferred restoration via `_pending_restore_tags` if the DB is not yet connected when config loads.
 
-### Changed
-- **UI fully translated to English** — all remaining French strings:
-  - Calendar month names: Janvier → January, Fevrier → February, etc.
-  - Weapon categories: Pistolets → Pistols, Fusils → Rifles, Lourdes → Heavy, Couteaux → Knives, Grenades & Utilitaires → Grenades & Utility, Divers → Misc, Autres → Other
-  - In-game labels: Physique ragdolls → Ragdoll physics, Sang sur les murs → Blood on walls
-  - File dialog filters: Fichier texte → Text file, Tous → All files
-  - Tags tab: Recherche → Search
-  - Preset section: Nom → Name, sauvegarde → saved, charge → loaded, Donne un nom → Enter a name
-  - Dialogs: Supprimer tag → Delete tag, Annuler → Cancel
-  - Color picker: Couleurs rapides → Quick colors, Apercu → Preview
-  - Error logs: Erreur → Error, CLI introuvable → CLI not found, Schema inconnu → Unknown schema, introuvable → not found, Table de jonction introuvable → Junction table not found, Modificateurs introuvables → Modifiers not found, Col demo introuvable → Demo path column not found
-  - TAGS/config logs: Erreur BDD → DB error, Erreur config → Config error
-  - Tag log: Tag cree → Tag created
-- **Log labels corrected**: TROIS SHOT / TROIS TAP filters no longer log "lucky" / "lucky tap"
-- `cs2_window_mode` default value: `"aucun"` → `"none"`
-- `_WEAPON_CATEGORIES` key aligned: `"Grenades & Utilities"` → `"Grenades & Utility"` to match WEAPON_ICONS
-- `bisect`, `concurrent.futures`, `collections.defaultdict` moved to top-level imports — no longer re-imported on every filter call
-- In-script changelog removed — all history now in this file only
-
-### Removed
-- **Skip Intro CS2** option: `+novid` / `skipIntro` has no effect in CS2. Removed from DEFAULT_CONFIG, bool_keys, PRESET_KEYS, UI checkbox, and JSON build.
-
-### Fixed
-- **NameError `evt` not defined**: loop variable `events` shadowed the parameter in `_trois_shot_filter`, `_no_trois_shot_filter`, `_one_tap_filter` — corrected to `for evt in events`
-- **TROIS TAP deactivation**: unchecking TROIS TAP no longer incorrectly restores TROIS SHOT + ONE TAP
-
-### Performance
-- `_trois_shot_filter`: linear `_is_lucky` scan replaced by bisect index `{(sid, wpn_suffix) → [(tick, acc, scoped, vel)]}` — O(log n) per kill instead of O(n)
-- `itertuples()` replaced by `to_numpy()` in both filters — 5–10× faster DataFrame iteration on large demos
-- `_dp2_cache_lock`: thread-safe cache prevents duplicate parsing when multiple threads hit the same demo simultaneously
+### Added: TROIS TAP auto-toggle; DP2 threads slider; per-demo parse cache; tag selection persisted; full UI English translation
 
 ---
 
 ## [v73]
-> All v73 changes are included in v74. v73 was never shipped as a standalone release.
 
-### Fixed
-- **NameError `evt` not defined** in `_trois_shot_filter`, `_no_trois_shot_filter`, `_one_tap_filter`: loop variable `events` shadowed the parameter while the body still referenced `evt` — introduced during a translation pass by a previous session
-
-### Performance
-- `_trois_shot_filter`: linear scan replaced by bisect index `{(sid, wpn_suffix) → [(tick,…)]}` — O(log n) per kill instead of O(n)
-- `itertuples()` replaced by `to_numpy()` in both filters — 5–10× faster
-- Per-demo parse cache and parallel pre-parsing first introduced here, finalized in v74
+> Included in v74 — never shipped standalone.
 
 ---
 
 ## [v72]
-### Fixed
-- "Both" perspective: `victim_pre_s` was not counted in clip duration.  
-  `_effective_before(cfg)` now returns `before + victim_pre_s` in Both mode, used at all `_build_sequences` call sites (preview, batch, summary). Sequence starts `before + victim_pre_s` seconds before the kill so the killer phase is complete from the first frame.
-- Removed `victim_pre_s ≤ before` clamping in `_build_cams_both` (no longer needed).
+
+### Fixed: "Both" perspective — `victim_pre_s` not counted in clip duration
 
 ---
 
 ## [v71]
-### Changed
-- "Exclude lucky" checkbox renamed to "Exclude" (under LUCKY SHOT section)
-- Cumulative modifiers: `no_lucky_shot` + `one_tap` now apply sequentially (AND logic). `elif` chains replaced with independent `if` blocks in `_run_batch`, `_dry_run`, and `_redo`. Only `lucky_tap` stays exclusive.
-- UI toggles: `no_lucky_shot` and `one_tap` no longer mutually exclusive. Only `lucky_shot ↔ no_lucky_shot` and `lucky_tap ↔ all` remain exclusive.
-- Preview summary now shows all actually active modifiers instead of hiding those skipped by `elif` chains.
+
+### Changed: cumulative dp2 modifiers — `elif` chains → independent `if` blocks
 
 ---
 
 ## [v70]
-### Changed
-- **POV Victim** simplified: camera fixed on the victim of the first kill throughout the clip (no switch, no transition).
-- **"Both"** takes over the killer→victim logic from ex-POV Victim v69: camera follows killer from start, switches to victim at `kill_tick − victim_pre_s`. "Switch delay" slider now only visible in Both mode.
-- "Switch delay" additive with BEFORE seconds: `before=3s` + `victim_pre_s=2s` → sequence starts 5s before kill; killer phase is complete.
+
+### Changed: POV Victim simplified; "Both" takes over killer→victim transition logic
 
 ---
 
 ## [v69]
-### Added
-- `APP_VERSION` constant centralizes version string — window title and header label update automatically.
 
-### Changed
-- **POV Victim rework**:
-  - New parameter "Killer seconds before switch" (`victim_pre_s`, default 2s)
-  - Camera only follows events where `killer_sid` belongs to active players — no more jumps to random players in merged multi-kill sequences
-  - "Both" mode: transition at exact first kill tick, not arbitrary midpoint of `cam_ticks`
-  - "Switch delay" slider visible only when perspective = victim or both
+### Added: `APP_VERSION` constant; POV Victim rework with `victim_pre_s`
 
 ---
 
 ## [v68]
-### Added
-- New modifier **NO LUCKY SHOT** (`kill_mod_no_lucky_shot`): excludes lucky kills — exact inverse of the TROIS SHOT filter. Shown under "Enable" in the TROIS SHOT section.
-- New modifier **LUCKY TAP** (`kill_mod_lucky_tap`): intersection TROIS SHOT ∩ ONE TAP — lucky AND isolated headshot kill. Forces HS only. Eligible weapons = TROIS SHOT set. Integrated in preview, `_redo`, `_run_batch`, summary.
 
-### Fixed
-- "Free dimensions": definition radio buttons now properly disabled when the checkbox is ticked (stored in `self._def_radios`).
-
-### Changed
-- Minimize watcher simplified: Phase 2 (looping re-minimization for 20s) removed. CS2 is minimized once at launch, then the thread stops.
+### Added: NO LUCKY SHOT; LUCKY TAP; Minimize watcher simplified
 
 ---
 
-## [v67] *(applied as external patch)*
-### Removed
-- `stop_guard_event` — no longer needed after Phase 2 removal.
+## [v67]
+
+### Removed: `stop_guard_event`
 
 ---
 
 ## [v66]
-### Added
-- New modifier **ONE TAP** (demoparser2):
-  - Mandatory headshot (forced in DB + locks "HS only")
-  - No shot from same player+weapon in the 2s before the shot (silence)
-  - No shot from same player+weapon in the 2s after the shot (no follow-up)
-  - Detection via bisect on index `(sid, weapon)` → O(log n)
-  - Integrated in preview, `_redo`, per-demo `_run_batch`
 
-### Changed
-- Tickrate removed from UI (CS2 = fixed 64 ticks); value 64 kept internally.
+### Added: ONE TAP modifier (demoparser2); tickrate removed from UI
 
 ---
 
 ## [v65]
-### Fixed
-- **LUCKY SHOT thresholds recalibrated**: `accuracy_penalty` in demoparser2 = Source2 radians, real range 0.004–0.050. Old thresholds (0.15–0.30) were unreachable → 0 lucky shots systematically. New: Deagle/R8 > 0.015, snipers > 0.010 (+ scope/vel).
-- Removed dead duplicate `filtered` loop (refactoring artifact).
 
-### Added
-- Temporary per-kill calibration log: `acc` / `scoped` / `vel` / verdict.
+### Fixed: LUCKY SHOT thresholds recalibrated (old values unreachable in real data)
 
 ---
 
 ## [v64]
-### Fixed
-- **LUCKY SHOT — 3 bugs** diagnosed via debug logs:
-  1. demoparser2 prefixes all requested player fields with `user_` (e.g. `user_accuracy_penalty`). Fixed with dynamic `_col()` resolver.
-  2. Match window too small (30 ticks / ~0.23s). Extended to 128 ticks (~1s).
-  3. Matching logic: `wp_suffix in wp` instead of fragile `endswith` + double fallback.
-- Removed `[DIAG]` logs.
+
+### Fixed: LUCKY SHOT — `user_` prefix, match window, matching logic
 
 ---
 
 ## [v63]
-### Fixed
-- Checking LUCKY SHOT now also unchecks the weapon category checkbox (not just individual weapons).
-- Preview (F6 / Preview button) now applies TROIS SHOT filter via demoparser2 in a background thread before showing results — clip count reflects actual lucky kills. Same for preview re-triggered after cancel (already-tagged demos).
 
-### Added
-- Indicator `🎲 LUCKY SHOT` visible in preview summary line.
+### Fixed: LUCKY SHOT unchecks weapon category; preview applies TROIS SHOT in background thread
 
 ---
 
 ## [v62]
-### Added
-- New modifier **LUCKY SHOT**: lucky kills on precision weapons.
-  - Eligible: Deagle, R8, AWP, SCAR-20, G3SG1, SSG 08
-  - Detection via demoparser2 (Rust): `accuracy_penalty`, `is_scoped`, `velocity` at exact shot tick
-  - Per-weapon thresholds: Deagle/R8 → bloom > 0.30; AWP/SSG → unscoped or bloom > 0.15; SCAR-20/G3SG1 → speed > 100 u/s or unscoped or bloom > 0.15
-  - Enable → automatically locks ineligible weapons in filter
-  - Requires: `pip install demoparser2`
+
+### Added: LUCKY SHOT modifier (demoparser2) — initial implementation
 
 ---
 
 ## [v61]
-### Fixed
-- "Minimize on launch": CS2 briefly appeared on screen.
-  - Polling reduced 500ms → 100ms to catch CS2 on its first frames
-  - 20s guard phase after first hit: re-minimize if CS2 comes to foreground during map loading
-  - Timeout extended to 60s (was 45s)
+
+### Fixed: Minimize on launch briefly shows CS2; polling 500ms → 100ms; 60s timeout
 
 ---
 
 ## [v60]
-### Changed
-- **Resolution & Framerate** section reworked:
-  - Definition via radio buttons (720p / 1080p / 1440p / 4K)
-  - Aspect ratio selector (16:9 / 4:3 / 21:9 / 16:10 / 1:1) conditional on definition
-  - "Custom" checkbox disables both selectors and enables free width × height fields
-  - `width`/`height` auto-calculated from (definition × ratio) or entered manually
+
+### Changed: Resolution & Framerate — definition × ratio × custom free entry
 
 ---
 
 ## [v59]
-### Fixed
-- Modifiers not found in DB: if ALL absent → returns `{}` with error instead of returning all clips unfiltered. If partially absent → warning + apply remaining modifiers only.
+
+### Fixed: modifier not found in DB — fail-closed (returns empty, not all clips)
 
 ---
 
 ## [v58]
-### Added
-- Tags tab — new **TAG RANGE** section: Calculate range, Apply start, Apply end, Full range, After range.
 
-### Changed
-- OPERATIONS section restructured: Search / Actions clearly separated.
+### Added: Tags TAG RANGE section (Calculate range, Apply start/end, Full, After)
 
 ---
 
 ## [v57]
-### Fixed
-- 📅 now uses the same config ∩ tags intersection as "By config" — no more divergence between the two counts.
+
+### Fixed: 📅 uses config ∩ tags intersection
 
 ---
 
 ## [v56]
-### Added
-- "By config": config ∩ DB tags intersection (demos already tagged in the current period).
 
-### Changed
-- 📅 applies `date_from` directly without intermediate button.
-
-### Removed
-- `_tag_suggest_btn` widget and `_tag_apply_suggest_date`.
+### Added: "By config" — config ∩ DB tags intersection
 
 ---
 
 ## [v55]
-### Fixed
-- Extra args (`spec_cmd` + `window_mode`) were overwritten before injection.
 
-### Added
-- Enhanced logging: prefixes `[PREVIEW/TAGS/config/tag/📅]`, active weapons by category, output folder, auto-tags in preview.
+### Fixed: extra args overwritten before injection; enhanced logging
 
 ---
 
 ## [v54]
-### Added
-- Separate output folders: raw clips, concatenated, assembled.
-- Warning tooltip on Concatenate when Assemble is active.
 
-### Changed
-- Concatenate sequences disabled if Delete clips is active.
-- `_collect_config` syncs `output_dir ← output_dir_clips` for compat.
+### Added: separate output folders (raw, concatenated, assembled)
 
 ---
 
 ## [v53]
-### Fixed
-- `noSpectatorUi`: now injects `hideSpectatorUi` + extraArgs `+cl_draw_only_deathnotices 1` for all CSDM version compatibility.
 
-### Changed
-- Tags tab moved between Capture and Video.
-- "By config" now requires a selected tag.
-- Grey colors (MUTED/DESC_COLOR) brightened for contrast on dark background.
-- Automatic versioning: each change increments the version.
+### Fixed: `noSpectatorUi` injection; Tags tab moved; grey colours brightened
 
 ---
 
 ## [v47]
-### Added
-- "🔍 By config" restored: full preview (player + events + weapons + dates) in Tags listbox, directly taggable.
-- "📅" separated: finds the most recent demo among selected tags, proposes setting `date_from` to the next day.
-- `_tag_search_last_tagged` uses selected tags (multi-tag).
+
+### Added: "🔍 By config" restored; "📅" separated
 
 ---
 
 ## [v46]
-### Changed
-- Moved "Concatenate sequences" to FINAL ASSEMBLY section.
+
+### Changed: "Concatenate sequences" moved to FINAL ASSEMBLY
 
 ---
 
 ## [v45]
-### Changed
-- Tags operations output to console (removed inline status labels).
-- Window size: 1600×900.
-- Tags tab width fixed.
+
+### Changed: Tags output to console; window size 1600×900
 
 ---
 
 ## [v44]
-### Added
-- Unicode weapon icons per category (`WEAPON_ICONS`).
-- Hover tooltips (`Tooltip` class + `add_tip`) replace inline `desc_label`s.
 
-### Changed
-- X-Ray moved to IN-GAME OPTIONS (Video tab).
-- AUTO TAG moved to Tags tab, multi-tags via active selection.
-- `noSpectatorUi` → `hideSpectatorUi` in hlaeOptions.
+### Added: weapon icons; hover tooltips; auto-tag multi-tags; X-Ray in Video tab
 
 ---
 
 ## [v43]
-### Added
-- CS2 window mode (None / Fullscreen / Windowed / Borderless) in RESOLUTION & FRAMERATE, injected in extraArgs.
-- Option "Minimize CS2 on launch" (requires optional pywin32).
-- `_start_cs2_minimize_watcher()`: CS2 window monitoring thread.
+
+### Added: CS2 window mode; Minimize CS2 on launch; CS2 monitoring thread
 
 ---
 
 ## [v42]
-### Added
-- "Since last tag" → button "📅 By config" + separate "📅" button.
-- `_show_preview()` extracted as reusable method.
 
-### Fixed
-- Already-tagged demos dialog: Yes = include, No = ignore, Cancel = filtered preview.
-
-### Changed
-- Startup without `iconify()`.
+### Added: "Since last tag" / "📅 By config"; already-tagged demos dialog
 
 ---
 
-## [v41] *(UI compact refactor)*
-### Changed
-- Capture tab condensed: options on horizontal rows, Timing + Order merged, Date filter on a single row, reduced padding.
-- Tags tab condensed: buttons on a single bar, listbox height = 7.
+## [v41]
 
-### Added
-- `_tag_search_last_tagged`: finds tagged demos, proposes `date_from + 1d`.
+### Changed: Capture tab condensed; `_tag_search_last_tagged`
 
 ---
 
 ## [v40]
-### Fixed
-- **Workshop map download blocking**: added "Accept Workshop downloads automatically" checkbox in HLAE section (Video tab). When enabled, injects `+cl_downloadfilter all` into `hlaeOptions.extraArgs` so CS2 silently downloads outdated Workshop map versions without interrupting the batch.
+
+### Fixed: Workshop map download blocking — auto-accept checkbox
 
 ---
 
 ## [v39]
-### Added
-- **Kill modifiers section** in Capture tab (OR logic — at least one must match per kill):
-  - Smoke: `is_through_smoke`
-  - No-scope: `is_no_scope`
-  - Wallbang: `is_wall_bang` / `penetrated_objects > 0`
-  - Airborne: `is_airborne`
-  - Flash-assisted (blind): `is_assisted_flash`
-  - Collateral: `is_collateral`
-  - If no modifier is checked, no filter is applied (all kills pass).
-  - Graceful fallback: warns in log when a column is not found in DB, skips that modifier only.
-- **`hchk` helper**: highlighted checkbox — ORANGE2 background + white text when checked, neutral when unchecked. Applied to all checkboxes: weapons, modifiers, in-game options, HLAE options, assembly, etc.
 
-### Changed
-- Workshop download note in HLAE section updated to direct user to Steam Launch Options (prior to v40).
+### Added: Kill modifiers section (Smoke, No-scope, Wallbang, Airborne, Flash-assisted, Collateral); `hchk` helper
 
 ---
 
 ## [v38]
-### Added
-- **Preset encodage (CPU)**: combo `ultrafast → veryslow` in Codec Vidéo section. Auto-injected as `-preset <value>` into `ffmpegSettings.outputParameters` for CPU codecs (`libx264`, `libx265`, `libsvtav1`, etc.). No effect on GPU codecs (NVENC/AMF). Not injected if `-preset` already present in manual params.
-- **Teamkills — 3rd state "Teamkills only"**: replaces include/exclude checkbox. Radio group with Inclure / Exclure / Teamkills seuls. Injects `AND killer_team = victim_team` in SQL. Correctly sets both `include_teamkills` + `teamkills_only` booleans.
-- **Reorder saved players**: ▲▼ buttons on each saved player row. Swaps immediately and persists to `csdm_players.json`. Buttons at extremes are disabled.
-- **Tag color swatch on inactive tags**: colored square (border = tag color, fill = neutral background) always visible left of tag name. Fills completely when tag is active.
-- **Assembly encoding clarification**: description now explicitly states video is copied without re-encoding (`-c:v copy`) and only audio is re-encoded (AAC) for drift correction.
 
-### Fixed
-- **Preset section in Outils tab**: was re-packing the BDD section instead of creating a new `Sec`. Now uses correct `sec_pre` / `sec_load` references.
-- **Preset radio buttons**: were all on a single horizontal line causing overflow. Now each radio is on its own line (`anchor="w"`), name field expands to full width.
+### Added: Encoding preset (CPU); Teamkills 3-state; reorder saved players; tag colour swatch
 
 ---
 
 ## [v37]
-### Fixed
-- **Presets section misplaced in Outils tab**: `sec.pack(fill="x", ...)` at line 2910 was re-packing the PostgreSQL section. Fixed by using a properly named `sec_pre` variable.
-- **Preset type radio buttons overflowing**: were packed `side="left"` on a single row. Now stacked vertically (`anchor="w"`).
+
+### Fixed: presets section misplaced; preset radio buttons overflowing
 
 ---
 
 ## [v36]
-### Fixed
-- **`showKill` logic corrected for victim/spec perspectives**: previously only `sid` had `showKill: True`, so death notices for filmed victims did not appear. Now:
-  - Killer mode: `showKill` on `sid` only.
-  - Victim mode: `showKill` on all killers in the sequence so their death notices render.
-  - Spec mode: `showKill` on all involved players.
-  - `highlightKill` always only on `sid`.
+
+### Fixed: `showKill` logic for victim/spec perspectives
 
 ---
 
 ## [v35]
-### Fixed
-- **POV Victim camera not applied**: three distinct bugs:
-  1. `_cam_sid_for_event` in victim mode returned `victim_sid` for both kill and death events. Now: `death` event → film `sid` (the active player is the victim); `kill` event → film `victim_sid`.
-  2. `playerName` was always `""` in `playerCameras`. Now resolved from `_player_names` for every target SID.
-  3. All `victim_sid` from sequence events are now explicitly added to `playersOptions` in victim mode so CSDM recognizes the player even if no camera tick points to them directly.
+
+### Fixed: POV Victim camera — three distinct bugs
 
 ---
 
 ## [v34]
-### Added
-- **Weapon categories reorganized**:
-  - `Couteaux` (Knives): split from Equipement, includes all skin variants.
-  - `Grenades (Effet)`: HE, incendiary, molotov, inferno, zeus, decoy (explodes at end).
-  - `Grenades (Collision)`: flashbang, smoke, HE, incendiary, molotov, decoy — all grenades that can kill by direct projectile impact before detonation.
-  - `C4 / World`: C4, world damage, suicide, world_entity.
-  - Old `Equipement` category removed.
-- **`DELAYED_EFFECT_WEAPONS` constant**: set of weapon names for which `death_tick` should be used instead of `killer_tick` (HE, molotov, inferno, incendiary).
-- **`victim_death_tick` column detection**: `_query_events` now searches for `victim_death_tick` / `death_tick` / `killed_tick` in kills table. When found and weapon is in `DELAYED_EFFECT_WEAPONS`, uses death tick as event tick instead of throw tick — fixes clips where victim had not yet died at the recorded tick.
-- **Deaths by equipment clarified**: note added in UI explaining that `Deaths` + weapon filter = deaths of active players caused by that equipment specifically.
 
-### Fixed
-- **`decoy` missing from Grenades (Effet)**: decoy explosion can kill; `weapon_name` in DB is `"decoy"` — now included.
+### Added: weapon categories reorganised; `DELAYED_EFFECT_WEAPONS`; `victim_death_tick` detection
 
 ---
 
 ## [v33]
-### Fixed
-- **`mkv` container rejected by FFmpeg**: `-f mkv` is not a valid FFmpeg format name. Added `_FMT_MAP = {"mkv": "matroska", ...}` to translate container names to FFmpeg format strings.
-- **`#` in output filename crashing FFmpeg**: `#` is interpreted as a sequence marker on the command line. When filename contains `#`, `%`, `?`, or `*`, assembly now writes to a temp file (`_csdm_tmp_<hex>.mp4`) and renames after success.
-- **`-movflags +faststart` on mkv/avi**: this flag is MP4/MOV-specific. Now only applied when container is `mp4` or `mov`.
+
+### Fixed: mkv container; `#` in filename; `-movflags` on mkv/avi
 
 ---
 
 ## [v32]
-### Fixed
-- **DB status header showing raw debug info**: `jt=checksum_tags(checksum,tag_id) col_date:analyze_date(timestamp with time zone)` was displayed in the header status label. Now shows only `OK — N joueurs, N tags`. If date column is undetected, a warning goes to the log only.
+
+### Fixed: DB status header showing raw debug info
 
 ---
 
 ## [v31]
-### Changed
-- **Tab reorganization** (5 tabs → 4 tabs):
-  - `Config` + `BDD` + `Presets` → `Capturer` + `Outils`
-  - `Capturer`: player, events, timing, order, date filter, weapons, auto-tag.
-  - `Outils`: CHEMINS + PostgreSQL connection + Presets.
-  - `Vidéo` and `Tags` unchanged.
-- **`CHEMINS` section moved** from `Capturer` to `Outils` (logical grouping with other infrastructure settings).
 
-### Fixed
-- **Active player state not restored on startup**: `PlayerSearchWidget.__init__` activated all saved accounts by default, ignoring the `steam_ids` list saved in config. Now reads `steam_ids` from config after UI build and applies exactly that set.
-- **`_apply_config` additive SIDs**: loading a preset was adding SIDs instead of replacing. Now clears `_active_sids` before applying preset `steam_ids`.
-
-### Removed
-- **"Vérifier un tag en BDD" section**: removed from Tags tab (redundant). Method `_verify_tag_in_db` deleted.
+### Changed: 5 tabs → 4 tabs; active player state restored on startup
 
 ---
 
 ## [v30]
-### Fixed
-- **Assembly audio/video drift**: clips produced with HLAE have a `start: -0.025057` audio timestamp. `-c copy` accumulated this offset across 100+ clips (~3s drift). Assembly now uses:
-  - `-fflags +genpts`: recomputes negative/missing PTS at input.
-  - `-c:v copy`: video copied without re-encoding.
-  - `-c:a aac -af aresample=async=1000`: audio re-encoded lightly to resync against video timeline.
-  - `-movflags +faststart`: fast seek in final mp4.
+
+### Fixed: assembly audio/video drift
 
 ---
 
 ## [v29]
-### Fixed
-- **No audio in clips**: sequences were missing `"recordAudio": true` and `"playerVoicesEnabled": true` fields — CSDM simply did not record audio when these were absent. Identified by comparing against CSDM's own JSON export. Also added `"showXRay": true` and `"showAssists": false` which were missing.
-- **Already-tagged demos dialog**: before batch start, if auto-tag is enabled, queries DB for demos already having the target tag. If any found, shows dialog listing them: Yes = skip, No = include anyway. One dialog for entire batch.
+
+### Fixed: no audio in clips — missing `recordAudio`/`playerVoicesEnabled` fields
 
 ---
 
 ## [v28]
-### Added
-- **X-Ray option**: checkbox in Capture tab → `showXRay` in each sequence JSON.
 
-### Fixed
-- **Assembly output filename without extension**: extension was added before resolving absolute path, so `"H:\...\MyFilm"` (already absolute, no extension) was not corrected. Extension is now added after path resolution.
-- **Saved assembly names**: replaced hardcoded "quick titles" list with a personal saved-names system. Names persist in `csdm_asm_names.json`. "Save current name" button adds the current field value; click to restore; ✕ to delete.
+### Added: X-Ray option; saved assembly names
 
 ---
 
 ## [v27]
-### Fixed
-- **`snd_mute_losefocus` hypothesis retracted**: the real audio bug was missing `recordAudio: true` / `playerVoicesEnabled: true` in sequences (fixed in v29). The `-mirv_exec` injection added in this version was removed.
+
+> `snd_mute_losefocus` hypothesis retracted. Real fix in v29.
 
 ---
 
 ## [v26]
-### Changed
-- **Version bump** from v25 to v26 in title, header label, and docstring.
-- `PlayerSearchWidget` docstring updated to reflect multi-select behavior.
+
+### Changed: version bump; `PlayerSearchWidget` docstring
 
 ---
 
 ## [v6]
-### Changed
-- **Weapons loaded from DB**: `WEAPONS` hardcoded list removed. On connect, `SELECT DISTINCT weapon_name FROM kills` populates the weapons grid dynamically — no missing weapons regardless of game version or custom content.
-- **`_build_weapons_grid(weapons)`** added: rebuilds the checkbutton grid after DB load; preserves saved selections from config; displays a count label (`N armes chargées`).
 
-### Fixed
-- **Weapons grid not appearing**: `pack(before=hidden_widget)` silently failed. Grid now packs normally after the status label.
+### Changed: weapons loaded from DB dynamically
 
 ---
 
 ## [v5]
-### Fixed
-- **`column m.date does not exist`**: `date` is a reserved word in PostgreSQL and cannot be used unquoted as a column name. The column name is now discovered at connect time via `information_schema.columns` (first `date`/`timestamp` column in `matches`) and injected quoted (e.g. `"date"`) into every query. If no date column is found, date filters are silently skipped instead of crashing.
+
+### Fixed: `column m.date does not exist` — PostgreSQL reserved word, quoted at runtime
 
 ---
 
 ## [v4]
-### Added
-- **Connexion BDD au démarrage**: connects to PostgreSQL automatically on launch; loads all players into `PlayerSearchWidget` without user action.
-- **`PlayerSearchWidget`**: replaces the dropdown — text field + filtered listbox. Typing any substring of name or Steam ID narrows the list in real time. Restores last selected player from config on startup.
-- **Config auto-save** (`csdm_config.json`, same directory as script): all fields written to disk every 5 seconds via `_auto_save_loop`. Restored on next launch — no re-entry needed.
-- **`DEFAULT_CONFIG` / `load_config` / `save_config`** helpers: merge saved config over defaults so new keys added in future versions are always present.
 
-### Changed
-- **3-tab layout**: `Configuration` / `Base de données` / `Exécuter`. DB credentials moved to their own tab; `Base de données` tab shows connection status and explains the query logic.
-- **Player selection**: SteamID field removed — player chosen from BDD-loaded list; Steam ID shown read-only below the list.
+### Added: auto-connect on startup; `PlayerSearchWidget`; config auto-save; 3-tab layout
 
 ---
 
 ## [v3]
-### Fixed
-- **`TclError: bad screen distance "0 16"`**: `pady=(0, 16)` passed to `tk.Frame()` constructor — tkinter Frames only accept scalar padding in the constructor; tuple padding must be passed to `.pack()`. Moved to `log_wrap.pack(pady=(0, 16))`.
-- **`TclError: unknown option "-placeholder_text"`**: `placeholder_text` is not a valid tkinter `Entry` option. Removed; hint text moved to a `Label` below the field.
+
+### Fixed: two `TclError` crashes on startup
 
 ---
 
 ## [v2]
-### Added
-- **tkinter GUI**: full graphical interface replacing the bare Python script — path fields with `...` browse buttons, event checkboxes, before/after sliders, date fields, weapon tag-buttons, encoder radio buttons, live log pane with color tags, STOP button.
-- **Batch loop with thread**: `_worker` runs in a `daemon` thread; UI stays responsive. Progress label updated per demo (`i/total`).
-- **Validation on launch**: checks for missing CSDM path, missing demos folder, empty Steam ID, no event selected before starting.
+
+### Added: tkinter GUI; batch loop in daemon thread; launch validation
 
 ---
 
 ## [v1]
-### Added
-- **Initial CLI batch script**: loops over all `.dem` files in a folder and calls `csdm video <demo> --mode player …` for each. Hardcoded config block at top of file (paths, Steam ID, event type, timing, encoder). Summary printed at end (`✓ Réussi / ✗ Échec`).
+
+### Added: initial CLI batch script
