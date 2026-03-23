@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v157"""
+"""CSDM Batch Clips Generator v158"""
 
 
 import tkinter as tk
@@ -21,7 +21,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v157"
+APP_VERSION = "v158"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -153,6 +153,18 @@ def _apply_theme_globals(bg_name: str, accent: str):
 FONT_MONO = ("Consolas", 10)
 FONT_SM = ("Consolas", 9)
 FONT_DESC = ("Consolas", 8)
+
+# ── UI spacing constants — single source of truth ───────────────────────────
+#  All padx / pady / ipadx / ipady values that appear in more than one place
+#  are derived from these. Change here → changes everywhere.
+UI_TAB_PAD    = 10   # outer padding of scrollable tab inner frame (top/bottom/left/right)
+UI_SEC_PADX   = 14   # horizontal body padding inside every Sec card
+UI_SEC_PADY   = 8    # vertical body padding inside every Sec card
+UI_SEC_GAP    = 6    # vertical gap between consecutive Sec cards
+UI_ROW_PAD    = 4    # standard vertical gap between rows inside a section
+UI_BTN_IPADX  = 8    # standard horizontal inner padding for action buttons
+UI_BTN_IPADY  = 4    # standard vertical inner padding for action buttons
+UI_ENTRY_IPAD = 6    # inner padding for text Entry fields
 
 # Shared kwargs for flat checkbox/radio widgets
 _CHK_KW = dict(font=FONT_SM, bg=BG2, fg=MUTED, activebackground=BG2,
@@ -1534,11 +1546,116 @@ class ScrollableFrame(tk.Frame):
         except Exception:
             pass
 
-class Sec(tk.LabelFrame):
-    def __init__(self, parent, title, **kw):
-        super().__init__(parent, text=f"  {title}  ", bg=BG2, fg=ORANGE,
-                         font=("Consolas", 9, "bold"), relief="flat", bd=1,
-                         highlightthickness=1, highlightbackground=BORDER, padx=14, pady=10, **kw)
+class Sec(tk.Frame):
+    """Collapsible section card — drop-in replacement for the old LabelFrame Sec.
+
+    Children packed/gridded into a Sec instance go into the body (content area).
+    The header with toggle arrow is a sibling frame managed internally.
+
+    Usage is identical to the old Sec:
+        sec = Sec(parent, "MY SECTION")
+        sec.pack(fill="x")
+        tk.Label(sec, text="hello").pack()   # goes into the body, correct
+    """
+
+    def __init__(self, parent, title, collapsed=False, **kw):
+        # _wrapper holds the header + this body frame
+        self._wrapper = tk.Frame(parent, bg=_t("BG"), bd=0)
+
+        # ── Header ────────────────────────────────────────────────────────────
+        self._hdr = tk.Frame(self._wrapper, bg=_t("BG2"), cursor="hand2")
+        self._hdr.pack(fill="x")
+
+        self._stripe = tk.Frame(self._hdr, width=3, bg=_t("ORANGE"))
+        self._stripe.pack(side="left", fill="y")
+
+        self._arrow = tk.Label(self._hdr, text="▾",
+                               font=("Consolas", 9, "bold"),
+                               bg=_t("BG2"), fg=_t("ORANGE"),
+                               padx=UI_SEC_PADX // 2, pady=5)
+        self._arrow.pack(side="left")
+
+        self._title_lbl = tk.Label(self._hdr, text=title.upper(),
+                                   font=("Consolas", 9, "bold"),
+                                   bg=_t("BG2"), fg=_t("ORANGE"),
+                                   anchor="w", pady=5)
+        self._title_lbl.pack(side="left", fill="x", expand=True)
+
+        self._sep = tk.Frame(self._wrapper, height=1, bg=_t("BORDER"))
+        self._sep.pack(fill="x")
+
+        # ── Body = this Frame ─────────────────────────────────────────────────
+        kw.setdefault("bg", _t("BG2"))
+        kw.setdefault("padx", UI_SEC_PADX)
+        kw.setdefault("pady", UI_SEC_PADY)
+        super().__init__(self._wrapper, **kw)
+        tk.Frame.pack(self, fill="x")   # pack body into wrapper
+
+        self._open = not collapsed
+        self._title = title
+
+        # Bind header click to toggle
+        for w in (self._hdr, self._arrow, self._title_lbl, self._stripe):
+            w.bind("<Button-1>", self._toggle)
+
+        if collapsed:
+            self._collapse_now()
+
+    # ── Pack / grid / place — proxy to wrapper ────────────────────────────────
+
+    def pack(self, **kw):
+        kw.setdefault("pady", (0, UI_SEC_GAP))
+        self._wrapper.pack(**kw)
+
+    def pack_forget(self):
+        self._wrapper.pack_forget()
+
+    def grid(self, **kw):
+        self._wrapper.grid(**kw)
+
+    def grid_forget(self):
+        self._wrapper.grid_forget()
+
+    def place(self, **kw):
+        self._wrapper.place(**kw)
+
+    # ── Collapse / expand ─────────────────────────────────────────────────────
+
+    def _toggle(self, *_):
+        if self._open:
+            self._collapse_now()
+        else:
+            self._expand_now()
+
+    def _collapse_now(self):
+        self._open = False
+        self._arrow.config(text="▸")
+        self._sep.pack_forget()
+        tk.Frame.pack_forget(self)
+
+    def _expand_now(self):
+        self._open = True
+        self._arrow.config(text="▾")
+        self._sep.pack(fill="x")
+        tk.Frame.pack(self, fill="x")
+
+    # ── Theme update ──────────────────────────────────────────────────────────
+
+    def apply_theme(self):
+        try: self._wrapper.config(bg=_t("BG"))
+        except Exception: pass
+        try: self._hdr.config(bg=_t("BG2"))
+        except Exception: pass
+        try: self._stripe.config(bg=_t("ORANGE"))
+        except Exception: pass
+        try: self._arrow.config(bg=_t("BG2"), fg=_t("ORANGE"))
+        except Exception: pass
+        try: self._title_lbl.config(bg=_t("BG2"), fg=_t("ORANGE"))
+        except Exception: pass
+        try: self._sep.config(bg=_t("BORDER"))
+        except Exception: pass
+        try: self.config(bg=_t("BG2"))
+        except Exception: pass
 
 class PathField(tk.Frame):
     def __init__(self, parent, label, desc, var, mode="file"):
@@ -1584,7 +1701,7 @@ def slabel(parent, text, **kw):
 
 def hchk(parent, text, var, **kw):
     cb_kw = dict(font=FONT_SM, relief="flat", bd=0, cursor="hand2",
-                 highlightthickness=0, padx=8, pady=3)
+                 highlightthickness=0, padx=10, pady=4)
     cb_kw.update(kw)
     cb = tk.Checkbutton(parent, text=text, variable=var, **cb_kw)
 
@@ -1605,7 +1722,7 @@ def hchk(parent, text, var, **kw):
 def hradio(parent, text, var, value, **kw):
     """Radiobutton with highlight when selected."""
     rb_kw = dict(font=FONT_SM, relief="flat", bd=0, cursor="hand2",
-                 highlightthickness=0, padx=8, pady=3)
+                 highlightthickness=0, padx=10, pady=4)
     rb_kw.update(kw)
     rb = tk.Radiobutton(parent, text=text, variable=var, value=value, **rb_kw)
 
@@ -2575,25 +2692,35 @@ class App(tk.Tk):
     #  UI
     # ═══════════════════════════════════════════════════
     def _build_ui(self):
-        hdr = tk.Frame(self, bg=BG)
-        hdr.pack(fill="x", padx=20, pady=(10, 6))
-        tk.Label(hdr, text=" >> ", font=("Consolas", 11, "bold"), bg=ORANGE2, fg="white",
-                 padx=6, pady=2).pack(side="left")
-        tk.Label(hdr, text="  CSDM ", font=("Consolas", 14, "bold"), bg=BG, fg=TEXT).pack(side="left")
-        tk.Label(hdr, text=f"Batch {APP_VERSION}", font=("Consolas", 14, "bold"), bg=BG, fg=ORANGE).pack(side="left")
+        # ── Top header bar ────────────────────────────────────────────────────
+        hdr = tk.Frame(self, bg=BG2)
+        hdr.pack(fill="x")
 
-        self._hdr_player_lbl = tk.Label(hdr, text="", font=FONT_SM, bg=BG, fg=MUTED)
-        self._hdr_player_lbl.pack(side="left", padx=(16, 0))
+        # Left accent stripe
+        tk.Frame(hdr, width=4, bg=ORANGE).pack(side="left", fill="y")
 
-        sf = tk.Frame(hdr, bg=BG)
-        sf.pack(side="right")
-        tk.Label(sf, text="DB: ", font=FONT_SM, bg=BG, fg=MUTED).pack(side="left")
-        self.db_status_lbl = tk.Label(sf, textvariable=self.db_status,
-                                      font=("Consolas", 9, "bold"), bg=BG, fg=YELLOW)
+        inner_hdr = tk.Frame(hdr, bg=BG2)
+        inner_hdr.pack(side="left", fill="x", expand=True, padx=(10, 10), pady=7)
+
+        tk.Label(inner_hdr, text="CSDM", font=("Consolas", 13, "bold"),
+                 bg=BG2, fg=TEXT).pack(side="left")
+        tk.Label(inner_hdr, text=f" Batch {APP_VERSION}", font=("Consolas", 13, "bold"),
+                 bg=BG2, fg=ORANGE).pack(side="left")
+
+        self._hdr_player_lbl = tk.Label(inner_hdr, text="", font=FONT_SM, bg=BG2, fg=MUTED)
+        self._hdr_player_lbl.pack(side="left", padx=(14, 0))
+
+        # Right side: DB status
+        db_area = tk.Frame(inner_hdr, bg=BG2)
+        db_area.pack(side="right")
+        tk.Label(db_area, text="DB ", font=FONT_DESC, bg=BG2, fg=MUTED).pack(side="left")
+        self.db_status_lbl = tk.Label(db_area, textvariable=self.db_status,
+                                      font=("Consolas", 9, "bold"), bg=BG2, fg=YELLOW)
         self.db_status_lbl.pack(side="left")
-        tk.Button(sf, text="↺", font=FONT_SM, bg=BG, fg=MUTED, relief="flat", bd=0,
-                  cursor="hand2", highlightthickness=0, activeforeground=ORANGE,
-                  command=self._connect_and_load).pack(side="left", padx=(6, 0))
+        tk.Button(db_area, text=" ↺ ", font=FONT_DESC, bg=BG2, fg=MUTED,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activeforeground=ORANGE,
+                  command=self._connect_and_load).pack(side="left", padx=(4, 0))
 
         tk.Frame(self, height=1, bg=BORDER).pack(fill="x")
 
@@ -2634,42 +2761,63 @@ class App(tk.Tk):
         right_frame.rowconfigure(1, weight=1)
         right_frame.columnconfigure(0, weight=1)
 
-        # Run bar (top of right panel)
-        run_bar = tk.Frame(right_frame, bg=BG2, pady=6)
+        # ── Run bar ───────────────────────────────────────────────────────────
+        run_bar = tk.Frame(right_frame, bg=BG2)
         run_bar.grid(row=0, column=0, sticky="ew")
 
+        # Top accent line on run bar
+        tk.Frame(run_bar, height=2, bg=ORANGE).pack(fill="x")
+
         ctrl = tk.Frame(run_bar, bg=BG2)
-        ctrl.pack(fill="x", padx=12)
+        ctrl.pack(fill="x", padx=10, pady=(6, 4))
 
-        self.run_btn = tk.Button(ctrl, text="  ▶  RUN  ", font=("Consolas", 10, "bold"),
-                                  bg=ORANGE, fg="white", relief="flat", cursor="hand2", bd=0,
-                                  highlightthickness=0, activebackground=ORANGE2,
-                                  command=self._run)
-        self.run_btn.pack(side="left", ipady=6, ipadx=4)
+        # Primary action buttons — RUN gets accent colour, others are muted
+        self.run_btn = tk.Button(
+            ctrl, text="▶  RUN", font=("Consolas", 10, "bold"),
+            bg=ORANGE, fg="white", relief="flat", cursor="hand2", bd=0,
+            highlightthickness=0, activebackground=ORANGE2, activeforeground="white",
+            command=self._run)
+        self.run_btn.pack(side="left", ipady=6, ipadx=12)
 
-        self.stop_btn = tk.Button(ctrl, text="  ⏸ STOP  ", font=("Consolas", 9, "bold"),
-                                   bg=BG3, fg=RED, relief="flat", cursor="hand2", bd=0,
-                                   state="disabled", command=self._stop_graceful)
-        self.stop_btn.pack(side="left", padx=(6, 0), ipady=6, ipadx=4)
+        tk.Frame(ctrl, width=1, bg=BORDER).pack(side="left", fill="y", padx=6)
 
-        self.kill_btn = tk.Button(ctrl, text="  ⛔ KILL  ", font=("Consolas", 9, "bold"),
-                                   bg=BG3, fg=RED, relief="flat", cursor="hand2", bd=0,
-                                   state="disabled", command=self._kill_now)
-        self.kill_btn.pack(side="left", padx=(6, 0), ipady=6, ipadx=4)
+        tk.Button(
+            ctrl, text="🔍 Preview", font=("Consolas", 9, "bold"), bg=BG3, fg=BLUE,
+            relief="flat", cursor="hand2", bd=0, highlightthickness=0,
+            activebackground=BORDER, activeforeground=BLUE,
+            command=self._dry_run).pack(side="left", ipady=5, ipadx=8)
 
-        tk.Button(ctrl, text="  🔍 Preview  ", font=("Consolas", 9, "bold"), bg=BG3, fg=BLUE,
-                  relief="flat", cursor="hand2", bd=0, highlightthickness=0,
-                  command=self._dry_run).pack(side="left", padx=(6, 0), ipady=6, ipadx=4)
+        tk.Frame(ctrl, width=1, bg=BORDER).pack(side="left", fill="y", padx=6)
 
-        tk.Label(ctrl, text="F5  F6  Esc", font=FONT_DESC, bg=BG2, fg=DESC_COLOR
-                 ).pack(side="left", padx=(12, 0))
+        self.stop_btn = tk.Button(
+            ctrl, text="⏸ Stop", font=("Consolas", 9, "bold"),
+            bg=BG3, fg=MUTED, relief="flat", cursor="hand2", bd=0,
+            state="disabled", highlightthickness=0,
+            activebackground=BORDER, activeforeground=RED,
+            command=self._stop_graceful)
+        self.stop_btn.pack(side="left", ipady=5, ipadx=8)
+
+        self.kill_btn = tk.Button(
+            ctrl, text="⛔ Kill", font=("Consolas", 9, "bold"),
+            bg=BG3, fg=MUTED, relief="flat", cursor="hand2", bd=0,
+            state="disabled", highlightthickness=0,
+            activebackground=BORDER, activeforeground=RED,
+            command=self._kill_now)
+        self.kill_btn.pack(side="left", padx=(4, 0), ipady=5, ipadx=8)
+
+        # Keyboard hint
+        tk.Label(ctrl, text="F5  F6  Esc", font=FONT_DESC,
+                 bg=BG2, fg=DESC_COLOR).pack(side="left", padx=(10, 0))
 
         self.progress_lbl = tk.Label(ctrl, text="", font=FONT_SM, bg=BG2, fg=MUTED)
         self.progress_lbl.pack(side="right")
 
-        self._summary_lbl = tk.Label(run_bar, text="", font=FONT_SM,
-                                     bg=BG2, fg=MUTED, anchor="w", pady=2)
-        self._summary_lbl.pack(fill="x", padx=12)
+        # Summary line below buttons
+        tk.Frame(run_bar, height=1, bg=BORDER).pack(fill="x")
+        self._summary_lbl = tk.Label(
+            run_bar, text="", font=FONT_SM, bg=BG2, fg=MUTED,
+            anchor="w", padx=10, pady=4)
+        self._summary_lbl.pack(fill="x")
 
         # Log
         log_frame = tk.Frame(right_frame, bg=BG)
@@ -2703,34 +2851,38 @@ class App(tk.Tk):
         parent.rowconfigure(2, weight=1)
         parent.columnconfigure(0, weight=1)
 
+        # Header row
         top = tk.Frame(parent, bg=BG2)
         top.grid(row=0, column=0, sticky="ew")
+        tk.Frame(top, width=3, bg=ORANGE).pack(side="left", fill="y")
 
-        tk.Label(top, text="LOG", font=("Consolas", 9, "bold"),
-                 fg=ORANGE, bg=BG2).pack(side="left", padx=(10, 0), pady=5)
+        inner_top = tk.Frame(top, bg=BG2)
+        inner_top.pack(side="left", fill="x", expand=True, padx=(8, 8), pady=4)
+
+        tk.Label(inner_top, text="LOG", font=("Consolas", 9, "bold"),
+                 fg=ORANGE, bg=BG2).pack(side="left")
 
         self._log_filter = tk.StringVar(value="All")
-        filter_frame = tk.Frame(top, bg=BG2)
+        filter_frame = tk.Frame(inner_top, bg=BG2)
         filter_frame.pack(side="left", padx=(10, 0))
         for lvl, col in [("All", TEXT), ("OK", GREEN), ("Err", RED), ("Warn", YELLOW), ("Info", ORANGE)]:
             tk.Radiobutton(filter_frame, text=lvl, variable=self._log_filter, value=lvl,
                            **{**_CHK_KW, "font": FONT_DESC, "fg": col, "activeforeground": col},
-                           command=self._apply_log_filter).pack(side="left", padx=(0, 4))
+                           command=self._apply_log_filter).pack(side="left", padx=(0, 2))
 
         self._log_autoscroll = tk.BooleanVar(value=True)
-        tk.Checkbutton(top, text="↓auto", variable=self._log_autoscroll,
-                       **{**_CHK_KW, "font": FONT_DESC}).pack(side="right", padx=(0, 8))
+        tk.Checkbutton(inner_top, text="↓", variable=self._log_autoscroll,
+                       **{**_CHK_KW, "font": FONT_DESC}).pack(side="right")
         self._log_badges_btn = tk.Button(
-            top, text="Badges: ON", font=FONT_DESC, bg=BG3, fg=GREEN,
+            inner_top, text="Badges", font=FONT_DESC, bg=BG3, fg=GREEN,
             relief="flat", bd=0, cursor="hand2",
             activebackground=BORDER, activeforeground=ORANGE,
-            highlightthickness=0, command=self._toggle_log_badges
-        )
-        self._log_badges_btn.pack(side="right", padx=(0, 8), pady=3, ipady=2, ipadx=4)
+            highlightthickness=0, command=self._toggle_log_badges)
+        self._log_badges_btn.pack(side="right", padx=(0, 4), ipady=2, ipadx=4)
         add_tip(self._log_badges_btn,
-                "Toggle inline clip badges in log entries.\n"
-                "Keyboard: Ctrl+B")
+                "Toggle inline clip badges in log entries.\nKeyboard: Ctrl+B")
 
+        # Toolbar row
         btn_bar = tk.Frame(parent, bg=BG3)
         btn_bar.grid(row=1, column=0, sticky="ew")
 
@@ -2941,7 +3093,7 @@ class App(tk.Tk):
         sf = ScrollableFrame(parent, bg=BG)
         sf.pack(fill="both", expand=True)
         p = sf.inner
-        p.configure(padx=20, pady=16)
+        p.configure(padx=0, pady=UI_TAB_PAD)
         p.columnconfigure(0, weight=1)
         return p
 
@@ -2951,12 +3103,12 @@ class App(tk.Tk):
         self._must_widgets: dict = {"mods": [], "dp2": [], "db": []}
 
         sec = Sec(p, "PLAYER")
-        sec.pack(fill="x", pady=(0, 10))
+        sec.pack(fill="x")
         self.player_search = PlayerSearchWidget(sec, on_change=self._on_player_change)
         self.player_search.pack(fill="x")
 
         sec = Sec(p, "CAPTURE & TIMING")
-        sec.pack(fill="x", pady=(0, 10))
+        sec.pack(fill="x")
 
         ev_row = tk.Frame(sec, bg=BG2)
         ev_row.pack(fill="x")
@@ -3080,7 +3232,7 @@ class App(tk.Tk):
 
         # ══════════════════════════════════════════════════════════════════════
         sec = Sec(p, "KILL FILTERS")
-        sec.pack(fill="x", pady=(0, 10))
+        sec.pack(fill="x")
 
         # ── SUICIDES / TK / HS ───────────────────────────────────────────────
         tk_row = tk.Frame(sec, bg=BG2)
@@ -3306,7 +3458,7 @@ class App(tk.Tk):
 
 
         sec = Sec(p, "DEMO SELECTION")
-        sec.pack(fill="x", pady=(0, 6))
+        sec.pack(fill="x")
 
         # ── Date range row ────────────────────────────────────────────────────
         dr1 = tk.Frame(sec, bg=BG2)
@@ -3436,7 +3588,7 @@ class App(tk.Tk):
         self._demo_picker_state: dict = {}
 
         self._sec_w = Sec(p, "WEAPON FILTER  (empty = all)")
-        self._sec_w.pack(fill="x", pady=(0, 6))
+        self._sec_w.pack(fill="x")
         self._wg_lbl = tk.Label(self._sec_w, text="Waiting for DB…", font=FONT_DESC, fg=MUTED, bg=BG2)
         self._wg_lbl.pack(anchor="w")
         self._wg_frame = None
@@ -3675,7 +3827,7 @@ class App(tk.Tk):
         p = self._make_tab_scroll(parent)
 
         sec = Sec(p, "RECORDING SYSTEM")
-        sec.pack(fill="x", pady=(0, 12))
+        sec.pack(fill="x")
         rg = tk.Frame(sec, bg=BG2)
         rg.pack(fill="x")
         rg.columnconfigure(0, weight=1)
@@ -3699,7 +3851,7 @@ class App(tk.Tk):
             desc_label(f, tip).pack(anchor="w", pady=(4, 0))
 
         sec = Sec(p, "RESOLUTION & FRAMERATE")
-        sec.pack(fill="x", pady=(0, 10))
+        sec.pack(fill="x")
 
         # ── Row 1: Definition + Ratio + Custom ───────────────────────────────
         top_row = tk.Frame(sec, bg=BG2)
@@ -3763,7 +3915,7 @@ class App(tk.Tk):
         scombo(fps_frm, self.v["framerate"], FRAMERATES, 6).pack(anchor="w", pady=(4, 0))
 
         sec = Sec(p, "VIDEO CODEC")
-        sec.pack(fill="x", pady=(0, 10))
+        sec.pack(fill="x")
         vc = tk.Frame(sec, bg=BG2)
         vc.pack(fill="x", pady=(4, 0))
         mlabel(vc, "Codec:").pack(side="left")
@@ -3792,7 +3944,7 @@ class App(tk.Tk):
         scombo(ct, self.v["video_container"], VIDEO_CONTAINERS, 8).pack(side="left", padx=(6, 0))
 
         sec = Sec(p, "AUDIO CODEC")
-        sec.pack(fill="x", pady=(0, 10))
+        sec.pack(fill="x")
         ac = tk.Frame(sec, bg=BG2)
         ac.pack(fill="x")
         mlabel(ac, "Codec:").pack(side="left")
@@ -3806,7 +3958,7 @@ class App(tk.Tk):
         self._on_acodec()
 
         sec = Sec(p, "ADVANCED FFMPEG PARAMS")
-        sec.pack(fill="x", pady=(0, 10))
+        sec.pack(fill="x")
         for lbl, key in [("Input :", "ffmpeg_input_params"), ("Output :", "ffmpeg_output_params")]:
             row = tk.Frame(sec, bg=BG2)
             row.pack(fill="x", pady=(4, 0))
@@ -3814,7 +3966,7 @@ class App(tk.Tk):
             sentry(row, self.v[key]).pack(side="left", fill="x", expand=True, ipady=4)
 
         sec = Sec(p, "IN-GAME OPTIONS")
-        sec.pack(fill="x", pady=(0, 10))
+        sec.pack(fill="x")
         for txt, key, tip in [
             ("TrueView",            "true_view",               "Client perspective (recommended) — FPS render instead of spectator camera."),
             ("Death notices only", "show_only_death_notices", "Show only death notices on screen."),
@@ -3831,7 +3983,7 @@ class App(tk.Tk):
         sentry(dr, self.v["death_notices_duration"], width=4).pack(side="left", padx=(6, 0), ipady=4)
 
         sec_asm = Sec(p, "FINAL ASSEMBLY")
-        sec_asm.pack(fill="x", pady=(0, 10))
+        sec_asm.pack(fill="x")
         _asm_cb1 = hchk(sec_asm, "Assemble all clips at the end",
              self.v["assemble_after"])
         _asm_cb1.pack(anchor="w", pady=(4, 2))
@@ -3887,7 +4039,7 @@ class App(tk.Tk):
         self._refresh_asm_names()
 
         self._hlae_sec = Sec(p, "⚡ HLAE OPTIONS  —  HLAE mode only")
-        self._hlae_sec.pack(fill="x", pady=(0, 10))
+        self._hlae_sec.pack(fill="x")
         desc_label(self._hlae_sec,
                    "Passed to HLAE via CSDM. Not available in CS recording mode.\n"
                    "ℹ Audio captured directly by HLAE (bypasses Windows mixer).\n"
@@ -3955,7 +4107,7 @@ class App(tk.Tk):
 
         # ── CS2 EFFECTS (available in both modes) ────────────────────────────
         self._cs2_sec = Sec(p, "🎮 CS2 EFFECTS  —  both HLAE and CS modes")
-        self._cs2_sec.pack(fill="x", pady=(0, 10))
+        self._cs2_sec.pack(fill="x")
         desc_label(self._cs2_sec,
                    "Vanilla CS2 commands shared by both recording modes.\n"
                    "HLAE: injected via extraArgs | CS: injected via autoexec + runtime cfg.").pack(fill="x")
@@ -4196,7 +4348,7 @@ class App(tk.Tk):
                 return
             is_hlae = recsys == "HLAE"
             if is_hlae:
-                self._hlae_sec.pack(fill="x", pady=(0, 10))
+                self._hlae_sec.pack(fill="x")
             else:
                 self._hlae_sec.pack_forget()
             # CS2 EFFECTS section is always visible (both modes)
@@ -5515,7 +5667,7 @@ class App(tk.Tk):
         p = self._make_tab_scroll(parent)
 
         sec = Sec(p, "🏷 TAGS  —  click to select/deselect")
-        sec.pack(fill="x", pady=(0, 10))
+        sec.pack(fill="x")
 
         self._tags_active = set()   # IDs of currently selected tags
 
@@ -5563,7 +5715,7 @@ class App(tk.Tk):
 
         # ── TAG DATE RANGE ──────────────────────────────
         sec_plage = Sec(p, "📅 TAG RANGE")
-        sec_plage.pack(fill="x", pady=(0, 6))
+        sec_plage.pack(fill="x")
         desc_label(sec_plage,
                    "Calculates the first and last demo with the selected tags, "
                    "and suggests applying these dates as a filter in Capture.").pack(fill="x")
@@ -5621,7 +5773,7 @@ class App(tk.Tk):
 
         # ── OPERATIONS ──────────────────────────────────
         sec2 = Sec(p, "OPERATIONS")
-        sec2.pack(fill="x", pady=(0, 6))
+        sec2.pack(fill="x")
 
         row1 = tk.Frame(sec2, bg=BG2)
         row1.pack(fill="x", pady=(4, 0))
@@ -6340,6 +6492,13 @@ class App(tk.Tk):
         def _walk(widget):
             if id(widget) in exclude_ids:
                 return  # skip — fixed-colour widget (e.g. accent preset buttons)
+            # Sec instances have an apply_theme() method that handles their
+            # internal header/stripe/separator colours explicitly
+            if isinstance(widget, Sec):
+                try:
+                    widget.apply_theme()
+                except Exception:
+                    pass
             try:
                 for prop in _COLOUR_PROPS:
                     try:
@@ -6364,7 +6523,7 @@ class App(tk.Tk):
         p = self._make_tab_scroll(parent)
 
         sec = Sec(p, "PATHS")
-        sec.pack(fill="x", pady=(0, 10))
+        sec.pack(fill="x")
         PathField(sec, "CSDM Executable", "csdm.CMD or csdm.exe",
                   self.v["csdm_exe"], "file").pack(fill="x", pady=4)
         _pf_cfg = PathField(sec, "CS2 cfg folder",
@@ -6397,7 +6556,7 @@ class App(tk.Tk):
         add_tip(_sub_cb, "Creates a folder per demo in the raw clips folder.")
 
         sec = Sec(p, "UI THEME")
-        sec.pack(fill="x", pady=(0, 12))
+        sec.pack(fill="x")
 
         # ── Background row ────────────────────────────────────────────────────
         bg_row = tk.Frame(sec, bg=BG2)
@@ -6468,7 +6627,7 @@ class App(tk.Tk):
         add_tip(self._theme_preview_lbl, "Current accent colour preview.")
 
         sec = Sec(p, "UI LAYOUT")
-        sec.pack(fill="x", pady=(0, 12))
+        sec.pack(fill="x")
         row = tk.Frame(sec, bg=BG2)
         row.pack(fill="x", pady=(6, 0))
         mlabel(row, "Window").pack(side="left")
@@ -6497,7 +6656,7 @@ class App(tk.Tk):
         add_tip(_rem, "When enabled, manual window resize and splitter moves are saved automatically.")
 
         sec = Sec(p, "POSTGRESQL CONNECTION")
-        sec.pack(fill="x", pady=(0, 12))
+        sec.pack(fill="x")
         pg = tk.Frame(sec, bg=BG2)
         pg.pack(fill="x", pady=(6, 0))
         for i in range(5):
@@ -6520,7 +6679,7 @@ class App(tk.Tk):
                  fg=YELLOW).pack(side="left", padx=(12, 0))
 
         sec_perf = Sec(p, "PERFORMANCE")
-        sec_perf.pack(fill="x", pady=(0, 10))
+        sec_perf.pack(fill="x")
 
         dp2_row = tk.Frame(sec_perf, bg=BG2)
         dp2_row.pack(fill="x", pady=(6, 0))
@@ -6545,7 +6704,7 @@ class App(tk.Tk):
                 "Recommended: 2–4.  Set to 1 to disable parallelism.")
 
         sec_pre = Sec(p, "SAVE A PRESET")
-        sec_pre.pack(fill="x", pady=(0, 10))
+        sec_pre.pack(fill="x")
 
         self._preset_name_var = tk.StringVar()
         nr = tk.Frame(sec_pre, bg=BG2)
@@ -6566,7 +6725,7 @@ class App(tk.Tk):
             anchor="w", pady=(10, 0), ipady=6, ipadx=8)
 
         sec_load = Sec(p, "LOAD / DELETE")
-        sec_load.pack(fill="x", pady=(0, 12))
+        sec_load.pack(fill="x")
         self._preset_list_frame = tk.Frame(sec_load, bg=BG2)
         self._preset_list_frame.pack(fill="x", pady=(6, 0))
         self._refresh_preset_list()
@@ -6661,17 +6820,23 @@ class App(tk.Tk):
         return hradio(p, text, var, val)
 
     def _slider(self, p, label, var, mn, mx, row, col):
+        """Slider widget. row/col kept for backward-compat but layout is pack-based."""
         f = tk.Frame(p, bg=BG2)
-        f.grid(row=row, column=col, sticky="ew", padx=(0, 12 if col == 0 else 0), pady=4)
-        top = tk.Frame(f, bg=BG2)
-        top.pack(fill="x")
-        mlabel(top, label).pack(side="left")
-        lbl = tk.Label(top, text=f"{var.get()}s", font=FONT_SM, fg=ORANGE, bg=BG2)
-        lbl.pack(side="right")
-        tk.Scale(f, from_=mn, to=mx, variable=var, orient="horizontal", bg=BG2, fg=TEXT,
-                 troughcolor=BG3, activebackground=ORANGE, highlightthickness=0, bd=0,
+        f.grid(row=row, column=col, sticky="ew",
+               padx=(0, 10 if col == 0 else 0), pady=(2, 4))
+        hdr = tk.Frame(f, bg=BG2)
+        hdr.pack(fill="x")
+        mlabel(hdr, label).pack(side="left")
+        val_lbl = tk.Label(hdr, text=f"{var.get()}s",
+                           font=("Consolas", 9, "bold"), fg=ORANGE, bg=BG2,
+                           width=3, anchor="e")
+        val_lbl.pack(side="right")
+        tk.Scale(f, from_=mn, to=mx, variable=var, orient="horizontal",
+                 bg=BG2, fg=TEXT, troughcolor=BG3,
+                 activebackground=ORANGE, highlightthickness=0, bd=0,
                  showvalue=False, cursor="hand2",
-                 command=lambda v: lbl.config(text=f"{int(float(v))}s")).pack(fill="x", pady=(2, 0))
+                 command=lambda v: val_lbl.config(text=f"{int(float(v))}s")
+                 ).pack(fill="x", pady=(1, 0))
         return f
 
     def _calc_summary(self, all_events, cfg):
