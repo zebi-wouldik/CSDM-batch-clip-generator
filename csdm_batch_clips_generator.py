@@ -3874,6 +3874,8 @@ class App(tk.Tk):
             if m.lower().startswith(pfx):
                 return m[len(pfx):]
         return m
+
+    def _demo_picker_populate(self, demo_paths, keep_existing=False):
         """Populate the demo picker treeview with the given paths.
 
         demo_paths: list of demo file paths to show.
