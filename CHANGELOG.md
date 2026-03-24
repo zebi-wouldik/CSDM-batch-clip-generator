@@ -9,6 +9,107 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v161]
+
+### Added: Exclude option on every kill filter
+
+Every kill filter now has an **Exclude** checkbox alongside Enable and ★ Must. Exclude removes all kills that match the filter from results, the inverse of Enable. Enable and Exclude are mutually exclusive per filter — turning one on clears the other. Exclude also clears ★ Must when activated.
+
+**What it means in practice:**
+
+- `💨 SMOKE: Enable` → keep only smoke kills
+- `💨 SMOKE: Exclude` → keep everything *except* smoke kills
+- Both can be combined with other filters: `🧱 WALLBANG: Enable` + `😵 BLIND FIRE: Exclude` → wallbang kills that are not blind-fire
+
+**UI:** The Exclude hchk appears on every filter row, consistent position after ★ Must. TROIS SHOT's pre-existing Exclude (formerly "no_trois_shot") is folded into the same position. Preview header shows `🚫 badge` for excluded filters. Clip badges show `[🚫badge]` in amber. The "Unselect all" button clears Exclude flags alongside Enable and ★ Must.
+
+**Pipeline — where each category's exclusions are applied:**
+
+| Category | Mechanism |
+|---|---|
+| **SQL Mods** (SMOKE, NO-SCOPE, VICTIM FLASHED) | `AND NOT col IS TRUE` appended directly to the kills SQL WHERE clause — zero Python overhead, database handles it |
+| **dp2 filters** (WALLBANG, AIRBORNE, BLIND FIRE, COLLATERAL, TROIS SHOT, ONE TAP, SPRAY TRANSFER, FERRARI PEEK, FLICK, SAVIOR) | Excluded filters run first on the full kill list; matching kill signatures are collected and stripped before any positive filter runs. Applies in both the batch worker path (`_apply_dp2_modifiers`) and the preview/redo path (`_apply_dp2_filters_to_events`) |
+| **DB post-filters** (ENTRY FRAG, ACE, MULTI-KILL, BULLY, ECO FRAG) | Exclusion sig-sets built from the same per-round group logic used for positive detection, then subtracted from `keep_sigs`. Works in all three logic modes (ANY/ALL/MIXED). Exclusion-only mode (no positive filter active, only exclusions) is handled — starts from all kill sigs and subtracts |
+
+Excluded kills are stripped upstream, so `_apply_global_filter_gate_events` naturally ignores them — no changes needed there.
+
+**Technical details:**
+
+- `_NO_AUTO_EXCLUDE` set at module level: `kill_mod_no_trois_shot` (already has its own mechanism) and `kill_mod_trois_tap` (always a positive-only filter) are excluded from auto-generation
+- `_FILTER_CONFIG_DEFAULTS`, `_FILTER_BOOL_KEYS`, and `_FILTER_PRESET_PLAYER_KEYS` all auto-derive `key_exclude` entries from the registry loop — adding a new filter in `KILL_FILTER_REGISTRY` automatically gets an Exclude option with no extra code
+- `_clear_kill_filters` clears all three suffixes (`""`, `"_req"`, `"_exclude"`) in one loop
+
+---
+
+
+## [v160]
+
+### Fixed: demo compatibility warning — correct CS2 breaking updates
+
+The previous implementation (v159) was wrong on two levels: it checked for CS:GO `HL2DEMO` headers (which never appear in CSDM's CS2-only database), then switched to an age-based heuristic (also wrong — CS2 demo compatibility has nothing to do with file age).
+
+The correct behaviour: CS2 has had specific **hard breaking engine updates** that make all demos recorded before them completely unplayable on any current CS2 version, regardless of age. These are not gradual; they are binary breaks.
+
+**Known hard breaks now encoded in `_CS2_DEMO_BREAKS`:**
+- **July 28 2025 — AnimGraph2**: Valve replaced the entire animation engine with AnimGraph2. Every demo recorded before this date is broken on CS2 ≥ 1.40.8.9. Workaround: downgrade CS2 via Steam beta depot to ≤ 1.40.8.8.
+- **February 6 2024 — major format update**: The demo file format changed substantially, breaking parsers and causing playback crashes on all subsequent CS2 versions.
+
+`_check_demo_compat(demo_path)` is now an instance method (uses the existing cached `_get_demo_ts`) that checks the demo's recorded timestamp against each break's cutoff date, newest-first. Returns `{'status': 'ok'|'warn'|'missing', 'break': label, 'tip': explanation}`. Adding future breaking updates is one entry in `_CS2_DEMO_BREAKS`.
+
+Warned demos appear yellow in the picker. Hovering shows a popup naming the breaking update and explaining the workaround.
+
+### Added: map column fetched in rounds query and manual mode
+
+The map name is now populated from all three query paths (kills, rounds, manual mode picker), not just kills. Manual mode uses a `_find_col` lookup as a local fallback if `_map_col` hasn't been detected yet (e.g. when opening the picker before running a preview).
+
+---
+
+## [v159]
+
+### Added: player list — full page navigation
+
+The pagination bar now has four buttons instead of two:
+
+- **◀◀** — jump to page 1
+- **◀** — previous page
+- **`[N]`** — direct page entry (editable, press Enter or Tab to jump). Syncs automatically with every page change. Invalid input resets to the current page.
+- **▶** — next page
+- **▶▶** — jump to last page
+
+The label beside the entry shows `/ 14  (110)` (total pages, total count). All far buttons disable and go muted when already at the boundary.
+
+### Added: demo picker — map column
+
+A **Map** column (80 px, non-stretching) appears between Date and Demo in the treeview. The map name is fetched from the `matches` table via `_find_col` against `["map_name", "game_map", "map", "level_name", "server_map"]`. Common CS2 map prefixes (`de_`, `cs_`, `ar_`, etc.) are stripped for brevity. The column is populated in the kills SQL query (no extra round-trip), also in the rounds query and manual mode picker. The cache (`_demo_map_cache`) clears on DB reconnect; `_map_col` re-detects automatically.
+
+### Added: demo picker — CS2 compatibility warning (initial, superseded by v160)
+
+> Note: the HL2DEMO/age-based approach in v159 was incorrect. See v160 for the correct implementation.
+
+---
+
+## [v158]
+
+### Changed: UI revamp — collapsible sections, unified spacing, redesigned chrome
+
+**`Sec` — collapsible section cards.** Every section (PLAYER, CAPTURE & TIMING, KILL FILTERS, etc.) is now a collapsible card. Clicking the header collapses or expands the body. The header has a 3 px orange left accent stripe, bold title, and a `▾`/`▸` toggle arrow. `Sec` is a drop-in replacement for the old `LabelFrame` — all existing widget creation code is unchanged.
+
+**UI spacing constants.** Six `UI_*` constants at the top of the module replace all hardcoded padding values. `UI_SEC_PADX = 14`, `UI_SEC_PADY = 8`, `UI_SEC_GAP = 6` apply uniformly to every section on every tab. The tab scroll inner frame uses `padx=0` so sections fill edge-to-edge. All 25 individual `sec.pack(pady=(...))` calls were stripped — the `Sec.pack()` default handles it.
+
+**Header bar.** Replaced the `" >> " CSDM  Batch vXXX` row with a clean `BG2` bar, 4 px orange left stripe, compact DB status on the right.
+
+**Run bar.** Two-px orange accent line at top. `▶ RUN` (accent bg) | divider | `🔍 Preview` (blue) | divider | `⏸ Stop` / `⛔ Kill` (muted until active). Summary line separated by 1 px border.
+
+**Log panel.** Left accent stripe matches sections. Tighter filter controls.
+
+**Sliders.** Value label uses bold Consolas in ORANGE, fixed-width, right-aligned.
+
+**`hchk` / `hradio`.** `padx` 8→10, `pady` 3→4 — slightly more pill breathing room.
+
+**Theme walker.** `_apply_theme_to_widgets` calls `sec.apply_theme()` on every `Sec` instance it encounters, so collapsible header colours update correctly on theme change.
+
+---
+
 ## [v157]
 
 ### **🎯 CLUTCH — Complete rewrite. The previous implementation was not functional.**

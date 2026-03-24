@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v158"""
+"""CSDM Batch Clips Generator v161"""
 
 
 import tkinter as tk
@@ -21,7 +21,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v158"
+APP_VERSION = "v161"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -338,16 +338,25 @@ KILL_FILTER_SQL_COLS: dict = {f.key: f.sql_cols
     for f in KILL_FILTER_REGISTRY if f.category == "mods" and f.sql_cols}
 # DEFAULT_CONFIG additions (auto-built from registry)
 _FILTER_CONFIG_DEFAULTS: dict = {}
+# Keys that must NOT get an auto-generated _exclude entry because they
+# either already have their own dedicated exclude mechanism (trois_shot →
+# no_trois_shot) or are themselves the exclusion variant (no_trois_shot,
+# trois_tap which is always positive-only).
+_NO_AUTO_EXCLUDE = {"kill_mod_no_trois_shot", "kill_mod_trois_tap"}
 for _f in KILL_FILTER_REGISTRY:
     _FILTER_CONFIG_DEFAULTS[_f.key] = False
     _FILTER_CONFIG_DEFAULTS[f"{_f.key}_req"] = False
+    if _f.key not in _NO_AUTO_EXCLUDE and not _f.hide_ui:
+        _FILTER_CONFIG_DEFAULTS[f"{_f.key}_exclude"] = False
     if _f.extra_config:
         _FILTER_CONFIG_DEFAULTS.update(_f.extra_config)
-# bool_keys additions (all filter enable + _req flags + bool extra_config sub-keys)
+# bool_keys additions (all filter enable + _req + _exclude flags + bool extra_config sub-keys)
 _FILTER_BOOL_KEYS: _List[str] = []
 for _f in KILL_FILTER_REGISTRY:
     _FILTER_BOOL_KEYS.append(_f.key)
     _FILTER_BOOL_KEYS.append(f"{_f.key}_req")
+    if _f.key not in _NO_AUTO_EXCLUDE and not _f.hide_ui:
+        _FILTER_BOOL_KEYS.append(f"{_f.key}_exclude")
     if _f.extra_config:
         for _ek, _ev in _f.extra_config.items():
             if isinstance(_ev, bool) and _ek not in _FILTER_BOOL_KEYS:
@@ -1142,20 +1151,54 @@ class PlayerSearchWidget(tk.Frame):
         add_tip(self._sort_date_btn, "Sort by last match date (most recent first).")
 
         # Pagination controls (right side of same row)
+        # Layout (right-to-left pack): ▶▶  ▶  [entry]  ◀  ◀◀  label
         self._pg_lbl = tk.Label(ctrl_row, text="", font=FONT_DESC, bg=BG2, fg=MUTED)
         self._pg_lbl.pack(side="right", padx=(4, 0))
+
+        # Last page
+        self._pg_last_btn = tk.Button(
+            ctrl_row, text="▶▶", font=FONT_DESC, bg=BG3, fg=MUTED,
+            relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+            activebackground=BORDER, activeforeground=ORANGE,
+            command=self._page_last)
+        self._pg_last_btn.pack(side="right", padx=(2, 0), ipady=2, ipadx=4)
+
+        # Next page
         self._pg_next_btn = tk.Button(
             ctrl_row, text="▶", font=FONT_DESC, bg=BG3, fg=MUTED,
             relief="flat", bd=0, cursor="hand2", highlightthickness=0,
             activebackground=BORDER, activeforeground=ORANGE,
             command=self._page_next)
         self._pg_next_btn.pack(side="right", padx=(2, 0), ipady=2, ipadx=4)
+
+        # Direct page entry
+        self._pg_entry_var = tk.StringVar(value="1")
+        self._pg_entry = tk.Entry(
+            ctrl_row, textvariable=self._pg_entry_var,
+            font=FONT_DESC, bg=BG3, fg=TEXT,
+            insertbackground=ORANGE, relief="flat", bd=0,
+            highlightthickness=1, highlightbackground=BORDER,
+            highlightcolor=ORANGE, width=3, justify="center")
+        self._pg_entry.pack(side="right", padx=(2, 0), ipady=2)
+        self._pg_entry.bind("<Return>", self._page_jump)
+        self._pg_entry.bind("<FocusOut>", self._page_jump)
+        add_tip(self._pg_entry, "Type a page number and press Enter to jump directly.")
+
+        # Previous page
         self._pg_prev_btn = tk.Button(
             ctrl_row, text="◀", font=FONT_DESC, bg=BG3, fg=MUTED,
             relief="flat", bd=0, cursor="hand2", highlightthickness=0,
             activebackground=BORDER, activeforeground=ORANGE,
             command=self._page_prev)
         self._pg_prev_btn.pack(side="right", padx=(2, 0), ipady=2, ipadx=4)
+
+        # First page
+        self._pg_first_btn = tk.Button(
+            ctrl_row, text="◀◀", font=FONT_DESC, bg=BG3, fg=MUTED,
+            relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+            activebackground=BORDER, activeforeground=ORANGE,
+            command=self._page_first)
+        self._pg_first_btn.pack(side="right", padx=(2, 0), ipady=2, ipadx=4)
 
         self._lb = tk.Listbox(
             self, font=FONT_MONO, bg=BG3, fg=MUTED,
@@ -1407,23 +1450,34 @@ class PlayerSearchWidget(tk.Frame):
         for entry in page_entries:
             self._lb.insert("end", entry[0])
 
-        # Update pagination label
+        # Update pagination controls
         if total == 0:
             pg_txt = "0 results"
         elif n_pages == 1:
             pg_txt = f"{total} player{'s' if total != 1 else ''}"
         else:
-            pg_txt = f"p.{self._page + 1}/{n_pages}  ({total} total)"
+            pg_txt = f"/ {n_pages}  ({total})"
         try:
             self._pg_lbl.config(text=pg_txt)
-            self._pg_prev_btn.config(
-                fg=ORANGE if self._page > 0 else MUTED,
-                state="normal" if self._page > 0 else "disabled")
-            self._pg_next_btn.config(
-                fg=ORANGE if self._page < n_pages - 1 else MUTED,
-                state="normal" if self._page < n_pages - 1 else "disabled")
+            # Sync the page entry box (avoid triggering FocusOut → _page_jump loop)
+            self._pg_entry_var.set(str(self._page + 1))
+            at_first = self._page == 0
+            at_last  = self._page >= n_pages - 1
+            for btn, disabled in [
+                (self._pg_first_btn, at_first),
+                (self._pg_prev_btn,  at_first),
+                (self._pg_next_btn,  at_last),
+                (self._pg_last_btn,  at_last),
+            ]:
+                btn.config(
+                    fg=MUTED if disabled else ORANGE,
+                    state="disabled" if disabled else "normal")
         except Exception:
             pass
+
+    def _page_first(self):
+        self._page = 0
+        self._render_page()
 
     def _page_prev(self):
         if self._page > 0:
@@ -1435,6 +1489,24 @@ class PlayerSearchWidget(tk.Frame):
         n_pages = max(1, (len(self._filtered) + ps - 1) // ps)
         if self._page < n_pages - 1:
             self._page += 1
+            self._render_page()
+
+    def _page_last(self):
+        ps = self._PAGE_SIZE
+        n_pages = max(1, (len(self._filtered) + ps - 1) // ps)
+        self._page = n_pages - 1
+        self._render_page()
+
+    def _page_jump(self, *_):
+        """Jump to the page number typed in the entry field."""
+        try:
+            ps = self._PAGE_SIZE
+            n_pages = max(1, (len(self._filtered) + ps - 1) // ps)
+            target = int(self._pg_entry_var.get().strip()) - 1  # 1-based → 0-based
+            self._page = max(0, min(target, n_pages - 1))
+            self._render_page()
+        except (ValueError, Exception):
+            # Invalid input — just re-render current page (resets entry to valid number)
             self._render_page()
 
     def _on_lb_select(self, *_):
@@ -1822,6 +1894,7 @@ class App(tk.Tk):
         self._demo_checksums = {}  # {demo_path: checksum} — populated by _query_events
         self._demo_dates     = {}  # {demo_path: date_val} — populated by _query_events
         self._ts_cache       = {}  # {demo_path: int|None} — cached _get_demo_ts results
+        self._demo_map_cache = {}  # {demo_path: str} — map name from DB
         self._col_cache      = {}  # {(table, tuple(candidates)): col} — cached _find_col results
         self._db_conn        = None  # persistent psycopg2 connection — reused across calls
         self._dp2_verbose    = False  # per-kill dp2 filter logging (debug only — expensive)
@@ -1920,6 +1993,7 @@ class App(tk.Tk):
         self._db_col_types = {}
         self._date_col = None
         self._date_col_type = ""      # actual SQL type of the date column
+        self._map_col  = None         # map_name column in matches table (optional)
         self._pending_restore_sid  = None   # steam_id to restore once DB is ready
         self._pending_restore_tags = []     # tag names to restore once DB is ready
         self._speed_feedback = None
@@ -2319,8 +2393,10 @@ class App(tk.Tk):
         self._tags_schema   = tags_schema
         self._demo_checksums = {}
         self._demo_dates     = {}
+        self._demo_map_cache = {}
         self._ts_cache       = {}
         self._col_cache      = {}
+        self._map_col        = None   # re-detect on next query (new DB may differ)
         self._warned_missing_mods = set()  # reset so re-connect re-checks column presence
         self._warned_require_win_no_data = False
 
@@ -3542,14 +3618,16 @@ class App(tk.Tk):
                   foreground=[("selected", ORANGE)])
         self._demo_tree = ttk.Treeview(
             tree_frame, style="DemoPicker.Treeview",
-            columns=("sel", "date", "name"), show="headings", height=7,
+            columns=("sel", "date", "map", "name"), show="headings", height=7,
             selectmode="extended")
-        self._demo_tree.heading("sel",  text="✓",         anchor="center")
-        self._demo_tree.heading("date", text="Date",       anchor="w")
-        self._demo_tree.heading("name", text="Demo",       anchor="w")
-        self._demo_tree.column("sel",  width=24, minwidth=24, stretch=False, anchor="center")
-        self._demo_tree.column("date", width=120, minwidth=100, stretch=False)
-        self._demo_tree.column("name", width=340, minwidth=200, stretch=True)
+        self._demo_tree.heading("sel",  text="✓",      anchor="center")
+        self._demo_tree.heading("date", text="Date",   anchor="w")
+        self._demo_tree.heading("map",  text="Map",    anchor="w")
+        self._demo_tree.heading("name", text="Demo",   anchor="w")
+        self._demo_tree.column("sel",  width=24,  minwidth=24,  stretch=False, anchor="center")
+        self._demo_tree.column("date", width=118, minwidth=90,  stretch=False)
+        self._demo_tree.column("map",  width=80,  minwidth=60,  stretch=False)
+        self._demo_tree.column("name", width=280, minwidth=160, stretch=True)
         _tree_sb = ttk.Scrollbar(tree_frame, orient="vertical",
                                  command=self._demo_tree.yview)
         self._demo_tree.configure(yscrollcommand=_tree_sb.set)
@@ -3559,6 +3637,44 @@ class App(tk.Tk):
         self._demo_tree.bind("<MouseWheel>",
                              lambda e: self._demo_tree.yview_scroll(
                                  -1 * (e.delta // 120), "units"))
+        # Show compat tooltip on hover for warned rows
+        self._tree_tip_win = None
+
+        def _tree_tip_hide():
+            if self._tree_tip_win:
+                try: self._tree_tip_win.destroy()
+                except Exception: pass
+                self._tree_tip_win = None
+
+        def _tree_motion(event):
+            iid = self._demo_tree.identify_row(event.y)
+            if not iid:
+                _tree_tip_hide(); return
+            tags = self._demo_tree.item(iid, "tags")
+            if "warn_compat" not in tags:
+                _tree_tip_hide(); return
+            compat = self._check_demo_compat(iid)
+            tip = compat.get("tip") or ""
+            brk = compat.get("break") or ""
+            if not tip:
+                _tree_tip_hide(); return
+            # Only recreate if not already showing this demo's tip
+            if self._tree_tip_win and getattr(self._tree_tip_win, "_iid", None) == iid:
+                return
+            _tree_tip_hide()
+            tw = tk.Toplevel(self._demo_tree)
+            tw.wm_overrideredirect(True)
+            tw.attributes("-topmost", True)
+            tw.wm_geometry(f"+{event.x_root + 12}+{event.y_root + 12}")
+            tk.Label(tw, text=f"⚠ {brk}\n{tip}",
+                     font=("Consolas", 8), fg=TEXT, bg="#2a2a2a",
+                     relief="flat", bd=0, padx=8, pady=4,
+                     justify="left").pack()
+            tw._iid = iid
+            self._tree_tip_win = tw
+
+        self._demo_tree.bind("<Motion>", _tree_motion)
+        self._demo_tree.bind("<Leave>",  lambda e: _tree_tip_hide())
 
         # Per-row toggle buttons row
         pick_btns = tk.Frame(sec, bg=BG2)
@@ -3583,6 +3699,23 @@ class App(tk.Tk):
                   activeforeground=RED, activebackground=BG3,
                   command=lambda: self._demo_picker_set_selected(False)
                   ).pack(side="left", padx=(4, 0))
+
+        # Compatibility legend
+        compat_row = tk.Frame(sec, bg=BG2)
+        compat_row.pack(fill="x", pady=(4, 0))
+        tk.Label(compat_row, text="● ", font=FONT_DESC, fg=YELLOW, bg=BG2).pack(side="left")
+        _compat_tip = (
+            "CS2 had hard breaking updates that made older demos unplayable:\n"
+            "  • Jul 28 2025 — AnimGraph2: ALL demos before this date are broken.\n"
+            "    Requires CS2 ≤ 1.40.8.8 (Steam beta) to replay them.\n"
+            "  • Feb 6 2024 — Major format change: demos before this are also broken\n"
+            "    on current CS2."
+        )
+        _warn_lbl = tk.Label(compat_row,
+                 text="Demo recorded before a CS2 breaking update — likely unplayable.",
+                 font=FONT_DESC, fg=MUTED, bg=BG2, cursor="hand2")
+        _warn_lbl.pack(side="left")
+        add_tip(_warn_lbl, _compat_tip)
 
         # Internal state: {demo_path: bool} — True = included
         self._demo_picker_state: dict = {}
@@ -3642,6 +3775,59 @@ class App(tk.Tk):
             self.v["date_to"].set(today_str)
 
     # ── Demo picker helpers ─────────────────────────────────────────────────
+    # Known CS2 updates that hard-broke all older demos.
+    # Each entry: (cutoff_datetime, label, description)
+    # A demo recorded BEFORE a cutoff is incompatible with any CS2 version
+    # released ON OR AFTER that cutoff.
+    # Sorted newest-first so we match the most recent breaking update first.
+    _CS2_DEMO_BREAKS = [
+        (
+            datetime(2025, 7, 28),
+            "AnimGraph2",
+            "Valve's AnimGraph2 engine update (Jul 28 2025) made all older demos\n"
+            "incompatible. You need CS2 ≤ 1.40.8.8 (Steam beta depot) to replay them.",
+        ),
+        (
+            datetime(2024, 2, 6),
+            "Feb 2024 update",
+            "The February 6 2024 major update changed the demo file format.\n"
+            "Demos recorded before this date cannot be replayed on current CS2.",
+        ),
+    ]
+
+    def _check_demo_compat(self, demo_path):
+        """Check whether a CS2 demo may be incompatible with the current CS2 version.
+
+        CS2 has had hard breaking updates that make demos recorded before them
+        completely unplayable on the current game version. Detection is based on
+        the demo's recorded timestamp vs. the known dates of those breaking updates.
+
+        Returns a dict:
+          {
+            'status':  'ok' | 'warn' | 'missing',
+            'break':   str | None,   # short name of the breaking update, e.g. 'AnimGraph2'
+            'tip':     str | None,   # human-readable explanation
+            'ts':      int | None,   # demo Unix timestamp
+          }
+        """
+        result = {"status": "ok", "break": None, "tip": None, "ts": None}
+        ts = self._get_demo_ts(demo_path)
+        if ts is None:
+            # No timestamp: file missing or unreadable
+            from pathlib import Path as _Path
+            if not _Path(demo_path).is_file():
+                result["status"] = "missing"
+            return result
+        result["ts"] = ts
+        demo_dt = datetime.fromtimestamp(ts)
+        for cutoff, label, tip in self._CS2_DEMO_BREAKS:
+            if demo_dt < cutoff:
+                result["status"] = "warn"
+                result["break"]  = label
+                result["tip"]    = tip
+                return result   # match the most recent (first) applicable break
+        return result
+
     def _demo_picker_fmt_name(self, demo_path):
         """Shorten long demo filenames for display: keep last ~40 chars, prefix …"""
         name = Path(demo_path).name
@@ -3678,7 +3864,16 @@ class App(tk.Tk):
             pass
         return "??-??-???? ??:??"
 
-    def _demo_picker_populate(self, demo_paths, keep_existing=False):
+    def _demo_picker_fmt_map(self, demo_path):
+        """Return the map name for a demo, shortened for display."""
+        m = self._demo_map_cache.get(demo_path, "")
+        if not m:
+            return ""
+        # Strip common CS2 prefixes for brevity in the narrow column
+        for pfx in ("de_", "cs_", "ar_", "gg_", "dz_", "tr_"):
+            if m.lower().startswith(pfx):
+                return m[len(pfx):]
+        return m
         """Populate the demo picker treeview with the given paths.
 
         demo_paths: list of demo file paths to show.
@@ -3700,15 +3895,28 @@ class App(tk.Tk):
             checked = prev_state.get(dp, True)
             self._demo_picker_state[dp] = checked
             sym = "✓" if checked else "✕"
-            date_str = self._demo_picker_fmt_date(dp)
-            name_str = self._demo_picker_fmt_name(dp)
-            tag = "ok" if checked else "off"
-            iid = self._demo_tree.insert("", "end",
-                values=(sym, date_str, name_str),
+            date_str  = self._demo_picker_fmt_date(dp)
+            map_str   = self._demo_picker_fmt_map(dp)
+            name_str  = self._demo_picker_fmt_name(dp)
+            compat    = self._check_demo_compat(dp)
+            status    = compat["status"]
+            # Tags: check-state + compat warning
+            if not checked:
+                tag = "off"
+            elif status == "warn":
+                tag = "warn_compat"
+            elif status == "missing":
+                tag = "warn_missing"
+            else:
+                tag = "ok"
+            self._demo_tree.insert("", "end",
+                values=(sym, date_str, map_str, name_str),
                 tags=(tag,), iid=dp)
 
-        self._demo_tree.tag_configure("ok",  foreground=TEXT)
-        self._demo_tree.tag_configure("off", foreground=MUTED)
+        self._demo_tree.tag_configure("ok",           foreground=TEXT)
+        self._demo_tree.tag_configure("off",          foreground=MUTED)
+        self._demo_tree.tag_configure("warn_compat",  foreground=YELLOW)
+        self._demo_tree.tag_configure("warn_missing", foreground=MUTED)
 
         n_on  = sum(1 for v in self._demo_picker_state.values() if v)
         n_tot = len(self._demo_picker_state)
@@ -3744,7 +3952,7 @@ class App(tk.Tk):
                 sym = "✓" if value else "✕"
                 tag = "ok" if value else "off"
                 old_vals = self._demo_tree.item(iid, "values")
-                self._demo_tree.item(iid, values=(sym, old_vals[1], old_vals[2]), tags=(tag,))
+                self._demo_tree.item(iid, values=(sym, old_vals[1], old_vals[2], old_vals[3] if len(old_vals) > 3 else ""), tags=(tag,))
             except Exception:
                 pass
         n_on  = sum(1 for v in self._demo_picker_state.values() if v)
@@ -3765,7 +3973,7 @@ class App(tk.Tk):
             sym = "✓" if value else "✕"
             tag = "ok" if value else "off"
             old_vals = self._demo_tree.item(iid, "values")
-            self._demo_tree.item(iid, values=(sym, old_vals[1], old_vals[2]), tags=(tag,))
+            self._demo_tree.item(iid, values=(sym, old_vals[1], old_vals[2], old_vals[3] if len(old_vals) > 3 else ""), tags=(tag,))
         n_on  = sum(1 for v in self._demo_picker_state.values() if v)
         n_tot = len(self._demo_picker_state)
         try:
@@ -3792,11 +4000,14 @@ class App(tk.Tk):
                 if not dc:
                     return
                 with conn.cursor() as cur:
+                    map_col = self._map_col or self._find_col("matches", [
+                        "map_name", "game_map", "map", "level_name", "server_map"])
+                    map_sel_m = f',"{map_col}"' if map_col else ""
                     if date_col:
-                        cur.execute(f'SELECT "{dc}","{mkm}","{date_col}" FROM matches '
+                        cur.execute(f'SELECT "{dc}","{mkm}","{date_col}"{map_sel_m} FROM matches '
                                     f'ORDER BY "{date_col}" DESC')
                     else:
-                        cur.execute(f'SELECT "{dc}","{mkm}" FROM matches')
+                        cur.execute(f'SELECT "{dc}","{mkm}"{map_sel_m} FROM matches')
                     rows = cur.fetchall()
                 conn.close()
                 all_paths = []
@@ -3809,6 +4020,10 @@ class App(tk.Tk):
                         self._demo_checksums[dp] = chk
                     if date_col and len(row) > 2 and row[2] and dp not in self._demo_dates:
                         self._demo_dates[dp] = row[2]
+                    if map_col and dp not in self._demo_map_cache:
+                        map_idx = 2 + (1 if date_col else 0)
+                        if map_idx < len(row) and row[map_idx]:
+                            self._demo_map_cache[dp] = str(row[map_idx]).strip()
                     all_paths.append(dp)
                 self.after(0, lambda: self._demo_picker_populate(all_paths, keep_existing=True))
             except Exception as e:
@@ -4500,12 +4715,7 @@ class App(tk.Tk):
                           must_list: list, pady: int = 2) -> None:
         """Build one standard kill-filter row from a FilterDef.
 
-        Renders:  [flabel]  [Enable hchk]  [★ Must hchk]  [optional extras]  [dp2_badge right]
-
-        Standard rows cover every filter that has no special toggle logic.
-        Special filters (trois_tap, one_tap, high_velocity) add their own rows
-        via their 'special' field — this method is still called for the label/Enable/Must
-        scaffold; their extra widgets are added by dedicated _build_*_extras methods.
+        Renders:  [flabel]  [Enable hchk]  [★ Must hchk]  [Exclude hchk]  [extras]  [dp2_badge]
 
         must_list  — category must_widgets list; the ★ Must checkbox is appended.
         """
@@ -4518,14 +4728,28 @@ class App(tk.Tk):
 
         # Command for special filters
         cmd_map = {
-            "trois_shot":     self._on_trois_shot_toggle,
-            "trois_tap":      self._on_trois_tap_toggle,
-            "one_tap":        self._on_one_tap_toggle,
+            "trois_shot": self._on_trois_shot_toggle,
+            "trois_tap":  self._on_trois_tap_toggle,
+            "one_tap":    self._on_one_tap_toggle,
         }
         cmd = cmd_map.get(fdef.special)
 
-        cb_kw = {"command": cmd} if cmd else {}
-        cb = hchk(row, "Enable", self.v[fdef.key], **cb_kw)
+        ex_key = f"{fdef.key}_exclude"
+        has_exclude = (fdef.key not in _NO_AUTO_EXCLUDE
+                       and not fdef.hide_ui
+                       and ex_key in self.v)
+
+        # Enable — clears Exclude when turned on
+        def _make_enable_cmd(f_key=fdef.key, ex_k=ex_key, base_cmd=cmd):
+            def _on():
+                if self.v[f_key].get() and ex_k in self.v:
+                    self.v[ex_k].set(False)
+                if base_cmd:
+                    base_cmd()
+            return _on
+
+        cb = hchk(row, "Enable", self.v[fdef.key],
+                  command=_make_enable_cmd() if (has_exclude or cmd) else None)
         cb.pack(side="left", padx=(4, 0))
         add_tip(cb, fdef.tip)
 
@@ -4535,11 +4759,24 @@ class App(tk.Tk):
                          "(at least one optional must match).")
         self._wire_enable_must(self.v[fdef.key], self.v[f"{fdef.key}_req"])
 
-        # TROIS SHOT: add Exclude hchk on the same row
-        if fdef.special == "trois_shot":
+        # Exclude checkbox — mutually exclusive with Enable + ★ Must
+        if has_exclude:
+            def _make_excl_cmd(f_key=fdef.key, ex_k=ex_key, req_k=f"{fdef.key}_req"):
+                def _on():
+                    if self.v[ex_k].get():
+                        self.v[f_key].set(False)
+                        self.v[req_k].set(False)
+                return _on
+            excl_cb = hchk(row, "Exclude", self.v[ex_key], command=_make_excl_cmd())
+            excl_cb.pack(side="left", padx=(4, 0))
+            add_tip(excl_cb,
+                    f"Exclude: remove every kill matching {fdef.badge} from results.\n"
+                    "Mutually exclusive with Enable and ★ Must.")
+        elif fdef.special == "trois_shot":
+            # TROIS SHOT uses the legacy no_trois_shot key for its Exclude
             nts_cb = hchk(row, "Exclude", self.v["kill_mod_no_trois_shot"],
                           command=self._on_no_trois_shot_toggle)
-            nts_cb.pack(side="left", padx=(12, 0))
+            nts_cb.pack(side="left", padx=(4, 0))
             add_tip(nts_cb, "Inverse of TROIS SHOT — removes lucky kills on these weapons.\n"
                             "When combined with other dp2 filters, acts as an exclusion gate first.")
 
@@ -4562,12 +4799,10 @@ class App(tk.Tk):
     def _clear_kill_filters(self):
         keys = [k for k, *_ in self._FILTER_BADGE_DEFS]
         for k in keys:
-            v = self.v.get(k)
-            if v is not None:
-                v.set(False)
-            rv = self.v.get(f"{k}_req")
-            if rv is not None:
-                rv.set(False)
+            for suffix in ("", "_req", "_exclude"):
+                v = self.v.get(f"{k}{suffix}")
+                if v is not None:
+                    v.set(False)
         self._refresh_hs_lock_state()
         self._log_flash("  ✓ All kill/situation filters unselected.", "ok")
 
@@ -6442,8 +6677,10 @@ class App(tk.Tk):
         except Exception:
             pass
         try:
-            self._demo_tree.tag_configure("ok",  foreground=TEXT)
-            self._demo_tree.tag_configure("off", foreground=MUTED)
+            self._demo_tree.tag_configure("ok",           foreground=TEXT)
+            self._demo_tree.tag_configure("off",          foreground=MUTED)
+            self._demo_tree.tag_configure("warn_compat",  foreground=YELLOW)
+            self._demo_tree.tag_configure("warn_missing", foreground=MUTED)
         except Exception:
             pass
 
@@ -7179,51 +7416,51 @@ class App(tk.Tk):
         When events are provided (clip-level), reads the union of _mf sets from
         all kill events — reflecting exactly which filter(s) each kill triggered.
 
-        Falls back to all active filters from cfg when no event has _mf (e.g. when
-        no kill filter was active or events come from paths that don't tag _mf).
+        Falls back to all active filters from cfg when no event has _mf.
+        Excluded filters are shown with a 🚫 prefix in muted colour.
         """
+        badges = []
         if events is not None:
-            # Collect the union of all _mf sets across kill events in this clip
             matched: set = set()
             for e in events:
                 if e.get("type") == "kill":
                     matched |= (e.get("_mf") or set())
             if matched:
-                # Emit badges in _FILTER_BADGE_DEFS order for consistency
-                return [(f" [{lbl}]", "badge_filter")
-                        for k, lbl, _cat in self._FILTER_BADGE_DEFS if k in matched]
-
-        # Fallback: no _mf data — emit all active filters from cfg
-        active = [lbl for k, lbl, _cat in self._FILTER_BADGE_DEFS if cfg.get(k)]
-        return [(f" [{lbl}]", "badge_filter") for lbl in active]
+                badges = [(f" [{lbl}]", "badge_filter")
+                          for k, lbl, _cat in self._FILTER_BADGE_DEFS if k in matched]
+            else:
+                badges = [(f" [{lbl}]", "badge_filter")
+                          for k, lbl, _cat in self._FILTER_BADGE_DEFS if cfg.get(k)]
+        else:
+            badges = [(f" [{lbl}]", "badge_filter")
+                      for k, lbl, _cat in self._FILTER_BADGE_DEFS if cfg.get(k)]
+        # Append excluded-filter labels (informational, dim colour)
+        for k, lbl, _cat in self._FILTER_BADGE_DEFS:
+            if cfg.get(f"{k}_exclude", False):
+                badges.append((f" [🚫{lbl}]", "badge_warn"))
+        return badges
 
     def _build_filter_header_parts(self, cfg):
         """Return grouped filter strings for the preview header Filters: line.
 
-        Groups active filters by category (Mods / dp2 / Situation) and shows ★
-        for required filters. Returns [] when no kill filter is active.
+        Groups active/excluded filters by category. Shows ★ for required,
+        🚫 prefix for excluded. Returns [] when no filter is active or excluded.
         """
-        _CAT_META = {
-            "mods": "Mods",
-            "dp2": "dp2",
-            "db": "Situation",
-        }
-        groups: dict = {}  # category → [label, ...]
-        for k, lbl, cat in self._FILTER_BADGE_DEFS:
-            if cfg.get(k):
-                groups.setdefault(cat, []).append(lbl)
+        _CAT_LABEL = {"mods": "Mods", "dp2": "dp2", "db": "Situation"}
         parts = []
         for cat in ("mods", "dp2", "db"):
-            lbls_raw = groups.get(cat)
-            if not lbls_raw:
-                continue
-            cat_name = _CAT_META[cat]
             lbls = []
             for k, lbl, c in self._FILTER_BADGE_DEFS:
-                if c == cat and cfg.get(k):
+                if c != cat:
+                    continue
+                if cfg.get(k):
                     prefix = "★ " if cfg.get(f"{k}_req", False) else ""
                     lbls.append(f"{prefix}{lbl}")
-            parts.append(f"{cat_name}: {' · '.join(lbls or lbls_raw)}")
+                elif cfg.get(f"{k}_exclude", False):
+                    lbls.append(f"🚫 {lbl}")
+            if lbls:
+                logic = cfg.get(f"kill_mod_logic_{cat}", "any").upper()
+                parts.append(f"{_CAT_LABEL[cat]} [{logic}]: {' · '.join(lbls)}")
         return parts
 
     def _build_clip_badges(self, events, cfg):
@@ -7471,9 +7708,26 @@ class App(tk.Tk):
                     suicidesql = f' AND k."{wc}" NOT IN ({ph})'
 
                 _MOD_COLS = KILL_FILTER_SQL_COLS  # derived from KILL_FILTER_REGISTRY
-                active_mods = [k for k in _MOD_COLS if cfg.get(k, False)]
+                active_mods   = [k for k in _MOD_COLS if cfg.get(k, False)]
+                excluded_mods = [k for k in _MOD_COLS if cfg.get(f"{k}_exclude", False)]
                 modsql = ""
                 _mods_dp2_or_any = self._mods_dp2_global_any_union_enabled(cfg)
+
+                # Build exclusion SQL first — these are always AND NOT
+                excl_clauses = []
+                for mod_key in excluded_mods:
+                    col = self._find_col("kills", _MOD_COLS[mod_key])
+                    if col:
+                        if mod_key == "kill_mod_wall_bang":
+                            pen_col = self._find_col("kills", ["penetrated_objects"])
+                            excl_clauses.append(
+                                f'(k."{col}" IS NOT TRUE'
+                                + (f' AND (k."{pen_col}" IS NULL OR k."{pen_col}" = 0)' if pen_col else "")
+                                + ")")
+                        else:
+                            excl_clauses.append(f'k."{col}" IS NOT TRUE')
+                excl_sql = (" AND " + " AND ".join(excl_clauses)) if excl_clauses else ""
+
                 if active_mods:
                     mod_clauses = []
                     missing_mods = []
@@ -7540,6 +7794,8 @@ class App(tk.Tk):
                             else:
                                 modsql = " AND (" + " OR ".join(mod_clauses) + ")"
 
+                modsql += excl_sql   # excluded mods are always AND NOT, appended last
+
                 date_col = self._date_col   # may be None → auto-detected below
                 if not date_col and self._db_schema.get("matches"):
                     _m_types = self._db_col_types.get("matches", {})
@@ -7561,6 +7817,11 @@ class App(tk.Tk):
                     if date_col:
                         self._date_col      = date_col
                         self._date_col_type = _m_types.get(date_col, "").lower()
+
+                # Detect map column (optional — used by demo picker display)
+                if self._map_col is None and self._db_schema.get("matches"):
+                    self._map_col = self._find_col("matches", [
+                        "map_name", "game_map", "map", "level_name", "server_map"])
 
                 # Empty _build_dsql: date filter applied in Python post-query
                 def _build_dsql(base_params):
@@ -7626,13 +7887,15 @@ class App(tk.Tk):
                         enames.append("_hs")
 
                     date_sel = f',m."{date_col}"' if date_col else ""
-                    sql = (f'SELECT m."{dc}",k."{tc}",m."{mkm}"{date_sel}{extra} FROM kills k '
+                    map_sel  = f',m."{self._map_col}"' if self._map_col else ""
+                    sql = (f'SELECT m."{dc}",k."{tc}",m."{mkm}"{date_sel}{map_sel}{extra} FROM kills k '
                            f'JOIN matches m ON m."{mkm}"=k."{mkk}" '
                            f'WHERE {psql}{wsql}{hsql}{tksql}{suicidesql}{modsql}{dsql} ORDER BY m."{dc}",k."{tc}"')
                     if suicidesql:
                         params = params + list(SUICIDE_WEAPONS)
                     cur.execute(sql, params)
                     sids_set = set(sids)
+                    _map_offset = (1 if date_col else 0)   # extra columns before `extra`
                     for row in cur.fetchall():
                         dp, tick, chk = row[0], row[1], row[2]
                         if not dp or tick is None:
@@ -7643,7 +7906,13 @@ class App(tk.Tk):
                             raw_date = row[3] if len(row) > 3 else None
                             if raw_date is not None:
                                 self._demo_dates[dp] = raw_date
-                        extra_offset = 4 if date_col else 3
+                        if self._map_col and dp not in self._demo_map_cache:
+                            map_row_idx = 3 + (1 if date_col else 0)
+                            if map_row_idx < len(row) and row[map_row_idx]:
+                                raw_map = str(row[map_row_idx]).strip()
+                                # Strip common prefixes like "de_", "cs_", "ar_"
+                                self._demo_map_cache[dp] = raw_map
+                        extra_offset = 3 + (1 if date_col else 0) + (1 if self._map_col else 0)
                         ex = {}
                         for ci, cn in enumerate(enames):
                             if extra_offset + ci < len(row):
@@ -7692,7 +7961,8 @@ class App(tk.Tk):
                         params = list(sids)
                         dsql = _build_dsql(params)
                         date_sel2 = f',m."{date_col}"' if date_col else ""
-                        sql = (f'SELECT m."{dc}",r."{rtc}",m."{mkm}"{date_sel2} FROM rounds r '
+                        map_sel2  = f',m."{self._map_col}"' if self._map_col else ""
+                        sql = (f'SELECT m."{dc}",r."{rtc}",m."{mkm}"{date_sel2}{map_sel2} FROM rounds r '
                                f'JOIN matches m ON m."{mkm}"=r."{rmk}" '
                                f'WHERE r."{rmk}" IN '
                                f'(SELECT p."{pmk}" FROM players p WHERE p.steam_id IN ({sid_ph}))'
@@ -7708,6 +7978,10 @@ class App(tk.Tk):
                                     if date_col and dp not in self._demo_dates and len(row) > 3:
                                         if row[3] is not None:
                                             self._demo_dates[dp] = row[3]
+                                    if self._map_col and dp not in self._demo_map_cache:
+                                        map_idx = 3 + (1 if date_col else 0)
+                                        if map_idx < len(row) and row[map_idx]:
+                                            self._demo_map_cache[dp] = str(row[map_idx]).strip()
                                     results.setdefault(dp, []).append(
                                         {"tick": int(tick), "type": "round", "weapon": ""})
                         except Exception:
@@ -7768,8 +8042,16 @@ class App(tk.Tk):
         do_bour    = cfg.get("kill_mod_bourreau", False)
         do_eco     = cfg.get("kill_mod_eco_frag", False)
 
+        # Exclude flags — these remove matching kills regardless of positive logic
+        excl_entry = cfg.get("kill_mod_entry_frag_exclude", False)
+        excl_ace   = cfg.get("kill_mod_ace_exclude",        False)
+        excl_multi = cfg.get("kill_mod_multi_kill_exclude", False)
+        excl_bour  = cfg.get("kill_mod_bourreau_exclude",   False)
+        excl_eco   = cfg.get("kill_mod_eco_frag_exclude",   False)
+
         active_flags = [do_entry, do_ace, do_multi, do_bour, do_eco]
-        if not any(active_flags):
+        excl_flags   = [excl_entry, excl_ace, excl_multi, excl_bour, excl_eco]
+        if not any(active_flags) and not any(excl_flags):
             return results
 
         logic_and   = cfg.get("kill_mod_logic_db", "any") == "all"
@@ -7932,30 +8214,87 @@ class App(tk.Tk):
                 per_mod_sigs.append(("kill_mod_eco_frag", _sigs))
 
             # ── Combine per-modifier sets ──────────────────────────────────
-            if not per_mod_sigs:
+            if not per_mod_sigs and not any(excl_flags):
                 continue
 
-            logic_mode = cfg.get("kill_mod_logic_db", "any")
-
-            if logic_mode == "mixed":
-                active_db_keys = [k for k, _ in per_mod_sigs]
-                req_keys, opt_keys = self._split_required_optional(cfg, active_db_keys)
-                req_sets = [s for k, s in per_mod_sigs if k in req_keys]
-                if req_sets:
-                    req_sigs = req_sets[0].intersection(*req_sets[1:]) if len(req_sets) > 1 else set(req_sets[0])
-                else:
-                    req_sigs = None
-                if req_sigs is not None:
-                    keep_sigs = req_sigs
-                else:
-                    keep_sigs = {(e["tick"], str(e.get("killer_sid",""))) for e in kill_events}
-            elif logic_and and len(per_mod_sigs) > 1:
-                sig_sets = [s for _, s in per_mod_sigs]
-                keep_sigs = sig_sets[0].intersection(*sig_sets[1:])
+            if not per_mod_sigs:
+                # Exclusion-only: start with all kill sigs, exclusions will strip below
+                keep_sigs = {(e["tick"], str(e.get("killer_sid",""))) for e in kill_events}
             else:
-                keep_sigs: set = set()
-                for _, s in per_mod_sigs:
-                    keep_sigs |= s
+                logic_mode = cfg.get("kill_mod_logic_db", "any")
+                if logic_mode == "mixed":
+                    active_db_keys = [k for k, _ in per_mod_sigs]
+                    req_keys, opt_keys = self._split_required_optional(cfg, active_db_keys)
+                    req_sets = [s for k, s in per_mod_sigs if k in req_keys]
+                    if req_sets:
+                        req_sigs = req_sets[0].intersection(*req_sets[1:]) if len(req_sets) > 1 else set(req_sets[0])
+                    else:
+                        req_sigs = None
+                    if req_sigs is not None:
+                        keep_sigs = req_sigs
+                    else:
+                        keep_sigs = {(e["tick"], str(e.get("killer_sid",""))) for e in kill_events}
+                elif logic_and and len(per_mod_sigs) > 1:
+                    sig_sets = [s for _, s in per_mod_sigs]
+                    keep_sigs = sig_sets[0].intersection(*sig_sets[1:])
+                else:
+                    keep_sigs: set = set()
+                    for _, s in per_mod_sigs:
+                        keep_sigs |= s
+
+            # ── Build exclusion sigs (always stripped, regardless of positive logic) ──
+            exclude_sigs: set = set()
+
+            if excl_entry:
+                for rk, r_kills in all_kills_by_round.items():
+                    first_tick = min(e["tick"] for e in r_kills)
+                    for e in r_kills:
+                        if e["tick"] == first_tick and str(e.get("killer_sid","")) in sids_set:
+                            exclude_sigs.add((e["tick"], str(e.get("killer_sid",""))))
+
+            if excl_ace:
+                for rk, r_kills in round_groups.items():
+                    victims = {str(e.get("victim_sid","")) for e in r_kills}
+                    if len(victims) >= 5:
+                        for e in r_kills:
+                            exclude_sigs.add((e["tick"], str(e.get("killer_sid",""))))
+
+            if excl_multi:
+                max_ticks_excl = multi_s * int(cfg.get("tickrate", 64))
+                for rk, r_kills in round_groups.items():
+                    if len(r_kills) < multi_n:
+                        continue
+                    r_sorted = sorted(r_kills, key=lambda e: e["tick"])
+                    if r_sorted[-1]["tick"] - r_sorted[0]["tick"] <= max_ticks_excl:
+                        for e in r_kills:
+                            exclude_sigs.add((e["tick"], str(e.get("killer_sid",""))))
+
+            if excl_bour:
+                from collections import Counter as _Counter
+                pair_count_ex: _Counter = _Counter()
+                for e in kill_events:
+                    ks = str(e.get("killer_sid","")); vs = str(e.get("victim_sid",""))
+                    if ks in sids_set and vs:
+                        pair_count_ex[(ks, vs)] += 1
+                pair_seen_ex: _Counter = _Counter()
+                for e in sorted(kill_events, key=lambda e: e["tick"]):
+                    ks = str(e.get("killer_sid","")); vs = str(e.get("victim_sid",""))
+                    if ks not in sids_set: continue
+                    pair_seen_ex[(ks, vs)] += 1
+                    if pair_count_ex[(ks, vs)] >= bour_n and pair_seen_ex[(ks, vs)] >= bour_n:
+                        exclude_sigs.add((e["tick"], ks))
+
+            if excl_eco:
+                for e in player_kills:
+                    kw = (e.get("weapon") or "").lower().strip().lstrip("weapon_")
+                    if kw not in PISTOLS: continue
+                    vw = (e.get("victim_weapon") or "").lower().strip().lstrip("weapon_")
+                    if not vw or vw in FULL_BUY:
+                        exclude_sigs.add((e["tick"], str(e.get("killer_sid",""))))
+
+            # Remove excluded kills from keep_sigs
+            if exclude_sigs:
+                keep_sigs -= exclude_sigs
 
             # Build sig → set_of_matched_cfg_keys for _mf tagging
             sig_to_keys: dict = {}
@@ -9473,6 +9812,27 @@ class App(tk.Tk):
                 return None
             self._stamp_mf(events, "kill_mod_no_trois_shot")
 
+        # ── dp2 exclusions — strip matching kills BEFORE any positive filter ─
+        excl_dp2 = [(k, getattr(self, fn), ll)
+                    for k, fn, _afn, ll, _rl, _sl in self._DP2_FILTER_DEFS
+                    if cfg.get(f"{k}_exclude")
+                    and k not in _NO_AUTO_EXCLUDE]
+        if excl_dp2:
+            excluded_sigs: set = set()
+            non_kill_excl = [e for e in events if e.get("type") != "kill"]
+            for ex_key, ex_fn, ex_label in excl_dp2:
+                matched = ex_fn(dp, events, cfg)
+                for e in matched:
+                    if e.get("type") == "kill":
+                        excluded_sigs.add((e["tick"], str(e.get("killer_sid", ""))))
+                self._alog(f"  🚫{ex_label} exclude : {len(excluded_sigs)} kills removed", "dim")
+            events = [e for e in events
+                      if e.get("type") != "kill"
+                      or (e["tick"], str(e.get("killer_sid", ""))) not in excluded_sigs]
+            if not _count_kills(events):
+                self._alog("  ⏭ SKIP: all kills excluded", "dim")
+                return None
+
         active = [(k, getattr(self, fn), ll, rl, sl)
                   for k, fn, _afn, ll, rl, sl in self._DP2_FILTER_DEFS
                   if cfg.get(k) and k != "kill_mod_no_trois_shot"]
@@ -9622,6 +9982,27 @@ class App(tk.Tk):
         if cfg.get("kill_mod_no_trois_shot"):
             self._alog("  🚫🎲 Exclude — analyzing demos…", "info")
             evts = self._apply_no_trois_shot_to_events(evts, cfg)
+            if not evts:
+                return {}
+
+        # ── dp2 exclusions — strip matching kills BEFORE any positive filter ─
+        excl_dp2 = [(k, getattr(self, fn))
+                    for k, fn, _afn, _ll, _rl, _sl in self._DP2_FILTER_DEFS
+                    if cfg.get(f"{k}_exclude") and k not in _NO_AUTO_EXCLUDE]
+        if excl_dp2:
+            excl_result: dict = {}
+            for dp, events in evts.items():
+                excluded_sigs: set = set()
+                for ex_key, ex_fn in excl_dp2:
+                    for e in ex_fn(dp, events, cfg):
+                        if e.get("type") == "kill":
+                            excluded_sigs.add((e["tick"], str(e.get("killer_sid", ""))))
+                surviving = [e for e in events
+                             if e.get("type") != "kill"
+                             or (e["tick"], str(e.get("killer_sid", ""))) not in excluded_sigs]
+                if surviving:
+                    excl_result[dp] = surviving
+            evts = excl_result
             if not evts:
                 return {}
 
@@ -9925,6 +10306,7 @@ class App(tk.Tk):
                             try:
                                 self._demo_tree.item(dp, values=("✕",
                                     self._demo_picker_fmt_date(dp),
+                                    self._demo_picker_fmt_map(dp),
                                     self._demo_picker_fmt_name(dp)),
                                     tags=("off",))
                             except Exception:
