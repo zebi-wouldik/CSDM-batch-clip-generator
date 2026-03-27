@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v161"""
+"""CSDM Batch Clips Generator v163"""
 
 
 import tkinter as tk
@@ -21,7 +21,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v161"
+APP_VERSION = "v163"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -2236,13 +2236,14 @@ class App(tk.Tk):
                         if _date_col_for_players and _pmk_col and _mmk_col:
                             try:
                                 cur.execute(
-                                    f'SELECT DISTINCT p.name, p.steam_id, '
+                                    f'SELECT DISTINCT ON (p.steam_id) p.name, p.steam_id, '
                                     f'MAX(m."{_date_col_for_players}") as last_seen '
                                     f'FROM players p '
                                     f'LEFT JOIN matches m ON m."{_mmk_col}" = p."{_pmk_col}" '
                                     f'WHERE p.name IS NOT NULL AND p.steam_id IS NOT NULL '
                                     f"AND p.name!='' AND p.steam_id!='' "
-                                    f'GROUP BY p.name, p.steam_id ORDER BY p.name')
+                                    f'GROUP BY p.steam_id, p.name '
+                                    f'ORDER BY p.steam_id, last_seen DESC NULLS LAST')
                                 rows = [(r[0], r[1], r[2]) for r in cur.fetchall()]
                             except Exception:
                                 cur.execute(
@@ -4047,25 +4048,18 @@ class App(tk.Tk):
         sec.pack(fill="x")
         rg = tk.Frame(sec, bg=BG2)
         rg.pack(fill="x")
-        rg.columnconfigure(0, weight=1)
-        rg.columnconfigure(1, weight=1)
-        for col, (title, opts, key, tip) in enumerate([
-            ("Encoder", ENCODER_OPTIONS, "encoder", "FFmpeg only."),
-            ("System",  RECSYS_OPTIONS,  "recsys",
-             "HLAE = injects via HLAE into CS2 (recommended — full options).\n"
-             "CS = native CSDM recording via CS2's startmovie command.\n\n"
-             "⚠ HLAE-exclusive features not available in CS mode:\n"
-             "  custom FOV (mirv_fov), AFX streams, No spectator UI,\n"
-             "  Fix scope FOV, and other mirv_* commands.\n"
-             "ℹ Vanilla CS2 effects (physics, gravity, blood) are injected in both modes:\n"
-             "  HLAE via extraArgs, CS via autoexec + runtime cfg injection."),
-        ]):
-            f = tk.Frame(rg, bg=BG2)
-            f.grid(row=0, column=col, sticky="new", padx=(0, 12 if col < 1 else 0))
-            mlabel(f, title).pack(anchor="w")
-            for o in opts:
-                hradio(f, o, self.v[key], o).pack(anchor="w")
-            desc_label(f, tip).pack(anchor="w", pady=(4, 0))
+        mlabel(rg, "System:").pack(anchor="w")
+        for o in RECSYS_OPTIONS:
+            hradio(rg, o, self.v["recsys"], o).pack(anchor="w")
+        desc_label(rg,
+            "HLAE = injects via HLAE into CS2 (recommended — full options).\n"
+            "CS = native CSDM recording via CS2's startmovie command.\n\n"
+            "⚠ HLAE-exclusive features not available in CS mode:\n"
+            "  custom FOV (mirv_fov), AFX streams, No spectator UI,\n"
+            "  Fix scope FOV, and other mirv_* commands.\n"
+            "ℹ Vanilla CS2 effects (physics, gravity, blood) are injected in both modes:\n"
+            "  HLAE via extraArgs, CS via autoexec + runtime cfg injection."
+        ).pack(anchor="w", pady=(4, 0))
 
         sec = Sec(p, "RESOLUTION & FRAMERATE")
         sec.pack(fill="x")
@@ -4306,7 +4300,10 @@ class App(tk.Tk):
              "Prevents mirv_fov from overriding the zoomed FOV on scoped weapons.\n"
              "Recommended: ON."),
             ("Auto Workshop DL", "hlae_workshop_download",
-             "Injects +cl_downloadfilter all — allows CS2 to download old Workshop map versions."),
+             "Injects +sv_pure 0 +sv_lan 1 — lets CS2 load a locally installed old Workshop map\n"
+             "version without re-downloading or validating it against the Workshop CDN.\n"
+             "⚠ The old map version must already be installed/cached on your machine.\n"
+             "⚠ Do NOT enable if you want CS2 to download the current map version."),
         ]:
             _cb = hchk(bool_opts, txt, self.v[key])
             _cb.pack(side="left", padx=(0, 6))
@@ -4318,8 +4315,8 @@ class App(tk.Tk):
         _ea_lbl.pack(anchor="w", pady=(8, 0))
         add_tip(_ea_lbl,
                 "Arguments passed directly to the HLAE session.\n"
-                "⚠ If CS2 gets stuck on an old Workshop map: add "
-                "+cl_downloadfilter all in Steam Launch Options, not here.")
+                "⚠ For old Workshop maps: enable 'Auto Workshop DL' above (injects sv_pure 0 + sv_lan 1)\n"
+                "and ensure the old map version is already installed/cached locally.")
         sentry(self._hlae_sec, self.v["hlae_extra_args"]).pack(fill="x", ipady=4, pady=(2, 0))
 
         # ── CS2 EFFECTS (available in both modes) ────────────────────────────
@@ -7821,9 +7818,12 @@ class App(tk.Tk):
                         self._date_col_type = _m_types.get(date_col, "").lower()
 
                 # Detect map column (optional — used by demo picker display)
+                # Must be resolved BEFORE the SELECT is built so map_sel is non-empty.
                 if self._map_col is None and self._db_schema.get("matches"):
                     self._map_col = self._find_col("matches", [
                         "map_name", "game_map", "map", "level_name", "server_map"])
+
+                # ── Build SELECT (map_sel now uses the resolved _map_col) ──────
 
                 # Empty _build_dsql: date filter applied in Python post-query
                 def _build_dsql(base_params):
@@ -8590,10 +8590,17 @@ class App(tk.Tk):
             non_kill      = [e for e in events if e.get("type") not in ("kill", "death", "round")]
 
             if mode == "full_clutch":
-                # One synthetic event per clutch window
+                # One synthetic event per clutch window.
+                # _seq_start_tick / _seq_end_tick respect the Before/After sliders:
+                #   start = clutch_start_tick - before_ticks  (lead-in from when player is last alive)
+                #   end   = last_kill_tick    + after_ticks   (tail after the final kill of the clutch)
+                before_s = float(cfg.get("before", 3))
+                after_s  = float(cfg.get("after",  5))
+                bt = int(before_s * tickrate)
+                at = int(after_s  * tickrate)
                 new_events = []
                 for rk, cw in sorted(clutch_windows.items(), key=lambda x: x[1]["start_tick"]):
-                    # Find last kill tick of round in all_kills for end boundary
+                    # End boundary: last kill tick in this round from all_kills data
                     r_kills = rounds_all.get(rk, [])
                     last_round_tick = max((k["tick"] for k in r_kills), default=cw["start_tick"])
                     synthetic = {
@@ -8604,8 +8611,9 @@ class App(tk.Tk):
                         "_clutch_end_tick":  last_round_tick,
                         "_clutch_opponents": cw["opponents"],
                         "_clutch_won":       cw["won"],
-                        "_seq_start_tick":   cw["start_tick"],  # exact start, no before-offset
-                        "_seq_end_tick":     last_round_tick,   # exact end, no after-offset
+                        # Apply Before/After padding around the clutch boundaries
+                        "_seq_start_tick":   max(0, cw["start_tick"] - bt),
+                        "_seq_end_tick":     last_round_tick + at,
                     }
                     # Add kills from this clutch as sub-events for badge display.
                     # Match by tick range: kill_tick in [clutch_start, round_end].
@@ -8679,9 +8687,8 @@ class App(tk.Tk):
         Events must be sorted by tick (guaranteed by SQL ORDER BY in _query_events).
 
         If an event carries _seq_start_tick / _seq_end_tick (set by clutch full_clutch
-        mode), those values override the normal before/after window for that event.
-        This lets the full-clutch clip span exactly from last-alive tick to
-        round-end tick without depending on the BEFORE/AFTER sliders.
+        mode), those values are used directly as clip boundaries — before/after padding
+        has already been baked in by _apply_clutch_filter using the cfg Before/After values.
         """
         if not events:
             return []
@@ -8838,7 +8845,8 @@ class App(tk.Tk):
         if sm != 100:
             runtime_cmds.append(f"host_timescale {round(sm / 100.0, 4)}")
         if self._cfg_bool(cfg, "hlae_workshop_download", False):
-            runtime_cmds.append("cl_downloadfilter all")
+            runtime_cmds.append("sv_pure 0")
+            runtime_cmds.append("sv_lan 1")
         if self._cfg_bool(cfg, "hlae_no_spectator_ui", True):
             runtime_cmds.append("cl_draw_only_deathnotices 1")
 
@@ -8902,7 +8910,13 @@ class App(tk.Tk):
         if self._cfg_bool(cfg, "hlae_fix_scope_fov", True):
             tokens.append("+mirv_fov handleZoom enabled 1")
         if self._cfg_bool(cfg, "hlae_workshop_download", False):
-            tokens.append("+cl_downloadfilter all")
+            # sv_pure 0 + sv_lan 1 allow CS2 to load locally installed Workshop map versions
+            # without trying to re-download or validate them against the Workshop CDN,
+            # which would pull the current (wrong) version instead of the old cached one.
+            tokens.append("+sv_pure")
+            tokens.append("0")
+            tokens.append("+sv_lan")
+            tokens.append("1")
 
         extra_raw = cfg.get("hlae_extra_args", "").strip()
         if extra_raw:
@@ -9273,8 +9287,8 @@ class App(tk.Tk):
         self._kill_triggered = False
         self._tagged_this_batch = []   # [(demo_path, tag_name), ...] — for rollback
         self.run_btn.config(state="disabled", bg=BG3, fg=MUTED)
-        self.stop_btn.config(state="normal")
-        self.kill_btn.config(state="normal")
+        self.stop_btn.config(state="normal", fg=RED)
+        self.kill_btn.config(state="normal", fg=RED)
         self._log(f"\n{'═' * 60}", "dim")
         self._log(f"  ▶ LAUNCH  —  {datetime.now().strftime('%H:%M:%S')}", "info")
         self._log(f"{'═' * 60}", "dim")
