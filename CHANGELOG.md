@@ -9,6 +9,82 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v166] — continued
+
+### Fixed: match type filter misses competitive/wingman on newer CSDM versions
+
+CSDM has stored competitive and wingman matches under two different `game_mode_str` values depending on its version: the full internal names (`scrimcomp5v5`, `scrimcomp2v2`) and the shorter aliases (`competitive`, `wingman`). A database built with one CSDM version and queried by another would silently skip those game types.
+
+**Fix:** `MATCH_TYPE_DEFS` entries now carry a `db_values: list` instead of a single `db_value: str`. `_MATCH_TYPE_KEY_TO_DB` maps each cfg key to the full list. The SQL builder flattens these lists into the `IN (…)` clause, so both spellings are matched in a single query. The in-DB visibility check and tooltip also use the multi-value list.
+
+Aliases added:
+
+| cfg key | DB values now matched |
+|---|---|
+| `match_type_competitive` | `scrimcomp5v5`, `competitive` |
+| `match_type_wingman` | `scrimcomp2v2`, `wingman` |
+
+---
+
+### Refactor: Clean Code pass — DRY, dead code removal, structural simplification
+
+Behaviour-preserving cleanup across the full file (~180 lines removed):
+
+**DRY / unified helpers**
+- `_load_json` / `_save_json` — 6 near-identical JSON persistence functions collapsed into 2 generic helpers; `load_presets`, `save_presets`, `load_saved_players`, `save_saved_players`, `load_asm_names`, `save_asm_names`, `load_config`, `save_config` all reduced to one-liners.
+- `_make_highlight_toggle` — shared trace/update closure extracted from `hchk` and `hradio`, which were duplicating ~20 lines of identical widget-highlight logic.
+- `_cfg_num` — generic numeric config reader underlying `_cfg_int` and `_cfg_float`; both kept as thin wrappers for call-site compatibility.
+- `_page_count()` — helper extracted in `PlayerSearchWidget`; replaced 4 repeated `max(1, (len + ps - 1) // ps)` expressions in `_page_next`, `_page_last`, `_page_jump`, and `_render_page`.
+- `_validate_run_inputs()` — player/event guard extracted from `_run` and `_dry_run`.
+- `_apply_theme_globals` — replaced 13 manual `global X; X = _THEME["X"]` assignments with a loop over `_THEME_GLOBAL_NAMES`.
+
+**Dead code removed**
+- `_engage_trois_tap`, `_disengage_trois_tap` — no-op `pass` methods; call site also cleaned.
+- `_on_tag_selected` — never called.
+- `_refresh_tag_combo` — `pass` method + 3 call sites.
+- `_on_trois_tap_toggle`, `_on_one_tap_toggle` — no-op `pass` methods; removed from `cmd_map` in `_build_filter_row`.
+- Full HS-lock chain: `_hs_only_is_required` (always returned `False`) → `_refresh_hs_lock_state` (always called `_unlock_hs`) → `_install_hs_lock_watchers` (installed traces that always no-oped) → `_lock_hs_to_only` (unreachable) → `_unlock_hs` — entire chain removed along with all call sites.
+
+**Eliminated 11 `_apply_*_to_events` one-liner wrappers**
+`_apply_spray_transfer_to_events`, `_apply_high_velocity_to_events`, `_apply_flick_to_events`, `_apply_sauveur_to_events`, `_apply_wall_bang_dp2_to_events`, `_apply_airborne_dp2_to_events`, `_apply_attacker_blind_dp2_to_events`, `_apply_collateral_dp2_to_events`, `_apply_trois_shot_to_events`, `_apply_no_trois_shot_to_events`, `_apply_one_tap_to_events` — all were identical `_apply_filter_to_events(…)` delegates. The preview path (`_apply_dp2_filters_to_events`) now builds inline lambdas from the registry data instead of dispatching through named methods.
+
+---
+
+## [v166]
+
+### Fixed: crash — `hchk`/`hradio` traces firing on destroyed widgets
+
+`_refresh_match_type_ui` destroys and recreates its checkbox children on every DB connect. The `var.trace_add("write", _update)` closures registered by each `hchk` call survived widget destruction. The next time any `BooleanVar` changed (theme change via `_retrigger_toggle_vars`, or any other write), the stale `_update` fired, called `.config()` on the destroyed widget, and raised:
+
+```
+_tkinter.TclError: invalid command name ".!panedwindow…!checkbutton-1"
+```
+
+**Fix:** added a module-level `_safe_trace_remove(var, mode, tid)` helper. Both `hchk` and `hradio` now:
+1. Store the trace ID returned by `trace_add`.
+2. Guard `_update` with `winfo_exists()` — if the widget is already gone, return immediately.
+3. Bind `<Destroy>` on the widget to call `_safe_trace_remove` automatically.
+
+Self-cleaning regardless of how many times the parent frame is rebuilt.
+
+---
+
+### Changed: "Close CS2 after demo" moved to FINAL ASSEMBLY
+
+Previously under RECORDING SYSTEM (wrong — that section covers codec/mode selection). Moved to the top of FINAL ASSEMBLY, separated from the assemble/delete checkboxes by a divider. Correct semantics: closing CS2 is a batch-flow concern, not a recording-system setting.
+
+---
+
+### Fixed: accelerated corpses during demo recording
+
+CS2 demo playback can inherit a residual `host_timescale` from a previous session, causing physics (ragdolls) to simulate faster than real time even when game speed is set to 100 %. Symptom: corpses fall unnaturally fast in recorded clips.
+
+**Fix:** `demo_timescale 1` is now the first command emitted by `_common_cs2_injection`, applied in both HLAE mode (via `extraArgs`) and CS mode (via `autoexec + runtime cfg`). Explicitly resets demo playback speed to 1× before any other physics commands fire.
+
+The "Ragdoll physics" checkbox tooltip now explains the issue and notes that unchecking (`cl_ragdoll_physics_enable 0`) freezes corpses entirely as an alternative.
+
+---
+
 ## [v164]
 
 ### Fixed: Clutch — false positives in Wingman (and any sub-5v5 mode)
@@ -67,6 +143,41 @@ Two bugs in the cleanup path:
 ---
 
 ### Changed: "Tools" tab renamed to "Settings"
+
+---
+
+## [v163]
+
+> Internal version bump — no documented changes. Shipped as the baseline before the v164 session.
+
+---
+
+## [v162]
+
+### Fixed: Stop / Kill buttons not lighting up during run
+
+`_run()` set both buttons to `state="normal"` but left `fg=MUTED`, so they remained visually greyed out even while active. Both now receive `fg=RED` on activation and are correctly reset to `fg=MUTED` by `_reset_btns()`.
+
+### Fixed: Map column empty in demo picker
+
+`_map_col` was detected inside the kills query block but evaluated *after* `map_sel` had already been constructed — so `map_sel` was always `""` on the first query run and the map column was never included in the SELECT. Detection moved to before `_build_dsql` / `map_sel`, ensuring the column is fetched from the very first query.
+
+### Fixed: Death notices showing a player's old username
+
+`_player_names` was built from `GROUP BY p.name, p.steam_id ORDER BY p.name`, which surfaces an arbitrary historical name when a player has multiple entries. Changed to `DISTINCT ON (p.steam_id) … ORDER BY p.steam_id, last_seen DESC NULLS LAST` so only the most recent name per SID is kept.
+
+### Removed: Encoder field from Video tab
+
+The Encoder selector (always "FFmpeg", no alternatives) has been removed from the `RECORDING SYSTEM` section. The `encoder` key is still written to the CSDM JSON for compatibility. The section now shows only the System radio buttons (HLAE / CS).
+
+### Fixed: Auto Workshop DL loading wrong map version
+
+`+cl_downloadfilter all` was the previous injection. This tells CS2 to download Workshop content from the CDN — but it pulls the **current published version** of the Workshop item, which may be a completely different map. The injection is replaced with `+sv_pure 0 +sv_lan 1`:
+
+- `sv_pure 0` — disables file validation so CS2 loads whatever map version is installed locally without checking against any CDN.
+- `sv_lan 1` — prevents CS2 from reaching external services for content verification.
+
+The old map version must already be cached/installed on the machine. The checkbox tooltip and the "Additional HLAE args" hint are updated to reflect this.
 
 ---
 

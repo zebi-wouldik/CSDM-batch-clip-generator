@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v164"""
+"""CSDM Batch Clips Generator v166"""
 
 
 import tkinter as tk
@@ -21,7 +21,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v164"
+APP_VERSION = "v166"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -125,6 +125,11 @@ YELLOW   = _THEME["YELLOW"]
 BLUE     = _THEME["BLUE"]
 DESC_COLOR = _THEME["DESC_COLOR"]
 
+_THEME_GLOBAL_NAMES = (
+    "BG", "BG2", "BG3", "BORDER", "ORANGE", "ORANGE2", "TEXT", "MUTED",
+    "GREEN", "RED", "YELLOW", "BLUE", "DESC_COLOR",
+)
+
 def _apply_theme_globals(bg_name: str, accent: str):
     """Recompute _THEME and update every module-level colour global in-place.
 
@@ -133,22 +138,10 @@ def _apply_theme_globals(bg_name: str, accent: str):
     Existing widgets are updated by App._apply_theme_to_widgets().
     """
     global _THEME
-    global BG, BG2, BG3, BORDER, ORANGE, ORANGE2, TEXT, MUTED
-    global GREEN, RED, YELLOW, BLUE, DESC_COLOR
     _THEME = _build_theme(bg_name, accent)
-    BG        = _THEME["BG"]
-    BG2       = _THEME["BG2"]
-    BG3       = _THEME["BG3"]
-    BORDER    = _THEME["BORDER"]
-    ORANGE    = _THEME["ORANGE"]
-    ORANGE2   = _THEME["ORANGE2"]
-    TEXT      = _THEME["TEXT"]
-    MUTED     = _THEME["MUTED"]
-    GREEN     = _THEME["GREEN"]
-    RED       = _THEME["RED"]
-    YELLOW    = _THEME["YELLOW"]
-    BLUE      = _THEME["BLUE"]
-    DESC_COLOR = _THEME["DESC_COLOR"]
+    g = globals()
+    for name in _THEME_GLOBAL_NAMES:
+        g[name] = _THEME[name]
 
 FONT_MONO = ("Consolas", 10)
 FONT_SM = ("Consolas", 9)
@@ -565,24 +558,29 @@ WEAPON_ICONS = {'Pistols': '🔫', 'SMGs': '🔫', 'Rifles': '🎯', 'Snipers': 
 # Maps every known game_mode_str value (from CSDM PostgreSQL) to a UI label.
 # game_mode_str comes from the CS2 "game_mode" + "game_type" cvar combination.
 # Only entries whose raw value is actually found in the DB are shown in the UI.
+#
+# Tuple shape: (db_values, cfg_key, ui_label)
+#   db_values — list of raw strings the DB may store for this mode.
+#   CSDM has used both short aliases ("competitive") and full internal names
+#   ("scrimcomp5v5") across versions, so multiple values per entry are needed.
 MATCH_TYPE_DEFS: list = [
-    # (db_value,             cfg_key,                    ui_label)
-    ("premier",              "match_type_premier",        "🏆 Premier"),
-    ("scrimcomp5v5",         "match_type_competitive",    "🎯 Competitive"),
-    ("scrimcomp2v2",         "match_type_wingman",        "🤝 Wingman"),
-    ("casual",               "match_type_casual",         "🎮 Casual"),
-    ("deathmatch",           "match_type_deathmatch",     "💀 Deathmatch"),
-    ("training",             "match_type_training",       "🎓 Training"),
-    ("new_user_training",    "match_type_new_user",       "🎓 New User"),
-    ("armsrace",             "match_type_armsrace",       "🔫 Arms Race"),
-    ("gungameprogressive",   "match_type_armsrace_alt",   "🔫 Arms Race (alt)"),
-    ("gungametrbomb",        "match_type_demolition",     "💣 Demolition"),
-    ("cooperative",          "match_type_coop",           "🤖 Co-op"),
-    ("skirmish",             "match_type_skirmish",       "⚡ Skirmish"),
-    ("retake",               "match_type_retake",         "↩ Retakes"),
+    # (db_values,                              cfg_key,                    ui_label)
+    (["premier"],                              "match_type_premier",       "🏆 Premier"),
+    (["scrimcomp5v5", "competitive"],          "match_type_competitive",   "🎯 Competitive"),
+    (["scrimcomp2v2", "wingman"],              "match_type_wingman",       "🤝 Wingman"),
+    (["casual"],                               "match_type_casual",        "🎮 Casual"),
+    (["deathmatch"],                           "match_type_deathmatch",    "💀 Deathmatch"),
+    (["training"],                             "match_type_training",      "🎓 Training"),
+    (["new_user_training"],                    "match_type_new_user",      "🎓 New User"),
+    (["armsrace"],                             "match_type_armsrace",      "🔫 Arms Race"),
+    (["gungameprogressive"],                   "match_type_armsrace_alt",  "🔫 Arms Race (alt)"),
+    (["gungametrbomb"],                        "match_type_demolition",    "💣 Demolition"),
+    (["cooperative"],                          "match_type_coop",          "🤖 Co-op"),
+    (["skirmish"],                             "match_type_skirmish",      "⚡ Skirmish"),
+    (["retake"],                               "match_type_retake",        "↩ Retakes"),
 ]
-# Fast lookup: cfg_key → db_value
-_MATCH_TYPE_KEY_TO_DB: dict = {cfg_k: db_v for db_v, cfg_k, _ in MATCH_TYPE_DEFS}
+# Fast lookup: cfg_key → [list of db values] (one checkbox may match several raw strings)
+_MATCH_TYPE_KEY_TO_DB: dict = {cfg_k: db_vals for db_vals, cfg_k, _ in MATCH_TYPE_DEFS}
 # All cfg keys for persistence
 _MATCH_TYPE_CFG_KEYS: list = [cfg_k for _, cfg_k, _ in MATCH_TYPE_DEFS]
 
@@ -735,78 +733,56 @@ PRESET_KEYS = {
 # ═══════════════════════════════════════════════════════
 #  Persistence
 # ═══════════════════════════════════════════════════════
-def load_presets():
-    if os.path.exists(PRESETS_FILE):
+def _load_json(path, default_factory=dict):
+    if os.path.exists(path):
         try:
-            with open(PRESETS_FILE, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
-    return {}
+    return default_factory()
+
+def _save_json(path, data):
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+def load_presets():
+    return _load_json(PRESETS_FILE)
 
 def save_presets(presets):
-    try:
-        with open(PRESETS_FILE, "w", encoding="utf-8") as f:
-            json.dump(presets, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    _save_json(PRESETS_FILE, presets)
 
 def load_saved_players():
-    if os.path.exists(PLAYERS_FILE):
-        try:
-            with open(PLAYERS_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return []
+    return _load_json(PLAYERS_FILE, list)
 
 def save_saved_players(players):
-    try:
-        with open(PLAYERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(players, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    _save_json(PLAYERS_FILE, players)
 
 def load_asm_names():
-    if os.path.exists(ASM_NAMES_FILE):
-        try:
-            with open(ASM_NAMES_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return []
+    return _load_json(ASM_NAMES_FILE, list)
 
 def save_asm_names(names):
-    try:
-        with open(ASM_NAMES_FILE, "w", encoding="utf-8") as f:
-            json.dump(names, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    _save_json(ASM_NAMES_FILE, names)
 
 def load_config():
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-                saved = json.load(f)
-            cfg = DEFAULT_CONFIG.copy()
-            cfg.update(saved)
-            # Backward compat: old headshots_only bool → headshots_mode
-            if "headshots_only" in saved and "headshots_mode" not in saved:
-                cfg["headshots_mode"] = "only" if saved["headshots_only"] else "all"
-            # Backward compat: old cs2_minimize → cs2_send_to_back
-            if "cs2_minimize" in saved and "cs2_send_to_back" not in saved:
-                cfg["cs2_send_to_back"] = bool(saved["cs2_minimize"])
-            return cfg
-        except Exception:
-            pass
-    return DEFAULT_CONFIG.copy()
+    saved = _load_json(CONFIG_FILE)
+    if not saved:
+        return DEFAULT_CONFIG.copy()
+    cfg = DEFAULT_CONFIG.copy()
+    cfg.update(saved)
+    # Backward compat: old headshots_only bool → headshots_mode
+    if "headshots_only" in saved and "headshots_mode" not in saved:
+        cfg["headshots_mode"] = "only" if saved["headshots_only"] else "all"
+    # Backward compat: old cs2_minimize → cs2_send_to_back
+    if "cs2_minimize" in saved and "cs2_send_to_back" not in saved:
+        cfg["cs2_send_to_back"] = bool(saved["cs2_minimize"])
+    return cfg
 
 def save_config(cfg):
-    try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
-            json.dump(cfg, f, indent=2, ensure_ascii=False)
-    except Exception:
-        pass
+    _save_json(CONFIG_FILE, cfg)
 
 # ═══════════════════════════════════════════════════════
 #  Date helpers  DD-MM-YYYY <-> YYYY-MM-DD
@@ -1467,11 +1443,14 @@ class PlayerSearchWidget(tk.Frame):
         self._page = 0
         self._render_page()
 
+    def _page_count(self):
+        return max(1, (len(self._filtered) + self._PAGE_SIZE - 1) // self._PAGE_SIZE)
+
     def _render_page(self):
         """Repopulate the listbox with the current page of _filtered."""
         ps = self._PAGE_SIZE
         total = len(self._filtered)
-        n_pages = max(1, (total + ps - 1) // ps)
+        n_pages = self._page_count()
         self._page = max(0, min(self._page, n_pages - 1))
         start = self._page * ps
         page_entries = self._filtered[start:start + ps]
@@ -1515,28 +1494,21 @@ class PlayerSearchWidget(tk.Frame):
             self._render_page()
 
     def _page_next(self):
-        ps = self._PAGE_SIZE
-        n_pages = max(1, (len(self._filtered) + ps - 1) // ps)
-        if self._page < n_pages - 1:
+        if self._page < self._page_count() - 1:
             self._page += 1
             self._render_page()
 
     def _page_last(self):
-        ps = self._PAGE_SIZE
-        n_pages = max(1, (len(self._filtered) + ps - 1) // ps)
-        self._page = n_pages - 1
+        self._page = self._page_count() - 1
         self._render_page()
 
     def _page_jump(self, *_):
         """Jump to the page number typed in the entry field."""
         try:
-            ps = self._PAGE_SIZE
-            n_pages = max(1, (len(self._filtered) + ps - 1) // ps)
-            target = int(self._pg_entry_var.get().strip()) - 1  # 1-based → 0-based
-            self._page = max(0, min(target, n_pages - 1))
+            target = int(self._pg_entry_var.get().strip()) - 1
+            self._page = max(0, min(target, self._page_count() - 1))
             self._render_page()
         except (ValueError, Exception):
-            # Invalid input — just re-render current page (resets entry to valid number)
             self._render_page()
 
     def _on_lb_select(self, *_):
@@ -1801,25 +1773,45 @@ def slabel(parent, text, **kw):
     return tk.Label(parent, text=text, font=(FONT_SM[0], FONT_SM[1], "bold"),
                     fg=ORANGE, bg=BG2, **kw)
 
+def _safe_trace_remove(var, mode, tid):
+    """Remove a tkinter variable trace silently — safe to call even if already removed."""
+    try:
+        var.trace_remove(mode, tid)
+    except Exception:
+        pass
+
+
+def _make_highlight_toggle(widget, var, is_active_fn):
+    """Shared highlight/dim logic for hchk and hradio widgets."""
+    def _update(*args):
+        try:
+            if not widget.winfo_exists():
+                try:
+                    var.trace_remove("write", args[2] if len(args) > 2 else args[0])
+                except Exception:
+                    pass
+                return
+        except Exception:
+            return
+        if is_active_fn():
+            widget.config(bg=_t("ORANGE2"), fg="white",
+                          activebackground=_t("ORANGE"), activeforeground="white",
+                          selectcolor=_t("ORANGE2"))
+        else:
+            widget.config(bg=_t("BG3"), fg=_t("MUTED"),
+                          activebackground=_t("BG3"), activeforeground=_t("ORANGE"),
+                          selectcolor=_t("BG3"))
+    _tid = var.trace_add("write", _update)
+    _update()
+    widget.bind("<Destroy>", lambda e: _safe_trace_remove(var, "write", _tid))
+
 def hchk(parent, text, var, **kw):
     cb_kw = dict(font=FONT_SM, relief="flat", bd=0, cursor="hand2",
                  highlightthickness=0, padx=10, pady=4)
     cb_kw.update(kw)
     cb = tk.Checkbutton(parent, text=text, variable=var, **cb_kw)
-
-    def _update(*_):
-        if var.get():
-            cb.config(bg=_t("ORANGE2"), fg="white",
-                      activebackground=_t("ORANGE"), activeforeground="white",
-                      selectcolor=_t("ORANGE2"))
-        else:
-            cb.config(bg=_t("BG3"), fg=_t("MUTED"),
-                      activebackground=_t("BG3"), activeforeground=_t("ORANGE"),
-                      selectcolor=_t("BG3"))
-    var.trace_add("write", _update)
-    _update()
+    _make_highlight_toggle(cb, var, var.get)
     return cb
-
 
 def hradio(parent, text, var, value, **kw):
     """Radiobutton with highlight when selected."""
@@ -1827,18 +1819,7 @@ def hradio(parent, text, var, value, **kw):
                  highlightthickness=0, padx=10, pady=4)
     rb_kw.update(kw)
     rb = tk.Radiobutton(parent, text=text, variable=var, value=value, **rb_kw)
-
-    def _update(*_):
-        if var.get() == value:
-            rb.config(bg=_t("ORANGE2"), fg="white",
-                      activebackground=_t("ORANGE"), activeforeground="white",
-                      selectcolor=_t("ORANGE2"))
-        else:
-            rb.config(bg=_t("BG3"), fg=_t("MUTED"),
-                      activebackground=_t("BG3"), activeforeground=_t("ORANGE"),
-                      selectcolor=_t("BG3"))
-    var.trace_add("write", _update)
-    _update()
+    _make_highlight_toggle(rb, var, lambda: var.get() == value)
     return rb
 
 def desc_label(parent, text):
@@ -2340,13 +2321,22 @@ class App(tk.Tk):
                             "WHERE weapon_name IS NOT NULL AND weapon_name!='' ORDER BY weapon_name")
                         weapons = [r[0] for r in cur.fetchall()]
 
-                        # Detect distinct game_mode_str values for match type filter
+                        # Detect distinct game_mode_str values for match type filter.
+                        # game_mode_str is the authoritative column (text, e.g. "premier",
+                        # "scrimcomp2v2"). game_mode (integer) is a numeric fallback.
+                        # Never use "type" or "source" — those hold the match source
+                        # ("Matchmaking", "Faceit"…), not the game mode.
                         match_types_found: list = []
                         _gm_col = next(
                             (c for c in schema.get("matches", [])
-                             if c.lower() in ("game_mode_str", "game_mode", "game_type",
-                                              "type", "source", "mode")),
+                             if c.lower() == "game_mode_str"),
                             None)
+                        if not _gm_col:
+                            # Numeric fallback — less readable but still filterable
+                            _gm_col = next(
+                                (c for c in schema.get("matches", [])
+                                 if c.lower() == "game_mode"),
+                                None)
                         if _gm_col:
                             try:
                                 cur.execute(
@@ -2469,7 +2459,7 @@ class App(tk.Tk):
 
         self._build_weapons(weapons)
         self._refresh_match_type_ui()
-        self._refresh_tag_combo()
+
         self._refresh_tags_list_display()
 
         # Deferred tag restoration (config loaded before DB was ready)
@@ -2568,77 +2558,67 @@ class App(tk.Tk):
     #  Tags DB
     # ═══════════════════════════════════════════════════
     def _refresh_match_type_ui(self):
-        """Rebuild the match type checkboxes based on what game_mode_str values are in the DB.
+        """Rebuild the match type checkboxes.
 
-        Called after _connect_and_load succeeds. Shows only types that actually exist in the DB;
-        if nothing was detected (old schema or no game_mode_str column) the whole section is hidden.
+        All 13 known types are always shown.  Types NOT found in the DB are
+        greyed-out and disabled so the user can see what exists but cannot
+        accidentally filter on phantom modes.  The section itself is always
+        visible (never hidden) — it is built during _tab_capturer so it is
+        always present.
         """
         try:
             frame = self._match_type_frame
         except AttributeError:
-            return  # UI not yet built (called too early — will be called again after build)
+            return  # UI not built yet — called again from _on_load_ok after build
+
         for w in frame.winfo_children():
             w.destroy()
 
         found = set(self._db_match_types)
-        visible = [(db_v, cfg_k, lbl) for db_v, cfg_k, lbl in MATCH_TYPE_DEFS if db_v in found]
 
-        if not visible:
-            # Column not detected or DB empty — hide the whole section
-            try:
-                self._match_type_sec.pack_forget()
-            except Exception:
-                pass
-            return
-
-        try:
-            self._match_type_sec.pack(fill="x")
-        except Exception:
-            pass
-
-        # Enable toggle
+        # Enable toggle row
         toggle_row = tk.Frame(frame, bg=BG2)
         toggle_row.pack(fill="x")
         _en_cb = hchk(toggle_row, "Filter by type", self.v["match_type_filter_enabled"],
                       command=self._on_match_type_toggle)
         _en_cb.pack(side="left")
         add_tip(_en_cb,
-                "When checked: only demos matching the selected types are included.\n"
-                "When unchecked: all match types pass (no filter).")
+                "When checked: only demos matching at least one selected type are included.\n"
+                "When unchecked: all match types pass (no SQL overhead).\n"
+                "Greyed-out types are not present in your database.")
 
-        # Checkboxes — one per discovered type
-        cb_row = tk.Frame(frame, bg=BG2)
-        cb_row.pack(fill="x", pady=(4, 0))
-        for db_v, cfg_k, lbl in visible:
-            _cb = hchk(cb_row, lbl, self.v[cfg_k])
-            _cb.pack(side="left", padx=(0, 8))
-            add_tip(_cb, f"Include {lbl} matches (game_mode_str = '{db_v}').")
+        # Checkbox grid — all types, wrap to new row every 4
+        cb_frame = tk.Frame(frame, bg=BG2)
+        cb_frame.pack(fill="x", pady=(4, 0))
+        self._mt_checkboxes: list = []   # [(widget, in_db)]
+
+        for col_idx, (db_vals, cfg_k, lbl) in enumerate(MATCH_TYPE_DEFS):
+            in_db = any(v in found for v in db_vals)
+            _cb = hchk(cb_frame, lbl, self.v[cfg_k])
+            _cb.grid(row=col_idx // 4, column=col_idx % 4, sticky="w", padx=(0, 12), pady=1)
+            vals_str = ", ".join(f"'{v}'" for v in db_vals)
+            tip = (f"game_mode_str IN ({vals_str})  —  found in your database."
+                   if in_db else
+                   f"game_mode_str IN ({vals_str})  —  not found in your database (greyed out).")
+            add_tip(_cb, tip)
+            self._mt_checkboxes.append((_cb, in_db))
 
         self._on_match_type_toggle()
 
     def _on_match_type_toggle(self, *_):
-        """Grey out type checkboxes when the enable toggle is off."""
+        """Apply enable/disable state to all type checkboxes.
+
+        Rules:
+          - master toggle OFF  → all checkboxes disabled (no filter active)
+          - master toggle ON   → in-DB types enabled, out-of-DB types stay disabled
+        """
         try:
             enabled = self.v["match_type_filter_enabled"].get()
-            frame = self._match_type_frame
-            # Walk all hchk children inside cb_row (second child)
-            children = frame.winfo_children()
-            if len(children) >= 2:
-                for w in children[1].winfo_children():
-                    try:
-                        w.config(state="normal" if enabled else "disabled")
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+            for cb, in_db in self._mt_checkboxes:
+                cb.config(state=("normal" if (enabled and in_db) else "disabled"))
+        except AttributeError:
+            pass  # checkboxes not built yet
 
-    def _refresh_tag_combo(self):
-        # Combo removed — auto-tag managed via tag selection in Tags tab.
-        # Method kept for _connect_and_load compatibility.
-        pass
-
-    def _on_tag_selected(self, e=None):
-        pass  # Obsolete — kept for compat
 
     def _create_new_tag_dialog(self, from_combo=True):
         ts = self._tags_schema
@@ -2669,7 +2649,7 @@ class App(tk.Tk):
                 conn.commit()
             conn.close()
             self._tags_list.append((new_id, name, color))
-            self._refresh_tag_combo()
+    
             self._refresh_tags_list_display()
             self._log(f"Tag '{name}' created (id={new_id})", "ok")
             return name
@@ -3390,14 +3370,6 @@ class App(tk.Tk):
         _sa = self._slider(tg, "Seconds AFTER", self.v["after"],  1, 15, 0, 1)
         add_tip(_sa, "Seconds of footage recorded after the event tick.")
 
-        tr = tk.Frame(sec, bg=BG2)
-        tr.pack(fill="x", pady=(4, 0))
-        _cs2_cb = hchk(tr, "Close CS2 after demo", self.v["close_game_after"])
-        _cs2_cb.pack(side="left")
-        add_tip(_cs2_cb, "closeGameAfterRecording — closes CS2 after each recorded demo.\n"
-                         "Recommended: ON. Leaving CS2 open between demos can cause\n"
-                         "instability on long batches.")
-
         rg = tk.Frame(sec, bg=BG2)
         rg.pack(fill="x", pady=(6, 0))
         _ret_lbl = mlabel(rg, "Retries:")
@@ -3426,16 +3398,19 @@ class App(tk.Tk):
             hradio(rg, lbl, self.v["clip_order"], val).pack(side="left", padx=(4, 0))
 
         # ══════════════════════════════════════════════════════════════════════
-        # Match type section — hidden until DB connects and populates _db_match_types
+        # Match type section — always visible; types absent from DB are greyed out
         self._match_type_sec = Sec(p, "MATCH TYPES")
-        self._match_type_sec.pack_forget()  # hidden by default until DB reports types
-        _mt_desc = desc_label(self._match_type_sec,
-            "Filter demos by match type. Only types found in your database are shown.\n"
-            "When the filter is off, all types are included.")
-        _mt_desc.pack(anchor="w", pady=(0, 4))
+        self._match_type_sec.pack(fill="x")
+        desc_label(self._match_type_sec,
+            "Filter demos by CS2 match type.\n"
+            "Greyed-out types are not present in your database.\n"
+            "When the filter toggle is off, all types pass (no SQL overhead)."
+        ).pack(anchor="w", pady=(0, 4))
         self._match_type_frame = tk.Frame(self._match_type_sec, bg=BG2)
         self._match_type_frame.pack(fill="x")
-        # Populated by _refresh_match_type_ui() after DB connects
+        self._mt_checkboxes: list = []
+        # Populated immediately below with all known types (greyed until DB connects)
+        self._refresh_match_type_ui()
 
         # ══════════════════════════════════════════════════════════════════════
         sec = Sec(p, "KILL FILTERS")
@@ -3598,7 +3573,6 @@ class App(tk.Tk):
             else:
                 self._build_filter_row(sec, _fdef, self._must_widgets["db"])
         self.after(50, lambda: self._on_logic_mode_change("db"))
-        self._install_hs_lock_watchers()
 
         # ── CLUTCH ────────────────────────────────────────────────────────────
         tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
@@ -4325,6 +4299,17 @@ class App(tk.Tk):
 
         sec_asm = Sec(p, "FINAL ASSEMBLY")
         sec_asm.pack(fill="x")
+
+        _cga_row = tk.Frame(sec_asm, bg=BG2)
+        _cga_row.pack(fill="x", pady=(4, 6))
+        _cga_cb = hchk(_cga_row, "Close CS2 after each demo", self.v["close_game_after"])
+        _cga_cb.pack(side="left")
+        add_tip(_cga_cb,
+                "closeGameAfterRecording — closes CS2 after each recorded demo.\n"
+                "Recommended: ON. Leaving CS2 open between demos can cause\n"
+                "instability on long batches.")
+        tk.Frame(sec_asm, height=1, bg=BORDER).pack(fill="x", pady=(0, 4))
+
         _asm_cb1 = hchk(sec_asm, "Assemble all clips at the end",
              self.v["assemble_after"])
         _asm_cb1.pack(anchor="w", pady=(4, 2))
@@ -4520,7 +4505,13 @@ class App(tk.Tk):
         col_r.grid(row=0, column=1, sticky="new")
         for txt, key, tip in [
             ("Ragdoll physics",  "phys_ragdoll_enable",
-             "cl_ragdoll_physics_enable — disable for frozen corpses."),
+             "cl_ragdoll_physics_enable\n\n"
+             "ON  = corpses fall with physics (default).\n"
+             "OFF = corpses freeze in place on death — cleaner montage look.\n\n"
+             "⚠ If corpses appear to fall faster than normal during recording,\n"
+             "  uncheck this to freeze them. The script already injects\n"
+             "  demo_timescale 1 to lock playback speed, but residual\n"
+             "  host_timescale or CS2 engine quirks can still affect physics."),
             ("Blood on walls",   "phys_blood",
              "violence_hblood — disable for a cleaner render."),
             ("Dynamic lighting", "phys_dynamic_lighting",
@@ -4797,38 +4788,11 @@ class App(tk.Tk):
                 self.v["kill_mod_trois_shot"].set(False)
             if self.v["kill_mod_trois_tap"].get():
                 self.v["kill_mod_trois_tap"].set(False)
-                self._disengage_trois_tap()
-
-    def _on_one_tap_toggle(self, *_):
-        """Toggle ONE TAP. Fully independent of TROIS SHOT and TROIS TAP."""
-        pass  # No coupling logic — independent filter
 
     def _on_headshots_mode_change(self, *_):
         """Called when the user manually changes the HS radio — no-op if locked."""
         pass  # The radio var updates itself; lock is enforced by widget state
 
-    def _lock_hs_to_only(self):
-        """Force headshots_mode to 'only' and disable the HS radio buttons."""
-        try:
-            self.v["headshots_mode"].set("only")
-            for w in self._hs_row.winfo_children():
-                if isinstance(w, tk.Radiobutton):
-                    w.config(state="disabled")
-        except Exception:
-            pass
-
-    def _unlock_hs(self):
-        """Re-enable the HS radio buttons."""
-        try:
-            for w in self._hs_row.winfo_children():
-                if isinstance(w, tk.Radiobutton):
-                    w.config(state="normal")
-        except Exception:
-            pass
-
-    def _on_trois_tap_toggle(self, *_):
-        """Toggle TROIS TAP checkbox. Independent of TROIS SHOT and ONE TAP."""
-        pass  # No coupling logic — independent filter
 
     def _on_logic_mode_change(self, category: str, *_):
         """Ensure ★ Must toggles are visible (fixed required+optional logic)."""
@@ -4837,9 +4801,6 @@ class App(tk.Tk):
                 widget.pack(side="left", padx=(8, 0))
             except Exception:
                 pass
-        if category in ("mods", "dp2"):
-            self._refresh_hs_lock_state()
-
     def _build_filter_row(self, parent, fdef: "FilterDef",
                           must_list: list, pady: int = 2) -> None:
         """Build one standard kill-filter row from a FilterDef.
@@ -4858,8 +4819,6 @@ class App(tk.Tk):
         # Command for special filters
         cmd_map = {
             "trois_shot": self._on_trois_shot_toggle,
-            "trois_tap":  self._on_trois_tap_toggle,
-            "one_tap":    self._on_one_tap_toggle,
         }
         cmd = cmd_map.get(fdef.special)
 
@@ -4923,7 +4882,7 @@ class App(tk.Tk):
         self._on_logic_mode_change("mods")
         self._on_logic_mode_change("dp2")
         self._on_logic_mode_change("db")
-        self._refresh_hs_lock_state()
+
 
     def _clear_kill_filters(self):
         keys = [k for k, *_ in self._FILTER_BADGE_DEFS]
@@ -4932,7 +4891,7 @@ class App(tk.Tk):
                 v = self.v.get(f"{k}{suffix}")
                 if v is not None:
                     v.set(False)
-        self._refresh_hs_lock_state()
+
         self._log_flash("  ✓ All kill/situation filters unselected.", "ok")
 
     @staticmethod
@@ -4945,35 +4904,6 @@ class App(tk.Tk):
                 return default
         return v
 
-    def _hs_only_is_required(self, cfg) -> bool:
-        """HS lock is no longer enforced automatically. Always returns False."""
-        return False
-
-    def _refresh_hs_lock_state(self):
-        try:
-            if self._hs_only_is_required(self.v):
-                self._lock_hs_to_only()
-            else:
-                self._unlock_hs()
-        except Exception:
-            pass
-
-    def _install_hs_lock_watchers(self):
-        if getattr(self, "_hs_lock_watchers_installed", False):
-            return
-        keys = {
-            "kill_mod_one_tap", "kill_mod_trois_tap",
-            "kill_mod_logic_dp2", "kill_mod_logic_mods",
-            "kill_mod_one_tap_req",
-            *self._SQL_MOD_KEYS,
-            *(k for k, *_ in self._DP2_FILTER_DEFS),
-        }
-        for key in keys:
-            var = self.v.get(key)
-            if hasattr(var, "trace_add"):
-                var.trace_add("write", lambda *_: self._refresh_hs_lock_state())
-        self._hs_lock_watchers_installed = True
-        self._refresh_hs_lock_state()
 
     def _wire_enable_must(self, enable_var: tk.BooleanVar, req_var: tk.BooleanVar):
         """Couple an Enable checkbox with its ★ Must checkbox.
@@ -5000,13 +4930,6 @@ class App(tk.Tk):
 
         req_var.trace_add("write", _on_req_change)
         enable_var.trace_add("write", _on_enable_change)
-
-    def _engage_trois_tap(self):
-        pass  # No-op: HS lock removed
-
-    def _disengage_trois_tap(self):
-        pass  # No-op: HS lock removed
-
 
     def _retrigger_toggle_vars(self):
         """Nudge every BooleanVar and StringVar so hchk/hradio _update closures re-fire.
@@ -5491,10 +5414,6 @@ class App(tk.Tk):
 
         return filtered
 
-    def _apply_spray_transfer_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_spray_transfer",
-            self._spray_transfer_filter, "🔫 SPRAY → spray transfer")
 
     # ── dp2 filters: High Velocity, Flick, Savior ───────────────────────
 
@@ -5884,40 +5803,6 @@ class App(tk.Tk):
             collateral_kills.extend(g)
         return collateral_kills + non_kill
 
-    def _apply_high_velocity_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_high_velocity",
-            self._high_velocity_filter, "🏎 FERRARI PEEK → counter-strafe")
-
-    def _apply_flick_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_flick",
-            self._flick_filter, "↩ FLICK")
-
-    def _apply_sauveur_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_sauveur",
-            self._sauveur_filter, "🛡 SAVIOR")
-
-    def _apply_wall_bang_dp2_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_wall_bang",
-            self._wall_bang_dp2_filter, "🧱 WALLBANG → penetrated")
-
-    def _apply_airborne_dp2_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_airborne",
-            self._airborne_dp2_filter, "🪂 AIRBORNE → attackerinair")
-
-    def _apply_attacker_blind_dp2_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_attacker_blind",
-            self._attacker_blind_dp2_filter, "😵 BLIND FIRE → attackerblind")
-
-    def _apply_collateral_dp2_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_collateral",
-            self._collateral_dp2_filter, "🎯 COLLATERAL → penetrated")
 
     @staticmethod
     def _stamp_mf(events, cfg_key):
@@ -6007,25 +5892,6 @@ class App(tk.Tk):
                 result[dp] = combined
         return result
 
-    def _apply_trois_shot_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_trois_shot",
-            self._trois_shot_filter, "🎲 TROIS SHOT → TROIS SHOT")
-
-    def _apply_no_trois_shot_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_no_trois_shot",
-            self._no_trois_shot_filter, "🚫🎲 Exclude → precise")
-
-    def _apply_one_tap_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_one_tap",
-            self._one_tap_filter, "🎯 ONE TAP → one tap")
-
-    def _apply_trois_tap_to_events(self, evts, cfg):
-        return self._apply_filter_to_events(
-            evts, cfg, "kill_mod_trois_tap",
-            self._trois_tap_filter, "🎯🎲 TROIS TAP → TROIS TAP")
 
     def _tab_tags(self, parent):
         p = self._make_tab_scroll(parent)
@@ -6714,7 +6580,7 @@ class App(tk.Tk):
             return
         ok, err = self._delete_tag_from_db(tag_id, tag_name)
         if ok:
-            self._refresh_tag_combo()
+    
             self._refresh_tags_list_display()
             self._log(f"Tag '{tag_name}' supprime.", "ok")
         else:
@@ -7800,13 +7666,13 @@ class App(tk.Tk):
                 # Only applied when at least one type checkbox is checked.
                 mtsql = ""
                 if cfg.get("match_type_filter_enabled"):
-                    _gm_col = self._find_col("matches", [
-                        "game_mode_str", "game_mode", "game_type", "type", "source", "mode"])
+                    _gm_col = self._find_col("matches", ["game_mode_str", "game_mode"])
                     if _gm_col:
                         selected_db_vals = [
-                            _MATCH_TYPE_KEY_TO_DB[cfg_k]
+                            db_v
                             for cfg_k in _MATCH_TYPE_CFG_KEYS
                             if cfg.get(cfg_k)
+                            for db_v in _MATCH_TYPE_KEY_TO_DB[cfg_k]
                         ]
                         if selected_db_vals:
                             ph = ",".join(["%s"] * len(selected_db_vals))
@@ -8975,31 +8841,25 @@ class App(tk.Tk):
             return f"{pn} ({sids[0]})"
         return "  +  ".join(self._player_names.get(s, s) for s in sids)
 
-    def _cfg_int(self, cfg, key, default, lo=None, hi=None):
+    def _cfg_num(self, cfg, key, default, lo=None, hi=None, as_int=True):
         raw = cfg.get(key, default)
+        cast = (lambda x: int(float(x))) if as_int else float
         try:
-            val = int(float(str(raw).strip()))
+            val = cast(str(raw).strip())
         except Exception:
             self._alog(f"  ⚠ cfg '{key}' invalid ({raw}) — fallback {default}", "warn")
-            val = int(default)
+            val = cast(default)
         if lo is not None:
             val = max(lo, val)
         if hi is not None:
             val = min(hi, val)
         return val
 
+    def _cfg_int(self, cfg, key, default, lo=None, hi=None):
+        return self._cfg_num(cfg, key, default, lo, hi, as_int=True)
+
     def _cfg_float(self, cfg, key, default, lo=None, hi=None):
-        raw = cfg.get(key, default)
-        try:
-            val = float(str(raw).strip())
-        except Exception:
-            self._alog(f"  ⚠ cfg '{key}' invalid ({raw}) — fallback {default}", "warn")
-            val = float(default)
-        if lo is not None:
-            val = max(lo, val)
-        if hi is not None:
-            val = min(hi, val)
-        return val
+        return self._cfg_num(cfg, key, default, lo, hi, as_int=False)
 
     def _cfg_bool(self, cfg, key, default):
         raw = cfg.get(key, default)
@@ -9028,6 +8888,9 @@ class App(tk.Tk):
             launch_args.extend(wm_map[wm].split())
 
         cmds = [
+            # Lock demo playback speed to 1× — prevents residual host_timescale from
+            # a previous session making ragdolls/physics run faster than real-time.
+            "demo_timescale 1",
             f"cl_ragdoll_gravity {self._cfg_int(cfg, 'phys_ragdoll_gravity', 600, -5000, 5000)}",
             f"ragdoll_gravity_scale {self._cfg_float(cfg, 'phys_ragdoll_scale', 1.0, -10.0, 10.0)}",
             f"sv_gravity {self._cfg_int(cfg, 'phys_sv_gravity', 800, -5000, 5000)}",
@@ -9517,12 +9380,18 @@ class App(tk.Tk):
         except Exception as e:
             return False, -1, [str(e)], False
 
-    def _run(self):
+    def _validate_run_inputs(self):
+        """Check common preconditions for run/preview. Returns False if invalid."""
         if not self.player_search.get_steam_ids():
             messagebox.showerror("", "Check at least one registered account.")
-            return
+            return False
         if not any(v.get() for v in self.sel_events.values()):
             messagebox.showerror("", "Select at least one event.")
+            return False
+        return True
+
+    def _run(self):
+        if not self._validate_run_inputs():
             return
         ensure_csdm_dirs()
         cfg = self._build_run_cfg()
@@ -9683,11 +9552,7 @@ class App(tk.Tk):
 
 
     def _dry_run(self):
-        if not self.player_search.get_steam_ids():
-            messagebox.showerror("", "Check at least one registered account.")
-            return
-        if not any(v.get() for v in self.sel_events.values()):
-            messagebox.showerror("", "Select at least one event.")
+        if not self._validate_run_inputs():
             return
         cfg = self._build_run_cfg()
         self._log(f"\n{'─' * 60}", "dim")
@@ -10265,11 +10130,15 @@ class App(tk.Tk):
         """
         if cfg.get("kill_mod_trois_tap"):
             self._alog("  🎯🎲 TROIS TAP — analyzing demos…", "info")
-            return self._apply_trois_tap_to_events(evts, cfg)
+            return self._apply_filter_to_events(
+                evts, cfg, "kill_mod_trois_tap",
+                self._trois_tap_filter, "🎯🎲 TROIS TAP → TROIS TAP")
 
         if cfg.get("kill_mod_no_trois_shot"):
             self._alog("  🚫🎲 Exclude — analyzing demos…", "info")
-            evts = self._apply_no_trois_shot_to_events(evts, cfg)
+            evts = self._apply_filter_to_events(
+                evts, cfg, "kill_mod_no_trois_shot",
+                self._no_trois_shot_filter, "🚫🎲 Exclude → precise")
             if not evts:
                 return {}
 
@@ -10294,8 +10163,10 @@ class App(tk.Tk):
             if not evts:
                 return {}
 
-        active = [(k, getattr(self, afn), ll)
-                  for k, _fn, afn, ll, _rl, _sl in self._DP2_FILTER_DEFS
+        active = [(k, lambda evts, cfg, _k=k, _fn=fn, _ll=ll:
+                      self._apply_filter_to_events(evts, cfg, _k, getattr(self, _fn), _ll),
+                   ll)
+                  for k, fn, _afn, ll, _rl, _sl in self._DP2_FILTER_DEFS
                   if cfg.get(k) and k != "kill_mod_no_trois_shot"]
         if not active:
             return evts
