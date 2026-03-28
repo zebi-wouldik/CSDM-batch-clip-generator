@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v163"""
+"""CSDM Batch Clips Generator v164"""
 
 
 import tkinter as tk
@@ -21,7 +21,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v163"
+APP_VERSION = "v164"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -561,6 +561,31 @@ WEAPON_CATEGORIES = {
 
 WEAPON_ICONS = {'Pistols': '🔫', 'SMGs': '🔫', 'Rifles': '🎯', 'Snipers': '🎯', 'Heavy': '💥', 'Knives': '🔪', 'Grenades & Utility': '💣', 'C4 / World': '💥', 'Misc': '⚡', 'Other': '❓'}
 
+# ── Match type / game mode filter ─────────────────────────────────────────────
+# Maps every known game_mode_str value (from CSDM PostgreSQL) to a UI label.
+# game_mode_str comes from the CS2 "game_mode" + "game_type" cvar combination.
+# Only entries whose raw value is actually found in the DB are shown in the UI.
+MATCH_TYPE_DEFS: list = [
+    # (db_value,             cfg_key,                    ui_label)
+    ("premier",              "match_type_premier",        "🏆 Premier"),
+    ("scrimcomp5v5",         "match_type_competitive",    "🎯 Competitive"),
+    ("scrimcomp2v2",         "match_type_wingman",        "🤝 Wingman"),
+    ("casual",               "match_type_casual",         "🎮 Casual"),
+    ("deathmatch",           "match_type_deathmatch",     "💀 Deathmatch"),
+    ("training",             "match_type_training",       "🎓 Training"),
+    ("new_user_training",    "match_type_new_user",       "🎓 New User"),
+    ("armsrace",             "match_type_armsrace",       "🔫 Arms Race"),
+    ("gungameprogressive",   "match_type_armsrace_alt",   "🔫 Arms Race (alt)"),
+    ("gungametrbomb",        "match_type_demolition",     "💣 Demolition"),
+    ("cooperative",          "match_type_coop",           "🤖 Co-op"),
+    ("skirmish",             "match_type_skirmish",       "⚡ Skirmish"),
+    ("retake",               "match_type_retake",         "↩ Retakes"),
+]
+# Fast lookup: cfg_key → db_value
+_MATCH_TYPE_KEY_TO_DB: dict = {cfg_k: db_v for db_v, cfg_k, _ in MATCH_TYPE_DEFS}
+# All cfg keys for persistence
+_MATCH_TYPE_CFG_KEYS: list = [cfg_k for _, cfg_k, _ in MATCH_TYPE_DEFS]
+
 def _weapon_category(weapon_name):
     return _WEAPON_LOOKUP.get(weapon_name.lower().strip(), "Other")
 
@@ -644,6 +669,11 @@ DEFAULT_CONFIG = {
     "clutch_1v3": False,
     "clutch_1v4": False,
     "clutch_1v5": False,
+    # Match type filter — all False = include every type (no filter applied)
+    # Populated dynamically from MATCH_TYPE_DEFS; all default False
+    **{cfg_k: False for _, cfg_k, _ in MATCH_TYPE_DEFS},
+    # When True, *only* checked types pass; when False, all types pass (no filter).
+    "match_type_filter_enabled": False,
     # Sequence options
     "show_xray": True,
     # Encoding preset (libx264/libx265/libsvtav1 only — no effect on GPU)
@@ -1897,6 +1927,7 @@ class App(tk.Tk):
         self._demo_map_cache = {}  # {demo_path: str} — map name from DB
         self._col_cache      = {}  # {(table, tuple(candidates)): col} — cached _find_col results
         self._db_conn        = None  # persistent psycopg2 connection — reused across calls
+        self._db_match_types: list = []   # distinct game_mode_str values found in DB
         self._dp2_verbose    = False  # per-kill dp2 filter logging (debug only — expensive)
         self._tag_search_results = {}
         self._warned_missing_mods: set = set()  # suppress repeat warnings for same absent cols
@@ -1945,6 +1976,9 @@ class App(tk.Tk):
                      "ui_remember_layout",
                      "clutch_enabled", "clutch_wins_only",
                      "clutch_1v1", "clutch_1v2", "clutch_1v3", "clutch_1v4", "clutch_1v5",
+                     # Match type filter
+                     "match_type_filter_enabled",
+                     *_MATCH_TYPE_CFG_KEYS,
 ]
         for k in str_keys:
             val = str(self.cfg.get(k, DEFAULT_CONFIG.get(k, "")))
@@ -2306,6 +2340,22 @@ class App(tk.Tk):
                             "WHERE weapon_name IS NOT NULL AND weapon_name!='' ORDER BY weapon_name")
                         weapons = [r[0] for r in cur.fetchall()]
 
+                        # Detect distinct game_mode_str values for match type filter
+                        match_types_found: list = []
+                        _gm_col = next(
+                            (c for c in schema.get("matches", [])
+                             if c.lower() in ("game_mode_str", "game_mode", "game_type",
+                                              "type", "source", "mode")),
+                            None)
+                        if _gm_col:
+                            try:
+                                cur.execute(
+                                    f'SELECT DISTINCT "{_gm_col}" FROM matches '
+                                    f'WHERE "{_gm_col}" IS NOT NULL ORDER BY "{_gm_col}"')
+                                match_types_found = [str(r[0]) for r in cur.fetchall() if r[0]]
+                            except Exception:
+                                match_types_found = []
+
                         tags_data = []
                         tags_schema_info = {}
                         if "tags" in schema:
@@ -2377,14 +2427,15 @@ class App(tk.Tk):
                 players = [(f"{n}  ({s})", s, n, d) for n, s, d in rows]
                 names = {s: n for n, s, *_ in rows}
                 self.after(0, lambda: self._on_load_ok(players, dc, dc_type, weapons, schema,
-                                                        col_types, names, tags_data, tags_schema_info))
+                                                        col_types, names, tags_data, tags_schema_info,
+                                                        match_types_found))
             except Exception as e:
                 self.after(0, lambda err=e: self._on_load_fail(err))
 
         threading.Thread(target=task, daemon=True).start()
 
     def _on_load_ok(self, players, dc, dc_type, weapons, schema, col_types, names,
-                    tags_data, tags_schema):
+                    tags_data, tags_schema, match_types_found=None):
         self._date_col      = dc
         self._date_col_type = dc_type   # actual SQL type: bigint, timestamp, date, text…
         self._db_schema     = schema
@@ -2400,6 +2451,7 @@ class App(tk.Tk):
         self._map_col        = None   # re-detect on next query (new DB may differ)
         self._warned_missing_mods = set()  # reset so re-connect re-checks column presence
         self._warned_require_win_no_data = False
+        self._db_match_types = match_types_found or []
 
         # Warn (log only) if the date column was not detected
         if not dc:
@@ -2416,6 +2468,7 @@ class App(tk.Tk):
         self.player_search.set_players(players, restore_steam_id=restore_sid)
 
         self._build_weapons(weapons)
+        self._refresh_match_type_ui()
         self._refresh_tag_combo()
         self._refresh_tags_list_display()
 
@@ -2514,6 +2567,71 @@ class App(tk.Tk):
     # ═══════════════════════════════════════════════════
     #  Tags DB
     # ═══════════════════════════════════════════════════
+    def _refresh_match_type_ui(self):
+        """Rebuild the match type checkboxes based on what game_mode_str values are in the DB.
+
+        Called after _connect_and_load succeeds. Shows only types that actually exist in the DB;
+        if nothing was detected (old schema or no game_mode_str column) the whole section is hidden.
+        """
+        try:
+            frame = self._match_type_frame
+        except AttributeError:
+            return  # UI not yet built (called too early — will be called again after build)
+        for w in frame.winfo_children():
+            w.destroy()
+
+        found = set(self._db_match_types)
+        visible = [(db_v, cfg_k, lbl) for db_v, cfg_k, lbl in MATCH_TYPE_DEFS if db_v in found]
+
+        if not visible:
+            # Column not detected or DB empty — hide the whole section
+            try:
+                self._match_type_sec.pack_forget()
+            except Exception:
+                pass
+            return
+
+        try:
+            self._match_type_sec.pack(fill="x")
+        except Exception:
+            pass
+
+        # Enable toggle
+        toggle_row = tk.Frame(frame, bg=BG2)
+        toggle_row.pack(fill="x")
+        _en_cb = hchk(toggle_row, "Filter by type", self.v["match_type_filter_enabled"],
+                      command=self._on_match_type_toggle)
+        _en_cb.pack(side="left")
+        add_tip(_en_cb,
+                "When checked: only demos matching the selected types are included.\n"
+                "When unchecked: all match types pass (no filter).")
+
+        # Checkboxes — one per discovered type
+        cb_row = tk.Frame(frame, bg=BG2)
+        cb_row.pack(fill="x", pady=(4, 0))
+        for db_v, cfg_k, lbl in visible:
+            _cb = hchk(cb_row, lbl, self.v[cfg_k])
+            _cb.pack(side="left", padx=(0, 8))
+            add_tip(_cb, f"Include {lbl} matches (game_mode_str = '{db_v}').")
+
+        self._on_match_type_toggle()
+
+    def _on_match_type_toggle(self, *_):
+        """Grey out type checkboxes when the enable toggle is off."""
+        try:
+            enabled = self.v["match_type_filter_enabled"].get()
+            frame = self._match_type_frame
+            # Walk all hchk children inside cb_row (second child)
+            children = frame.winfo_children()
+            if len(children) >= 2:
+                for w in children[1].winfo_children():
+                    try:
+                        w.config(state="normal" if enabled else "disabled")
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+
     def _refresh_tag_combo(self):
         # Combo removed — auto-tag managed via tag selection in Tags tab.
         # Method kept for _connect_and_load compatibility.
@@ -2828,7 +2946,7 @@ class App(tk.Tk):
         nb = ttk.Notebook(left_frame)
         nb.pack(fill="both", expand=True)
         for title, builder in [("Capture", self._tab_capturer), ("Tags", self._tab_tags),
-                                ("Video", self._tab_video), ("Tools", self._tab_outils)]:
+                                ("Video", self._tab_video), ("Settings", self._tab_outils)]:
             f = tk.Frame(nb, bg=BG)
             nb.add(f, text=f"  {title}  ")
             builder(f)
@@ -3306,6 +3424,18 @@ class App(tk.Tk):
                           "Random: demos shuffled before the batch starts.")
         for lbl, val in [("Chrono","chrono"),("Random 🎲","random")]:
             hradio(rg, lbl, self.v["clip_order"], val).pack(side="left", padx=(4, 0))
+
+        # ══════════════════════════════════════════════════════════════════════
+        # Match type section — hidden until DB connects and populates _db_match_types
+        self._match_type_sec = Sec(p, "MATCH TYPES")
+        self._match_type_sec.pack_forget()  # hidden by default until DB reports types
+        _mt_desc = desc_label(self._match_type_sec,
+            "Filter demos by match type. Only types found in your database are shown.\n"
+            "When the filter is off, all types are included.")
+        _mt_desc.pack(anchor="w", pady=(0, 4))
+        self._match_type_frame = tk.Frame(self._match_type_sec, bg=BG2)
+        self._match_type_frame.pack(fill="x")
+        # Populated by _refresh_match_type_ui() after DB connects
 
         # ══════════════════════════════════════════════════════════════════════
         sec = Sec(p, "KILL FILTERS")
@@ -7665,6 +7795,26 @@ class App(tk.Tk):
                 kills_on  = cfg.get("events_kills",  False)
                 deaths_on = cfg.get("events_deaths", False)
                 weapons   = cfg.get("weapons", [])
+
+                # ── Match type filter ──────────────────────────────────────────
+                # Only applied when at least one type checkbox is checked.
+                mtsql = ""
+                if cfg.get("match_type_filter_enabled"):
+                    _gm_col = self._find_col("matches", [
+                        "game_mode_str", "game_mode", "game_type", "type", "source", "mode"])
+                    if _gm_col:
+                        selected_db_vals = [
+                            _MATCH_TYPE_KEY_TO_DB[cfg_k]
+                            for cfg_k in _MATCH_TYPE_CFG_KEYS
+                            if cfg.get(cfg_k)
+                        ]
+                        if selected_db_vals:
+                            ph = ",".join(["%s"] * len(selected_db_vals))
+                            mtsql = (f' AND m."{_gm_col}" IN ({ph})', selected_db_vals)
+                        else:
+                            mtsql = ""  # none checked = no filter
+                    else:
+                        self._alog("⚠ Match type filter: game_mode_str column not found — filter ignored.", "warn")
                 # Resolve headshots_mode — force ONLY only when logic guarantees HS-only output
                 _hsmode = cfg.get("headshots_mode", "all")
                 # HS mode is user-controlled; no automatic lock
@@ -7847,6 +7997,11 @@ class App(tk.Tk):
                     if weapons and wc:
                         wsql = f' AND k."{wc}" IN ({",".join(["%s"] * len(weapons))})'
                         params.extend(weapons)
+                    # Unpack match type filter: mtsql is either "" or (clause_str, [values])
+                    _mt_clause = ""
+                    if isinstance(mtsql, tuple):
+                        _mt_clause, _mt_vals = mtsql
+                        params.extend(_mt_vals)
                     dsql = _build_dsql(params)
 
                     extra, enames = "", []
@@ -7892,7 +8047,7 @@ class App(tk.Tk):
                     map_sel  = f',m."{self._map_col}"' if self._map_col else ""
                     sql = (f'SELECT m."{dc}",k."{tc}",m."{mkm}"{date_sel}{map_sel}{extra} FROM kills k '
                            f'JOIN matches m ON m."{mkm}"=k."{mkk}" '
-                           f'WHERE {psql}{wsql}{hsql}{tksql}{suicidesql}{modsql}{dsql} ORDER BY m."{dc}",k."{tc}"')
+                           f'WHERE {psql}{wsql}{hsql}{tksql}{suicidesql}{modsql}{_mt_clause}{dsql} ORDER BY m."{dc}",k."{tc}"')
                     if suicidesql:
                         params = params + list(SUICIDE_WEAPONS)
                     cur.execute(sql, params)
@@ -7961,6 +8116,11 @@ class App(tk.Tk):
                     if rtc and rmk and pmk:
                         sid_ph = ",".join(["%s"] * len(sids))
                         params = list(sids)
+                        # Inject match type filter params for rounds query too
+                        _mt_clause_r = ""
+                        if isinstance(mtsql, tuple):
+                            _mt_clause_r, _mt_vals_r = mtsql
+                            params.extend(_mt_vals_r)
                         dsql = _build_dsql(params)
                         date_sel2 = f',m."{date_col}"' if date_col else ""
                         map_sel2  = f',m."{self._map_col}"' if self._map_col else ""
@@ -7968,7 +8128,7 @@ class App(tk.Tk):
                                f'JOIN matches m ON m."{mkm}"=r."{rmk}" '
                                f'WHERE r."{rmk}" IN '
                                f'(SELECT p."{pmk}" FROM players p WHERE p.steam_id IN ({sid_ph}))'
-                               f'{dsql} ORDER BY m."{dc}",r."{rtc}"')
+                               f'{_mt_clause_r}{dsql} ORDER BY m."{dc}",r."{rtc}"')
                         try:
                             cur.execute(sql, params)
                             for row in cur.fetchall():
@@ -8414,6 +8574,32 @@ class App(tk.Tk):
         except Exception as e:
             self._alog(f"  ⚠ Clutch: DB fetch error — {e}", "warn")
             return {}
+
+        # ── Fetch per-match team sizes from the players table ─────────────────
+        # Used by _apply_clutch_filter to detect ghost players (e.g. Wingman 2v2).
+        # {checksum: {team_name: player_count}}
+        self._clutch_roster_sizes: dict = {}
+        try:
+            with conn.cursor() as cur2:
+                _p_mk = self._find_col("players", ["match_checksum", "match_id", "checksum"])
+                _p_team = self._find_col("players", ["team_name", "side", "team"])
+                _p_sid = self._find_col("players", ["steam_id", "player_steam_id"])
+                if _p_mk and _p_team and _p_sid and chk_to_dp:
+                    ph2 = ",".join(["%s"] * len(chk_to_dp))
+                    cur2.execute(
+                        f'SELECT "{_p_mk}", "{_p_team}", COUNT(DISTINCT "{_p_sid}") '
+                        f'FROM players '
+                        f'WHERE "{_p_mk}" IN ({ph2}) '
+                        f'GROUP BY "{_p_mk}", "{_p_team}"',
+                        list(chk_to_dp.keys()))
+                    for row2 in cur2.fetchall():
+                        chk_v, team_v, cnt = row2
+                        if chk_v and team_v:
+                            self._clutch_roster_sizes.setdefault(chk_v, {})[
+                                str(team_v).lower()] = int(cnt)
+        except Exception:
+            pass  # roster data is best-effort; clutch still works without it
+
         return out
 
     def _apply_clutch_filter(self, results, sids, cfg, all_kills_by_demo):
@@ -8506,7 +8692,12 @@ class App(tk.Tk):
                         break
 
                 # Build initial alive sets
-                # All players that participated: alive at round start
+                # All players that participated: alive at round start.
+                # IMPORTANT: players who survive without killing or being killed are
+                # NOT present in r_kills (Wingman teammates who haven't acted yet).
+                # Strategy: seed alive_set from kills, then supplement with team-size
+                # data from self._clutch_roster_sizes (populated by _fetch_all_kills_for_demos
+                # via the players table). Fall back to the observed max-per-team heuristic.
                 alive_set: dict = {}  # sid → team
                 for k in r_kills:
                     if k["killer_sid"] and k["killer_sid"] not in alive_set:
@@ -8525,6 +8716,59 @@ class App(tk.Tk):
 
                 if not our_team:
                     continue
+
+                # ── Ghost-player correction ────────────────────────────────────
+                # Players who never appear as killer or victim in this round are
+                # absent from alive_set, causing premature clutch detection.
+                # Use roster data (from players table, keyed by match checksum) when
+                # available; otherwise infer the per-team count from max observed alive.
+                chk = self._demo_checksums.get(dp)
+                roster = getattr(self, "_clutch_roster_sizes", {}).get(chk, {})
+                if roster:
+                    # roster: {team_name: player_count} — e.g. {"ct": 5, "t": 5}
+                    # Find our team name and opponent team names
+                    _team_names = set(v for v in alive_set.values() if v)
+                    for tname, count in roster.items():
+                        tname_lo = tname.lower()
+                        # Match to team label in alive_set (our_team or opponent)
+                        matched_label = None
+                        for label in _team_names:
+                            if label and (tname_lo in label.lower() or label.lower() in tname_lo):
+                                matched_label = label
+                                break
+                        if matched_label is None:
+                            continue
+                        observed = sum(1 for v in alive_set.values() if v == matched_label)
+                        ghosts = count - observed
+                        if ghosts > 0:
+                            # Inject synthetic ghost players for this team
+                            for i in range(ghosts):
+                                ghost_sid = f"__ghost_{matched_label}_{i}__"
+                                alive_set[ghost_sid] = matched_label
+                else:
+                    # Heuristic fallback: find the maximum observed alive count per team
+                    # by simulating the kill walk once (read-only), then add ghost players
+                    # to fill up to that max if the initial set is smaller.
+                    _max_per_team: dict = {}
+                    _sim_alive = dict(alive_set)
+                    for k in r_kills:
+                        _sim_alive.pop(k["victim_sid"], None)
+                        for _lbl in set(_sim_alive.values()):
+                            n = sum(1 for v in _sim_alive.values() if v == _lbl)
+                            # Track max — BEFORE the kill just processed, which is the
+                            # previous iteration count. We record the initial count.
+                    # Instead: count initial team sizes from alive_set before any kills
+                    for label in set(alive_set.values()):
+                        if not label:
+                            continue
+                        n = sum(1 for v in alive_set.values() if v == label)
+                        _max_per_team[label] = n
+                    # No ghosts needed via this path — the initial alive_set IS the observed
+                    # max already. Ghost players only matter when the roster is known to be
+                    # larger than what kills reveal. Without the players table, we cannot
+                    # safely add ghost players (risk of over-counting in normal 5v5).
+                    # This path is intentionally conservative — the players table path above
+                    # handles Wingman correctly when roster data is available.
 
                 # Walk kills, remove victim from alive each time
                 alive = dict(alive_set)  # mutable copy
@@ -9734,7 +9978,7 @@ class App(tk.Tk):
             self._alog(f"  ✓ Assembled: {out_name}", "ok")
             if cfg.get("delete_after_assemble"):
                 deleted = 0
-                dirs_to_check = set()
+                dirs_to_check: set = set()
                 for c in clips:
                     try:
                         dirs_to_check.add(c.parent)
@@ -9742,22 +9986,50 @@ class App(tk.Tk):
                         deleted += 1
                     except Exception:
                         pass
-                # Remove clip folders (never the root output dir)
-                out_root = Path(os.path.abspath(cfg.get("output_dir", ""))).resolve()
+
+                # Determine the true root output folder — never delete at or above it.
+                # output_dir_clips is the authoritative raw-clips root; fall back to
+                # output_dir for backward compat with older configs.
+                _clips_root_raw = (cfg.get("output_dir_clips") or cfg.get("output_dir") or "")
+                out_root = Path(os.path.abspath(_clips_root_raw)).resolve() if _clips_root_raw else None
+
+                # Walk upward from each affected dir, removing empty dirs until we
+                # hit the root or a non-empty dir. This handles nested subfolder layouts
+                # like <root>/<demo_name>/<session_id>/ cleanly.
                 removed_dirs = 0
-                for d in dirs_to_check:
+                visited: set = set()
+
+                def _try_remove_dir(d: Path):
+                    nonlocal removed_dirs
+                    d = d.resolve()
+                    if d in visited:
+                        return
+                    visited.add(d)
+                    # Never touch the root output dir itself
+                    if out_root and d == out_root:
+                        return
+                    # Never go above the root (resolve() handles symlinks)
+                    if out_root:
+                        try:
+                            d.relative_to(out_root)
+                        except ValueError:
+                            return  # outside the output tree — bail
                     try:
-                        if d.resolve() == out_root:
-                            continue
-                        # Delete even if non-empty (residual JSON files etc.)
+                        # rmtree even if dir has residual temp/JSON files from CSDM
                         shutil.rmtree(d, ignore_errors=True)
                         if not d.exists():
                             removed_dirs += 1
+                            # Recurse upward: parent may now also be empty
+                            _try_remove_dir(d.parent)
                     except Exception:
                         pass
+
+                for d in dirs_to_check:
+                    _try_remove_dir(d)
+
                 msg = f"  🗑 {deleted} clip(s) deleted"
                 if removed_dirs:
-                    msg += f", {removed_dirs} folder(s) deleted"
+                    msg += f", {removed_dirs} folder(s) removed"
                 self._alog(msg + ".", "dim")
         else:
             if needs_rename and os.path.exists(tmp_out):

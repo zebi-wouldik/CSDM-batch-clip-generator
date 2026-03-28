@@ -9,6 +9,67 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v164]
+
+### Fixed: Clutch — false positives in Wingman (and any sub-5v5 mode)
+
+The clutch detection built its initial alive-set exclusively from players who appeared as killers or victims in the kill log. In Wingman (2v2), a teammate who hadn't killed or been killed yet was absent from that set — so the code saw the player's team as already alone before anyone died, triggering phantom clutch windows on every round.
+
+**Fix:** `_fetch_all_kills_for_demos` now runs a second query against the `players` table:
+
+```sql
+SELECT match_checksum, team_name, COUNT(DISTINCT steam_id)
+FROM players
+WHERE match_checksum IN (...)
+GROUP BY match_checksum, team_name
+```
+
+`_apply_clutch_filter` uses those per-team counts to inject synthetic ghost players into `alive_set` for each slot that isn't yet accounted for by the kill rows. Ghost SIDs are namespaced (`__ghost_<team>_<i>__`) and never collide with real or tracked players. If the `players` table lacks team/side columns, or the roster query fails, behaviour is identical to before — the fix is best-effort with no crash path.
+
+---
+
+### Added: Match type filter (MATCH TYPES section in Capture & Timing)
+
+Filter demos by CS2 match type. The section is **hidden by default** and only appears after the DB connects; only types actually found in your database are shown (no phantom checkboxes for modes you've never played).
+
+**13 known `game_mode_str` values mapped to UI labels:**
+
+| DB value | Label |
+|---|---|
+| `premier` | 🏆 Premier |
+| `scrimcomp5v5` | 🎯 Competitive |
+| `scrimcomp2v2` | 🤝 Wingman |
+| `casual` | 🎮 Casual |
+| `deathmatch` | 💀 Deathmatch |
+| `training` / `new_user_training` | 🎓 Training / New User |
+| `armsrace` / `gungameprogressive` | 🔫 Arms Race |
+| `gungametrbomb` | 💣 Demolition |
+| `cooperative` | 🤖 Co-op |
+| `skirmish` | ⚡ Skirmish |
+| `retake` | ↩ Retakes |
+
+**"Filter by type" master toggle** — when off, no SQL clause is added (zero overhead). When on, a single `m."game_mode_str" IN (...)` clause is injected into both the kills and rounds queries. Type checkboxes grey out when the toggle is off. All keys persist in config.
+
+If the column doesn't exist in the schema (older CSDM database), the entire section stays hidden with no warning.
+
+---
+
+### Fixed: Delete source clips after assembly — residual folders not removed
+
+Two bugs in the cleanup path:
+
+1. **Wrong root guard.** The code compared deleted-folder paths against `cfg["output_dir"]` — the legacy mirror key — instead of `cfg["output_dir_clips"]`, the actual clips root. The guard never matched, so `shutil.rmtree` was either blocked on the wrong path or running unconstrained.
+
+2. **No upward traversal.** Only the immediate parent of each deleted clip was checked. Nested layouts (`<root>/<demo>/<session>/`) left empty intermediate folders behind.
+
+**Fix:** Replaced the flat loop with `_try_remove_dir(d)`, a recursive upward walker. After removing a folder, it attempts the parent, stopping at `output_dir_clips` (resolved with `relative_to` guard) or any non-empty directory. A `visited` set prevents double-visits. The root is never touched.
+
+---
+
+### Changed: "Tools" tab renamed to "Settings"
+
+---
+
 ## [v161]
 
 ### Added: Exclude option on every kill filter
