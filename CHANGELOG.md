@@ -9,6 +9,28 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v171]
+
+### Improved: demoparsing performance
+
+- **Auto-scaled thread count:** `dp2_threads` default now uses `min(8, max(2, cpu_count))` instead of a hardcoded 2 — better out-of-the-box utilization on multi-core machines.
+- **Vectorized fire + hurt loops:** `for row in arr` loops in `_dp2_parse_demo` replaced with pandas `groupby` operations. Pandas/numpy ops release the GIL during computation, letting other threads run concurrently and reducing visible UI stutter while demoparsing in the background.
+
+### Fixed: TrueView fails silently on old demos
+
+Old demos without TrueView support cause CSDM CLI to output `Raw files not found`. This was previously logged as a dim (non-error) line, so no error was flagged and no retry triggered — the recording appeared to succeed but launched CS2 in spectator mode on the wrong player.
+
+- `Raw files not found` now detected as an error (logged red).
+- If TrueView was ON, the script auto-retries that specific demo once with `trueView: false` injected into the config JSON, falling back cleanly to spectator-camera mode.
+
+### Changed: UI section reorganization
+
+- **"RESOLUTION & FRAMERATE"** renamed to **"RESOLUTION, FRAMERATE & WINDOW"**.
+- **Window mode** (None / Fullscreen / Windowed / Borderless) and **Send to back on launch** moved from "CS2 EFFECTS" into the renamed section — display/launch settings belong with resolution, not with CS2 effect commands.
+- **Close CS2 after each demo** moved from "FINAL ASSEMBLY" into **"IN-GAME OPTIONS"** — it controls CS2 process behavior during recording, consistent with TrueView, death notices, and X-Ray.
+
+---
+
 ## [v170]
 
 ### Fixed: resize and sash drag still laggy with 50 ms debounce

@@ -21,7 +21,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v170"
+APP_VERSION = "v171"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -696,7 +696,7 @@ DEFAULT_CONFIG = {
     # Send CS2 behind all windows on launch (requires pywin32)
     "cs2_send_to_back": False,
     # demoparser2 performance
-    "dp2_threads": 2,   # parallel threads for DP2 demo parsing (1–8)
+    "dp2_threads": min(8, max(2, os.cpu_count() or 4)),  # auto-scaled to CPU count (1–8)
 }
 
 PRESET_CATEGORIES = {
@@ -3617,6 +3617,7 @@ class App(tk.Tk):
                               command=_on_hv_toggle)
                 _hv_en.pack(side="left", padx=(4, 0))
                 _hv_must = hchk(_hv_row, "★ Must", self.v["kill_mod_high_velocity_req"])
+                _hv_must.pack(side="left", padx=(8, 0))
                 self._must_widgets["dp2"].append(_hv_must)
                 add_tip(_hv_must, "Required filter (must match).")
                 self._wire_enable_must(self.v["kill_mod_high_velocity"],
@@ -4275,7 +4276,7 @@ class App(tk.Tk):
             "  HLAE via extraArgs, CS via autoexec + runtime cfg injection."
         ).pack(anchor="w", pady=(4, 0))
 
-        sec = Sec(p, "RESOLUTION & FRAMERATE")
+        sec = Sec(p, "RESOLUTION, FRAMERATE & WINDOW")
         sec.pack(fill="x")
 
         # ── Row 1: Definition + Ratio + Custom ───────────────────────────────
@@ -4338,6 +4339,27 @@ class App(tk.Tk):
         fps_frm.pack(side="left", padx=(0, 20))
         mlabel(fps_frm, "FPS").pack(anchor="w")
         scombo(fps_frm, self.v["framerate"], FRAMERATES, 6).pack(anchor="w", pady=(4, 0))
+
+        # ── Window mode ──────────────────────────────────────────────────────
+        _sep(sec)
+        win_row = tk.Frame(sec, bg=BG2)
+        win_row.pack(fill="x", pady=(4, 0))
+        _wm_lbl = mlabel(win_row, "Window mode:")
+        _wm_lbl.pack(side="left")
+        add_tip(_wm_lbl,
+                "Launch flags: -fullscreen / -windowed / -noborder.\n"
+                "Applied in HLAE mode via extraArgs.\n"
+                "In CS mode, CSDM JSON has no launch-args field (warning shown in log).")
+        for lbl, val in [("None", "none"), ("Fullscreen", "fullscreen"),
+                         ("Windowed", "windowed"), ("Borderless", "noborder")]:
+            hradio(win_row, lbl, self.v["cs2_window_mode"], val).pack(side="left", padx=(4, 0))
+        _stb_cb = hchk(win_row, "Send to back on launch", self.v["cs2_send_to_back"])
+        _stb_cb.pack(side="left", padx=(16, 0))
+        add_tip(_stb_cb,
+                "When CS2 appears, sends it behind all other windows without minimizing.\n"
+                "The game keeps running normally — it is simply placed at the bottom of\n"
+                "the Z-order so your desktop stays on top.\n"
+                "Requires pywin32 (pip install pywin32). Silently ignored otherwise.")
 
         sec = Sec(p, "VIDEO CODEC")
         sec.pack(fill="x")
@@ -4406,19 +4428,14 @@ class App(tk.Tk):
         _dn_lbl.pack(side="left")
         add_tip(_dn_lbl, "Duration death notices are shown on screen (seconds).")
         sentry(dr, self.v["death_notices_duration"], width=4).pack(side="left", padx=(6, 0), ipady=4)
+        _sep(sec)
+        _chk_tip(sec, "Close CS2 after each demo", self.v["close_game_after"],
+                 "closeGameAfterRecording — closes CS2 after each recorded demo.\n"
+                 "Recommended: ON. Leaving CS2 open between demos can cause\n"
+                 "instability on long batches.")
 
         sec_asm = Sec(p, "FINAL ASSEMBLY")
         sec_asm.pack(fill="x")
-
-        _cga_row = tk.Frame(sec_asm, bg=BG2)
-        _cga_row.pack(fill="x", pady=(4, 6))
-        _cga_cb = hchk(_cga_row, "Close CS2 after each demo", self.v["close_game_after"])
-        _cga_cb.pack(side="left")
-        add_tip(_cga_cb,
-                "closeGameAfterRecording — closes CS2 after each recorded demo.\n"
-                "Recommended: ON. Leaving CS2 open between demos can cause\n"
-                "instability on long batches.")
-        _sep(sec_asm, pady=(0, 4))
 
         _asm_cb1 = _chk_tip(sec_asm, "Assemble all clips at the end", self.v["assemble_after"],
                             "After batch, concatenate all clips into a single file.\n"
@@ -4545,29 +4562,7 @@ class App(tk.Tk):
                    "Vanilla CS2 commands shared by both recording modes.\n"
                    "HLAE: injected via extraArgs | CS: injected via autoexec + runtime cfg.").pack(fill="x")
 
-        # CS2 window mode + minimize
-        win_row = tk.Frame(self._cs2_sec, bg=BG2)
-        win_row.pack(fill="x", pady=(8, 0))
-        _wm_lbl = mlabel(win_row, "Window mode:")
-        _wm_lbl.pack(side="left")
-        add_tip(_wm_lbl,
-                "Launch flags: -fullscreen / -windowed / -noborder.\n"
-                "Applied in HLAE mode via extraArgs.\n"
-                "In CS mode, CSDM JSON has no launch-args field (warning shown in log).")
-        for lbl, val in [("None","none"),("Fullscreen","fullscreen"),
-                         ("Windowed","windowed"),("Borderless","noborder")]:
-            hradio(win_row, lbl, self.v["cs2_window_mode"], val).pack(side="left", padx=(4, 0))
-        _stb_cb = hchk(win_row, "Send to back on launch", self.v["cs2_send_to_back"])
-        _stb_cb.pack(side="left", padx=(16, 0))
-        add_tip(_stb_cb,
-                "When CS2 appears, sends it behind all other windows without minimizing.\n"
-                "The game keeps running normally — it is simply placed at the bottom of\n"
-                "the Z-order so your desktop stays on top.\n"
-                "Requires pywin32 (pip install pywin32). Silently ignored otherwise.")
-
-        # Physics grid
-        _sep(self._cs2_sec, pady=(10, 6))
-        mlabel(self._cs2_sec, "Physics & visuals:").pack(anchor="w")
+        mlabel(self._cs2_sec, "Physics & visuals:").pack(anchor="w", pady=(4, 0))
         desc_label(self._cs2_sec,
                    "Non-default values are injected as CS2 console commands on startup.").pack(
             anchor="w")
@@ -5207,30 +5202,33 @@ class App(tk.Tk):
                         fire_detail = {}
                         fire_ticks = {}
                     else:
-                        np_cols = ["tick", "weapon", col_sid, col_acc]
-                        opt_cols = ([col_scope] if col_scope else []) + \
-                                   ([col_vx] if col_vx else []) + \
-                                   ([col_vy] if col_vy else [])
-                        arr = fire_df[np_cols + opt_cols].to_numpy()
-                        i_scope = 4 if col_scope else None
-                        i_vx = 4 + (1 if col_scope else 0) if col_vx else None
-                        i_vy = 4 + (1 if col_scope else 0) + (1 if col_vx else 0) if col_vy else None
-                        fd = defaultdict(list)
-                        for row in arr:
-                            tick = int(row[0] or 0)
-                            wpn = str(row[1] or "").lower()
-                            sid = str(row[2] or "")
-                            acc = float(row[3] or 0)
-                            scoped = bool(row[i_scope]) if i_scope is not None else False
-                            vx = float(row[i_vx]) if i_vx is not None else 0.0
-                            vy = float(row[i_vy]) if i_vy is not None else 0.0
-                            vel = (vx**2 + vy**2) ** 0.5
-                            wpn_s = wpn[7:] if wpn.startswith("weapon_") else wpn
-                            fd[(sid, wpn_s)].append((tick, acc, scoped, vel))
-                        for k in fd:
-                            fd[k].sort(key=lambda r: r[0])
-                        fire_detail = dict(fd)
-                        fire_ticks = {k: [r[0] for r in v] for k, v in fire_detail.items()}
+                        # Vectorized: pandas ops release the GIL → less UI blocking
+                        import numpy as _np
+                        wdf = fire_df[["tick", "weapon", col_sid, col_acc]].copy()
+                        wdf.columns = ["tick", "weapon", "sid", "acc"]
+                        wdf["tick"] = wdf["tick"].fillna(0).astype(int)
+                        wdf["weapon"] = (wdf["weapon"].fillna("").str.lower()
+                                         .str.replace(r"^weapon_", "", regex=True))
+                        wdf["sid"] = wdf["sid"].fillna("").astype(str)
+                        wdf["acc"] = wdf["acc"].fillna(0).astype(float)
+                        wdf["scoped"] = (fire_df[col_scope].fillna(False).astype(bool)
+                                         if col_scope else False)
+                        if col_vx and col_vy:
+                            _vx = fire_df[col_vx].fillna(0).astype(float)
+                            _vy = fire_df[col_vy].fillna(0).astype(float)
+                            wdf["vel"] = _np.sqrt(_vx * _vx + _vy * _vy)
+                        else:
+                            wdf["vel"] = 0.0
+                        wdf.sort_values("tick", inplace=True)
+                        fire_detail = {}
+                        fire_ticks = {}
+                        for (sid, wpn), grp in wdf.groupby(["sid", "weapon"], sort=False):
+                            key = (sid, wpn)
+                            t = grp["tick"].tolist()
+                            fire_detail[key] = list(zip(
+                                t, grp["acc"].tolist(),
+                                grp["scoped"].tolist(), grp["vel"].tolist()))
+                            fire_ticks[key] = t
             except Exception as e:
                 self._alog(f"  ⚠ dp2 parse error ({Path(demo_path).name}): {e}", "warn")
                 fire_detail = {}
@@ -5316,14 +5314,16 @@ class App(tk.Tk):
                     col_hvic = next((c for c in hcols if ("user" in c.lower() or "victim" in c.lower())
                                      and "steam" in c.lower() and "attacker" not in c.lower()), None)
                     if col_hatk and col_hvic:
-                        for row in hurt_df[["tick", col_hatk, col_hvic]].to_numpy():
-                            t = int(row[0] or 0)
-                            atk = str(row[1] or "")
-                            vic = str(row[2] or "")
-                            if atk and vic:
-                                hurt_index.setdefault(vic, []).append((t, atk))
-                for k in hurt_index:
-                    hurt_index[k].sort(key=lambda r: r[0])
+                        hdf = hurt_df[["tick", col_hatk, col_hvic]].copy()
+                        hdf.columns = ["tick", "atk", "vic"]
+                        hdf["tick"] = hdf["tick"].fillna(0).astype(int)
+                        hdf["atk"] = hdf["atk"].fillna("").astype(str)
+                        hdf["vic"] = hdf["vic"].fillna("").astype(str)
+                        hdf = hdf[(hdf["atk"] != "") & (hdf["vic"] != "")]
+                        hdf.sort_values("tick", inplace=True)
+                        for vic, grp in hdf.groupby("vic", sort=False):
+                            hurt_index[vic] = list(zip(
+                                grp["tick"].tolist(), grp["atk"].tolist()))
             except Exception:
                 pass
 
@@ -7038,8 +7038,8 @@ class App(tk.Tk):
         add_tip(dp2_row,
                 "Number of parallel threads used to pre-parse demo files\n"
                 "with demoparser2 (TROIS SHOT / ONE TAP / TROIS TAP filters).\n"
-                "Higher = faster pre-parse on multi-core CPUs.\n"
-                "Recommended: 2–4.  Set to 1 to disable parallelism.")
+                "Default auto-scales to your CPU count (capped at 8).\n"
+                "Higher = faster pre-parse on multi-core CPUs.  Set to 1 to disable.")
 
         sec_pre = Sec(p, "SAVE A PRESET")
         sec_pre.pack(fill="x")
@@ -7360,13 +7360,23 @@ class App(tk.Tk):
 
     def _log(self, msg, tag=""):
         self.log.configure(state="normal")
+        if self._log_timestamps.get() and msg.strip():
+            self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] ", "ts")
         self.log.insert("end", msg + "\n", tag)
+        if tag == "err":
+            self._log_err_count += 1
+        elif tag == "warn":
+            self._log_warn_count += 1
+        if tag in ("err", "warn"):
+            self._update_log_counts()
         if self._log_autoscroll.get():
             self.log.see("end")
         self.log.configure(state="disabled")
 
     def _log_parts(self, parts):
         self.log.configure(state="normal")
+        if self._log_timestamps.get():
+            self.log.insert("end", f"[{time.strftime('%H:%M:%S')}] ", "ts")
         for txt, tag in parts:
             self.log.insert("end", txt, tag or "")
         self.log.insert("end", "\n")
@@ -7375,18 +7385,16 @@ class App(tk.Tk):
         self.log.configure(state="disabled")
 
     def _alog(self, msg, tag=""):
-        """Thread-safe async log. Appends to buffer; main thread drains every _LOG_PUMP_MS ms.
-
-        Never calls after(0) per message — avoids flooding the event queue during
-        parallel operations (dp2 pre-parse, worker) and keeps the UI responsive.
-        """
+        """Thread-safe async log. Appends to buffer; main thread drains every _LOG_PUMP_MS ms."""
+        ts = time.strftime("%H:%M:%S")
         with self._log_buf_lock:
-            self._log_buf.append((msg, tag))
+            self._log_buf.append((msg, tag, ts))
 
     def _alog_parts(self, parts):
         """Thread-safe async log for multi-part lines (badge rows)."""
+        ts = time.strftime("%H:%M:%S")
         with self._log_buf_lock:
-            self._log_buf.append(("__parts__", parts))
+            self._log_buf.append(("__parts__", parts, ts))
 
     _LOG_PUMP_MS = 50   # drain interval in milliseconds — 50ms ≈ 20 flushes/sec
 
@@ -7425,14 +7433,27 @@ class App(tk.Tk):
         try:
             self.log.configure(state="normal")
             autoscroll = self._log_autoscroll.get()
+            show_ts = self._log_timestamps.get()
+            counts_dirty = False
             for item in pending:
                 if item[0] == "__parts__":
-                    for txt, tag in item[1]:
+                    _, parts, ts = item
+                    if show_ts:
+                        self.log.insert("end", f"[{ts}] ", "ts")
+                    for txt, tag in parts:
                         self.log.insert("end", txt, tag or "")
                     self.log.insert("end", "\n")
                 else:
-                    msg, tag = item
+                    msg, tag, ts = item
+                    if show_ts and msg.strip():
+                        self.log.insert("end", f"[{ts}] ", "ts")
                     self.log.insert("end", msg + "\n", tag)
+                    if tag == "err":
+                        self._log_err_count += 1
+                        counts_dirty = True
+                    elif tag == "warn":
+                        self._log_warn_count += 1
+                        counts_dirty = True
             # Trim oldest lines if the widget is growing too large
             line_count = int(self.log.index("end-1c").split(".")[0])
             if line_count > self._LOG_MAX_LINES:
@@ -7441,6 +7462,8 @@ class App(tk.Tk):
             if autoscroll:
                 self.log.see("end")
             self.log.configure(state="disabled")
+            if counts_dirty:
+                self._update_log_counts()
         except Exception:
             pass
 
@@ -7458,6 +7481,59 @@ class App(tk.Tk):
         self.log.configure(state="normal")
         self.log.delete("1.0", "end")
         self.log.configure(state="disabled")
+        self._log_err_count = 0
+        self._log_warn_count = 0
+        self._update_log_counts()
+
+    def _update_log_counts(self):
+        """Refresh the E:/W: counter labels in the log header."""
+        try:
+            e, w = self._log_err_count, self._log_warn_count
+            if self._log_err_lbl and self._log_err_lbl.winfo_exists():
+                self._log_err_lbl.config(text=f"E:{e}" if e else "")
+            if self._log_warn_lbl and self._log_warn_lbl.winfo_exists():
+                self._log_warn_lbl.config(text=f"W:{w}" if w else "")
+        except Exception:
+            pass
+
+    def _toggle_log_timestamps(self, event=None):
+        self._log_timestamps.set(not self._log_timestamps.get())
+        on = self._log_timestamps.get()
+        if self._log_ts_btn and self._log_ts_btn.winfo_exists():
+            self._log_ts_btn.config(fg=GREEN if on else MUTED)
+        self._log_flash(
+            f"  {'✓' if on else 'ℹ'} Timestamps {'enabled' if on else 'disabled'}.",
+            "ok" if on else "dim")
+        return "break"
+
+    def _log_right_click(self, event):
+        menu = tk.Menu(self, tearoff=0, bg=BG3, fg=TEXT, font=FONT_DESC,
+                       activebackground=ORANGE, activeforeground="white",
+                       relief="flat", bd=1)
+        menu.add_command(label="Copy line",
+                         command=lambda: self._log_copy_line(event.x, event.y))
+        menu.add_command(label="Copy selection", command=self._log_copy_sel)
+        menu.add_separator()
+        menu.add_command(label="Select all",
+                         command=lambda: (self.log.tag_add("sel", "1.0", "end-1c")))
+        menu.add_command(label="Copy all", command=self._log_copy_all)
+        menu.add_separator()
+        menu.add_command(label="Search   Ctrl+F", command=self._log_search_open)
+        menu.add_separator()
+        menu.add_command(label="Clear", command=self._clear_log)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _log_copy_line(self, x, y):
+        try:
+            idx = self.log.index(f"@{x},{y}")
+            line_n = idx.split(".")[0]
+            txt = self.log.get(f"{line_n}.0", f"{line_n}.end").strip()
+            if txt:
+                self.clipboard_clear()
+                self.clipboard_append(txt)
+                self._log_flash("  ✓ Line copied.")
+        except Exception:
+            pass
 
     def _toggle_log_badges(self, event=None):
         try:
@@ -9460,6 +9536,7 @@ class App(tk.Tk):
 
     def _exec(self, cmd):
         errs, has_err, retryable = [], False, False
+        self._last_raw_not_found = False
         try:
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           text=True, encoding="utf-8", errors="replace", bufsize=1)
@@ -9472,6 +9549,9 @@ class App(tk.Tk):
                     continue
                 ll = line.lower()
                 is_e = any(k.lower() in ll for k in self.ALL_ERR)
+                if "raw files not found" in ll:
+                    is_e = True
+                    self._last_raw_not_found = True
                 if is_e:
                     has_err = True
                     errs.append(line)
@@ -10755,6 +10835,27 @@ class App(tk.Tk):
                 if retryable and att < mx:
                     continue
                 break
+
+            # ── TrueView fallback: retry with TrueView OFF if CSDM can't find raw files
+            if not d_ok and tv and getattr(self, "_last_raw_not_found", False):
+                self._alog(
+                    "  ⚠ TrueView: raw files not found (old demo?) — retrying with TrueView OFF…",
+                    "warn")
+                try:
+                    with open(tp, "r", encoding="utf-8") as _f:
+                        _jdata = json.load(_f)
+                    _jdata["trueView"] = False
+                    with open(tp, "w", encoding="utf-8") as _f:
+                        json.dump(_jdata, _f, indent=2)
+                    success, rc, errs_tv, _ = self._exec(cmd)
+                    if success:
+                        d_ok = True
+                        d_err = ""
+                        self._alog("  ✓ TrueView-OFF retry succeeded", "ok")
+                    else:
+                        d_err = errs_tv[0] if errs_tv else d_err
+                except Exception as _tv_e:
+                    self._alog(f"  ⚠ TrueView-OFF retry error: {_tv_e}", "warn")
 
             dur = time.time() - t0
             threading.Thread(
