@@ -9,6 +9,73 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v172]
+
+### Fixed: Ferrari Peek dp2_badge placement
+
+`dp2_badge` was packed inside the expandable `_hv_inner` frame (visible only when "Enable" is checked). Moved to the main `_hv_row` frame so it appears inline with the label and checkboxes — consistent with every other dp2-category filter row.
+
+### Improved: Light mode (white theme)
+
+- **White preset softened**: `BG2` changed from `#ffffff` to `#f8f8f8`, `BG3` to `#e4e4e4` — reduces harsh pure-white contrast zones.
+- **Light-mode status colours**: Added `_STATUS_COLOURS_LIGHT` with dark-saturated variants (`GREEN #15803d`, `RED #b91c1c`, `YELLOW #b45309`, `BLUE #1d4ed8`) that provide adequate contrast on light backgrounds. `_build_theme` selects the light set when the bg preset has `_is_light: True`; existing dark-mode pastel colours are unchanged.
+- Log tags (`ok`, `err`, `warn`, `blue`, badges) reapply via `_reapply_ttk_styles` on theme change, so switching dark → white correctly updates all coloured text in the console.
+
+### Added: Live clock in console header
+
+A `HH:MM:SS` clock label ticks every second in the LOG header bar (next to "LOG"). Always visible regardless of the TS toggle. Implemented via `_tick_log_clock` with `after(1000, ...)` — zero blocking.
+
+### Added: INJECTION PREVIEW section (Tools tab)
+
+New collapsible section below PERFORMANCE in the Tools tab shows the exact args that will be injected into CS2 for the current config:
+- **HLAE mode**: shows the full `extraArgs` token string broken one-per-line.
+- **CS mode**: shows `launch_args` and each `console_cmds` entry.
+- Displays on load (`after(200, ...)`), plus a **⟳ Refresh** button for manual update.
+- Text widget auto-sizes (4–12 lines). Key labels in accent colour, values in text colour.
+
+### Added: Preview export — HTML / TXT / JSON
+
+The **📤 Export ▾** button in the log toolbar opens a format menu. After running a preview (F6):
+
+- **HTML** — standalone dark-themed file; per-clip table with date, demo, clip index, weapon, filters found, tick, `playdemo` command (click-to-select).
+- **TXT** — plain-text columnar table + `cmd:` line per clip.
+- **JSON** — structured array of clip objects (same fields), ready for scripting.
+
+All three formats source clip data from `_last_preview_data`. **Filters column shows the filters that actually matched each clip** (`_mf` set from event data), not just the active config filters.
+
+### Fixed: Theme change retaining old colours on some widgets
+
+Root cause: `_CHK_KW` and `_BTN_KW` are module-level dicts built at import time with default dark/green values. Any session started with a non-default saved theme would create those widgets (log filter radiobuttons, preset-type radiobuttons, weapon-category checkboxes, autoscroll toggle) with wrong colours. Subsequent `_change_theme` calls could not fix them because the colour_map was keyed on the current theme's values, not the stale defaults.
+
+- **`_apply_theme_globals` now updates `_CHK_KW`/`_BTN_KW` in-place** on every call — startup and runtime both correct.
+- **Colour-map collision detection**: if two theme keys share the same old hex value but map to different new values (e.g. amoled `BG == BG2 == #000000`), the ambiguous value is excluded from the generic map rather than producing wrong remapping.
+- **`ScrollableFrame.apply_theme()`** added — explicitly sets canvas + inner frame `bg` to `_t("BG")`, bypassing colour_map ambiguity. Handled by `_walk` alongside `Sec`.
+- **Log widget** bg changed from hardcoded `"#090909"` to `_t("LOG_BG")` at creation.
+
+---
+
+## [v171]
+
+### Improved: demoparsing performance
+
+- **Auto-scaled thread count:** `dp2_threads` default now uses `min(8, max(2, cpu_count))` instead of a hardcoded 2 — better out-of-the-box utilization on multi-core machines.
+- **Vectorized fire + hurt loops:** `for row in arr` loops in `_dp2_parse_demo` replaced with pandas `groupby` operations. Pandas/numpy ops release the GIL during computation, letting other threads run concurrently and reducing visible UI stutter while demoparsing in the background.
+
+### Fixed: TrueView fails silently on old demos
+
+Old demos without TrueView support cause CSDM CLI to output `Raw files not found`. This was previously logged as a dim (non-error) line, so no error was flagged and no retry triggered — the recording appeared to succeed but launched CS2 in spectator mode on the wrong player.
+
+- `Raw files not found` now detected as an error (logged red).
+- If TrueView was ON, the script auto-retries that specific demo once with `trueView: false` injected into the config JSON, falling back cleanly to spectator-camera mode.
+
+### Changed: UI section reorganization
+
+- **"RESOLUTION & FRAMERATE"** renamed to **"RESOLUTION, FRAMERATE & WINDOW"**.
+- **Window mode** (None / Fullscreen / Windowed / Borderless) and **Send to back on launch** moved from "CS2 EFFECTS" into the renamed section — display/launch settings belong with resolution, not with CS2 effect commands.
+- **Close CS2 after each demo** moved from "FINAL ASSEMBLY" into **"IN-GAME OPTIONS"** — it controls CS2 process behavior during recording, consistent with TrueView, death notices, and X-Ray.
+
+---
+
 ## [v170]
 
 ### Fixed: resize and sash drag still laggy with 50 ms debounce
