@@ -41,20 +41,6 @@ A new **📤 Export HTML** button in the log toolbar. After running a preview (F
 - Summary footer with total clip count and duration.
 - Data sourced from `_last_preview_data` (set at end of `_show_preview_impl`).
 
-### Refactor: File split — `csdm_registry.py`
-
-Static data extracted to a separate file (`csdm_registry.py`, ~330 lines):
-- `FilterDef`, `KILL_FILTER_REGISTRY` and all derived structures (`KILL_FILTER_KEYS_ALL`, `KILL_FILTER_LABELS`, `KILL_FILTER_SQL_COLS`, `_FILTER_CONFIG_DEFAULTS`, `_FILTER_BOOL_KEYS`, `_FILTER_PRESET_PLAYER_KEYS`)
-- `WEAPON_CATEGORIES`, `WEAPON_ICONS`, `_weapon_category`, `_WEAPON_LOOKUP`
-- `MATCH_TYPE_DEFS`, `_MATCH_TYPE_KEY_TO_DB`, `_MATCH_TYPE_CFG_KEYS`
-- `VIDEO_CODECS_INFO`, `AUDIO_CODECS_INFO`, `RESOLUTIONS`, `FRAMERATES`, `DEFINITIONS`, `ASPECT_RATIOS`
-- `TROIS_SHOT_THRESHOLDS`, `CSDM_TO_DP2_WEAPON`, `DP2_TICK_WINDOW`
-- `SPRAY_TRANSFER_WEAPONS`, `SPRAY_MAX_GAP_TICKS`, `DELAYED_EFFECT_WEAPONS`
-- `EVENTS`, `ENCODER_OPTIONS`, `RECSYS_OPTIONS`, `VIDEO_CONTAINERS`, `PERSP_LABELS`
-- `CSDM_RUNTIME_CFG_NAME`, `TAG_PRESET_COLORS`
-
-Main file gains `from csdm_registry import *` and loses ~407 lines. No theme dependencies in the registry file — safe to edit, import, and test in isolation.
-
 ---
 
 ## [v171]
