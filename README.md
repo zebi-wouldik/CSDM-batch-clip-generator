@@ -86,7 +86,27 @@ An independent `🎯 Headshots` tri-state radio alongside Suicides and TK — no
 | **Only** | Keep headshot kills only |
 | **Exclude** | Keep non-headshot kills only |
 
-`Only` is auto-forced only when the active modifier logic guarantees HS-only output (for example, TROIS TAP, or ONE TAP in an HS-strict combination).
+---
+
+## Match type filter
+
+The **MATCH TYPES** section in Capture & Timing lets you restrict clips to specific CS2 game modes. Hidden by default — appears only after the DB connects, and only shows types actually present in your database.
+
+| Label | DB value(s) |
+|---|---|
+| 🏆 Premier | `premier` |
+| 🎯 Competitive | `scrimcomp5v5`, `competitive` |
+| 🤝 Wingman | `scrimcomp2v2`, `wingman` |
+| 🎮 Casual | `casual` |
+| 💀 Deathmatch | `deathmatch` |
+| 🎓 Training / New User | `training`, `new_user_training` |
+| 🔫 Arms Race | `armsrace`, `gungameprogressive` |
+| 💣 Demolition | `gungametrbomb` |
+| 🤖 Co-op | `cooperative` |
+| ⚡ Skirmish | `skirmish` |
+| ↩ Retakes | `retake` |
+
+Multiple DB values per type handle differences between CSDM versions (some store `competitive`, others `scrimcomp5v5`).
 
 ---
 

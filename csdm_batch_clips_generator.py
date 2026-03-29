@@ -2063,11 +2063,18 @@ class App(tk.Tk):
         self._speed_feedback = None
         self._game_speed_trace_busy = False
         self._log_badges_enabled = tk.BooleanVar(value=True)
+        self._log_timestamps     = tk.BooleanVar(value=False)
         self._log_badges_btn = None
+        self._log_ts_btn     = None
+        self._log_err_lbl    = None   # live E:N counter label
+        self._log_warn_lbl   = None   # live W:N counter label
+        self._log_err_count  = 0
+        self._log_warn_count = 0
         self._outer_paned = None
         self._layout_cfg_job = None
         # Async log buffer — background threads append here; main thread drains
         # in a single batch every _LOG_PUMP_MS ms instead of one after(0) per line.
+        # Buffer items: (msg, tag, ts_str) or ("__parts__", parts, ts_str)
         self._log_buf: deque = deque()
         self._log_buf_lock = threading.Lock()
 
@@ -3087,6 +3094,7 @@ class App(tk.Tk):
         self.bind("<F6>",     lambda e: self._dry_run())
         self.bind("<Escape>", lambda e: self._stop_graceful() if self._running else None)
         self.bind("<Control-b>", self._toggle_log_badges)
+        self.bind("<Control-f>", lambda e: self._log_search_open())
 
         # Position the sash once the window is actually visible
         # Wait for <Map> event then force geometry
@@ -3129,9 +3137,24 @@ class App(tk.Tk):
                            **{**_CHK_KW, "font": FONT_DESC, "fg": col, "activeforeground": col},
                            command=self._apply_log_filter).pack(side="left", padx=(0, 2))
 
+        # Live error / warn counters — hidden when zero
+        self._log_err_lbl = tk.Label(filter_frame, text="", font=FONT_DESC,
+                                     fg=RED, bg=BG2)
+        self._log_err_lbl.pack(side="left", padx=(6, 0))
+        self._log_warn_lbl = tk.Label(filter_frame, text="", font=FONT_DESC,
+                                      fg=YELLOW, bg=BG2)
+        self._log_warn_lbl.pack(side="left", padx=(4, 0))
+
         self._log_autoscroll = tk.BooleanVar(value=True)
         tk.Checkbutton(inner_top, text="↓", variable=self._log_autoscroll,
                        **{**_CHK_KW, "font": FONT_DESC}).pack(side="right")
+        self._log_ts_btn = tk.Button(
+            inner_top, text="TS", font=FONT_DESC, bg=BG3, fg=MUTED,
+            relief="flat", bd=0, cursor="hand2",
+            activebackground=BORDER, activeforeground=ORANGE,
+            highlightthickness=0, command=self._toggle_log_timestamps)
+        self._log_ts_btn.pack(side="right", padx=(0, 4), ipady=2, ipadx=4)
+        add_tip(self._log_ts_btn, "Toggle HH:MM:SS timestamps on each log entry.")
         self._log_badges_btn = tk.Button(
             inner_top, text="Badges", font=FONT_DESC, bg=BG3, fg=GREEN,
             relief="flat", bd=0, cursor="hand2",
@@ -3174,6 +3197,9 @@ class App(tk.Tk):
         for tag, c in [("ok", GREEN), ("err", RED), ("info", ORANGE), ("dim", MUTED),
                         ("warn", YELLOW), ("blue", BLUE)]:
             self.log.tag_configure(tag, foreground=c)
+        self.log.tag_configure("ts", foreground=_t("MUTED"))
+
+        self.log.bind("<Button-3>", self._log_right_click)
 
         self._search_bar = tk.Frame(parent, bg=BG2)
         self._search_bar.grid(row=3, column=0, sticky="ew")
