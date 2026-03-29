@@ -3143,10 +3143,6 @@ class App(tk.Tk):
 
         tk.Label(inner_top, text="LOG", font=("Consolas", 9, "bold"),
                  fg=ORANGE, bg=BG2).pack(side="left")
-        self._log_clock_lbl = tk.Label(inner_top, text="", font=FONT_DESC,
-                                       fg=MUTED, bg=BG2)
-        self._log_clock_lbl.pack(side="left", padx=(8, 0))
-        self._tick_log_clock()
 
         self._log_filter = tk.StringVar(value="All")
         filter_frame = tk.Frame(inner_top, bg=BG2)
@@ -3296,13 +3292,6 @@ class App(tk.Tk):
             self._log_flash(f"  ✓ Log saved: {path}")
         except Exception as e:
             self._log_flash(f"  ✗ Error: {e}", "err")
-
-    def _tick_log_clock(self):
-        try:
-            self._log_clock_lbl.config(text=time.strftime("%H:%M:%S"))
-        except Exception:
-            return
-        self.after(1000, self._tick_log_clock)
 
     def _log_flash(self, msg, tag="ok"):
         marker = f"__flash_{id(msg)}__"

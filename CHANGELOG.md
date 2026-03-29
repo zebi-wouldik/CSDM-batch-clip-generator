@@ -21,9 +21,9 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Light-mode status colours**: Added `_STATUS_COLOURS_LIGHT` with dark-saturated variants (`GREEN #15803d`, `RED #b91c1c`, `YELLOW #b45309`, `BLUE #1d4ed8`) that provide adequate contrast on light backgrounds. `_build_theme` selects the light set when the bg preset has `_is_light: True`; existing dark-mode pastel colours are unchanged.
 - Log tags (`ok`, `err`, `warn`, `blue`, badges) reapply via `_reapply_ttk_styles` on theme change, so switching dark → white correctly updates all coloured text in the console.
 
-### Added: Live clock in console header
+### Fixed: Console timestamps are per-line, not a live clock
 
-A `HH:MM:SS` clock label ticks every second in the LOG header bar (next to "LOG"). Always visible regardless of the TS toggle. Implemented via `_tick_log_clock` with `after(1000, ...)` — zero blocking.
+Timestamps now stamp each line at write time (`[HH:MM:SS]` prefix injected in `_log` / `_log_parts`). The live ticking clock that was erroneously added to the header has been removed. Toggle via the **TS** button in the log toolbar.
 
 ### Added: INJECTION PREVIEW section (Tools tab)
 
