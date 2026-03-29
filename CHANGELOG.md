@@ -1,11 +1,82 @@
 # Changelog — CSDM Batch Clips Generator
 
-All notable changes to this project are documented in this file.  
+All notable changes to this project are documented in this file.
 Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 > **Version numbering note:** sub-releases previously written as `133.xx` or `143.x` have been
 > renumbered as sequential integers. `133.33` → `134`, `133.34` → `135`, …, `133.42` → `143`,
 > `143.0` → `144`, `143.1` → `145`, …, `143.8` → `152`. Each dot was always one real increment.
+
+---
+
+## [v170]
+
+### Fixed: resize and sash drag still laggy with 50 ms debounce
+
+50 ms is shorter than typical pauses within a drag, so reflows were still triggered mid-interaction. The previous debounce was replaced with a two-tier strategy:
+
+- **Mouse-driven resize (sash drag, in-app interactions):** a global `<ButtonRelease-1>` handler flushes all pending canvas width updates and wraplength updates exactly once when the mouse button is released — zero reflows during the drag itself.
+- **OS window-border resize (Tkinter never receives ButtonRelease for OS chrome):** 400 ms debounce fallback fires once after the user stops resizing.
+
+`_WRAP_LABELS` registry added — all `_bind_wraplength`-registered labels are flushed on release alongside `ScrollableFrame` width updates.
+
+---
+
+## [v169]
+
+### Fixed: window resize and sash drag are laggy
+
+Every pixel of resize triggered a synchronous cascade:
+
+```
+canvas <Configure> → itemconfigure(inner, width)
+  → inner <Configure> → bbox("all") + scrollregion update
+    → every desc_label <Configure> → wraplength update
+```
+
+All three operations ran on every intermediate event during a drag.
+
+**Fixes:**
+- `ScrollableFrame` canvas `<Configure>` now debounces the inner-frame width sync to 50 ms (`after_cancel`/`after`). The entire cascade (inner reflow + all child Configure events) is suppressed during drag and fires once when interaction stops.
+- `scrollregion` update replaced `bbox("all")` with `(0, 0, e.width, e.height)` directly from the Configure event — O(1) instead of traversing all canvas items.
+- `desc_label` wraplength updates debounced to 50 ms via `_bind_wraplength` helper. The two inline codec-desc labels (`_vcodec_desc`, `_acodec_desc`) share the same helper — no more duplicated binding pattern.
+
+---
+
+## [v168]
+
+### Fixed: scroll wheel still not working on non-Capture tabs
+
+All `ScrollableFrame` canvases share the same screen coordinates inside `ttk.Notebook` (every tab occupies the same rectangle). The `contains_point` check was matching all of them, so `_SCROLL_FRAMES[0]` (Capture) always won. Fix: `winfo_viewable()` guard added — returns `True` only when the canvas AND all its ancestors are mapped, i.e. only for the currently visible tab.
+
+### Fixed: pane sash fighting the geometry manager during drag
+
+`pack_propagate(False)` + `configure(width=N)` on the PanedWindow panes caused the frames to continuously fight `ttk.PanedWindow`'s geometry manager on every drag event. Removed both. Minimum size is now enforced correctly: `_on_splitter_release` snaps the sash back to the clamped position once the drag ends (`sashpos` re-applied after clamping), with no interference during the drag itself.
+
+---
+
+## [v167]
+
+### Fixed: scroll only working in Capture tab
+
+Mouse wheel scrolling previously used per-`ScrollableFrame` `<Enter>`/`<Leave>` bindings combined with recursive `_bind_children`/`_unbind_children` calls on every child widget. This meant scroll only activated after the mouse had physically entered the canvas — which never happens when switching tabs by clicking a header.
+
+**Fix:** entire Enter/Leave machinery removed. A module-level `_SCROLL_FRAMES` registry now holds every live `ScrollableFrame`. A single `bind_all("<MouseWheel>", _global_wheel)` handler installed once in `_build_ui` finds the frame under the cursor and scrolls it. `Text`, `Listbox`, `Scale`, and `Treeview` widgets are excluded so their own native scroll behaviour is preserved. Works on every tab from the first render, with no per-widget rebinding.
+
+### Fixed: inner content not filling tab width on window resize
+
+`ScrollableFrame` was not resizing its inner frame to match the canvas width. A `<Configure>` binding on the canvas now calls `itemconfigure(win_id, width=e.width)` so content always fills the full available width.
+
+### Fixed: log console pane could overlap the notebook pane
+
+`ttk.PanedWindow` was added without minimum pane sizes. The sash could be dragged until the notebook was completely hidden. Both panes now carry an initial `width` constraint via `pack_propagate(False)` preventing either from being collapsed below a usable size.
+
+### Refactor: UI helper layer — `_sep`, `_chk_tip`, dynamic `desc_label`
+
+- `_sep(parent, pady, padx)` — replaces all 12 inline `tk.Frame(…, height=1, bg=BORDER).pack(fill="x", …)` calls.
+- `_chk_tip(parent, label, var, tip, …)` — replaces all `hchk + pack + add_tip` 3-liners.
+- `desc_label` — `wraplength=700` removed; a `<Configure>` binding sets `wraplength = max(200, widget_width - 10)` so description text wraps to the actual container width at any window size. `_vcodec_desc` and `_acodec_desc` receive the same treatment.
+- Hardcoded `width=8` removed from the ADVANCED FFMPEG PARAMS label.
 
 ---
 

@@ -21,7 +21,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v166"
+APP_VERSION = "v170"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -983,7 +983,7 @@ class ColorPickerDialog(tk.Toplevel):
             tk.Button(gf, bg=c, width=3, height=1, relief="flat", bd=0, cursor="hand2",
                       activebackground=c, highlightthickness=2, highlightbackground=BG2,
                       command=lambda cc=c: self._pick(cc)).grid(row=i // 5, column=i % 5, padx=2, pady=2)
-        tk.Frame(self, height=1, bg=BORDER).pack(fill="x", padx=12, pady=8)
+        _sep(self, pady=8, padx=12)
         pr = tk.Frame(self, bg=BG2)
         pr.pack(fill="x", padx=12)
         mlabel(pr, "Preview:").pack(side="left")
@@ -1564,61 +1564,72 @@ class PlayerSearchWidget(tk.Frame):
                 return p.get("label", f"{p['name']}  ({sid})")
         return f"{self._active_names.get(sid, '')}  ({sid})" if sid else ""
 
+# Registry of all live ScrollableFrame instances — used by the global wheel dispatcher.
+_SCROLL_FRAMES: list = []
+
 class ScrollableFrame(tk.Frame):
     """A vertically scrollable frame.
 
-    Scroll dispatching uses per-widget <Enter>/<Leave> bindings on the canvas
-    and inner frame rather than bind_all, so it never hijacks the mousewheel
-    from the log console, demo picker, or any other scrollable widget.
+    Registers itself in _SCROLL_FRAMES so the single application-level
+    <MouseWheel> handler (installed once in _build_ui) can scroll the frame
+    that is currently under the cursor — no per-widget Enter/Leave machinery.
     """
     def __init__(self, parent, **kw):
         super().__init__(parent, **kw)
         self._c = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0)
         sb = ttk.Scrollbar(self, orient="vertical", command=self._c.yview)
         self.inner = tk.Frame(self._c, bg=BG)
-        self.inner.bind("<Configure>", lambda e: self._c.configure(scrollregion=self._c.bbox("all")))
-        self._c.create_window((0, 0), window=self.inner, anchor="nw")
+        # Use event dimensions directly — avoids the expensive bbox("all") traversal.
+        self.inner.bind("<Configure>",
+                        lambda e: self._c.configure(scrollregion=(0, 0, e.width, e.height)))
+        self._win_id = self._c.create_window((0, 0), window=self.inner, anchor="nw")
+        # Debounce width sync: defer inner reflow to 50 ms after the last resize event.
+        # This prevents the full widget cascade (inner + all children) from running on
+        # every pixel during window resize or sash drag.
+        self._width_job = None
+        self._pending_width = None
+        self._c.bind("<Configure>", self._on_canvas_configure)
         self._c.configure(yscrollcommand=sb.set)
         self._c.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
+        _SCROLL_FRAMES.append(self)
+        self.bind("<Destroy>", self._on_destroy)
 
-        def _on_wheel(ev):
-            # Scroll this canvas only — never touches other widgets.
-            self._c.yview_scroll(-1 * (ev.delta // 120), "units")
+    def _on_canvas_configure(self, event):
+        self._pending_width = event.width
+        # Reschedule: 400 ms fallback for OS-level window resize where no
+        # ButtonRelease reaches Tkinter. Sash drags are flushed immediately
+        # via _flush_scroll_widths() bound to <ButtonRelease-1> in _build_ui.
+        if self._width_job:
+            self.after_cancel(self._width_job)
+        self._width_job = self.after(400, self._apply_width)
 
-        def _bind_wheel(e=None):
-            # Bind only to this canvas, not application-wide.
-            self._c.bind("<MouseWheel>", _on_wheel)
-            # Also bind to every child of inner so moving over child widgets
-            # doesn't silently lose the scroll binding.
-            self._bind_children(self.inner, _on_wheel)
+    def _apply_width(self):
+        if self._width_job:
+            self.after_cancel(self._width_job)
+            self._width_job = None
+        if self._pending_width is not None:
+            self._c.itemconfigure(self._win_id, width=self._pending_width)
 
-        def _unbind_wheel(e=None):
-            self._c.unbind("<MouseWheel>")
-            self._unbind_children(self.inner)
-
-        self._c.bind("<Enter>", _bind_wheel)
-        self._c.bind("<Leave>", _unbind_wheel)
-        self.inner.bind("<Enter>", _bind_wheel)
-        self.inner.bind("<Leave>", _unbind_wheel)
-
-    def _bind_children(self, widget, handler):
-        """Recursively bind <MouseWheel> on every child widget."""
+    def _on_destroy(self, _event=None):
         try:
-            widget.bind("<MouseWheel>", handler)
-            for child in widget.winfo_children():
-                self._bind_children(child, handler)
-        except Exception:
+            _SCROLL_FRAMES.remove(self)
+        except ValueError:
             pass
 
-    def _unbind_children(self, widget):
-        """Recursively unbind <MouseWheel> from every child widget."""
+    def scroll(self, delta):
+        self._c.yview_scroll(-1 * (delta // 120), "units")
+
+    def contains_point(self, x_root, y_root):
+        """True when screen point (x_root, y_root) is inside this canvas AND it is visible."""
         try:
-            widget.unbind("<MouseWheel>")
-            for child in widget.winfo_children():
-                self._unbind_children(child)
+            if not self._c.winfo_viewable():
+                return False
+            cx, cy = self._c.winfo_rootx(), self._c.winfo_rooty()
+            return cx <= x_root < cx + self._c.winfo_width() and \
+                   cy <= y_root < cy + self._c.winfo_height()
         except Exception:
-            pass
+            return False
 
 class Sec(tk.Frame):
     """Collapsible section card — drop-in replacement for the old LabelFrame Sec.
@@ -1822,9 +1833,47 @@ def hradio(parent, text, var, value, **kw):
     _make_highlight_toggle(rb, var, lambda: var.get() == value)
     return rb
 
+_WRAP_LABELS: list = []   # all labels registered via _bind_wraplength
+
+def _bind_wraplength(lbl):
+    """Debounced <Configure> binding that keeps a label's wraplength = widget width.
+
+    400 ms fallback for OS window resize; sash/in-app drags are flushed
+    immediately via the global <ButtonRelease-1> handler in _build_ui.
+    """
+    _job = [None]
+    def _apply(w=lbl):
+        _job[0] = None
+        try:
+            w.config(wraplength=max(200, w.winfo_width() - 10))
+        except Exception:
+            pass
+    def _schedule(e, w=lbl):
+        if _job[0]:
+            w.after_cancel(_job[0])
+        _job[0] = w.after(400, _apply)
+    lbl.bind("<Configure>", _schedule)
+    _WRAP_LABELS.append((_apply, lbl))
+    lbl.bind("<Destroy>", lambda e, a=_apply, w=lbl: _WRAP_LABELS.remove((a, w))
+             if (a, w) in _WRAP_LABELS else None)
+
 def desc_label(parent, text):
-    return tk.Label(parent, text=text, font=FONT_DESC, fg=DESC_COLOR, bg=BG2, anchor="w",
-                    justify="left", wraplength=700)
+    lbl = tk.Label(parent, text=text, font=FONT_DESC, fg=DESC_COLOR, bg=BG2,
+                   anchor="w", justify="left")
+    _bind_wraplength(lbl)
+    return lbl
+
+def _sep(parent, pady=(6, 4), padx=0):
+    """Horizontal rule between UI sub-sections."""
+    tk.Frame(parent, height=1, bg=BORDER).pack(fill="x", pady=pady, padx=padx)
+
+def _chk_tip(parent, label, var, tip, anchor="w", pady=2, **kw):
+    """hchk + pack + add_tip in one call."""
+    cb = hchk(parent, label, var, **kw)
+    cb.pack(anchor=anchor, pady=pady)
+    if tip:
+        add_tip(cb, tip)
+    return cb
 
 # ═══════════════════════════════════════════════════════
 #  Lightweight tooltip — replaces inline desc_labels
@@ -2867,6 +2916,41 @@ class App(tk.Tk):
     #  UI
     # ═══════════════════════════════════════════════════
     def _build_ui(self):
+        # ── Global MouseWheel dispatcher ──────────────────────────────────────
+        # One handler for all tabs. Scrolls the ScrollableFrame under the cursor;
+        # yields to Text/Listbox/Treeview which handle their own wheel events.
+        _NATIVE_SCROLL = (tk.Text, tk.Listbox, tk.Scale)
+        def _global_wheel(event):
+            w = event.widget
+            # Walk up the widget tree; if a native-scroll widget is in the path,
+            # let the default binding handle it.
+            node = w
+            while node:
+                if isinstance(node, _NATIVE_SCROLL):
+                    return
+                if hasattr(ttk, "Treeview") and isinstance(node, ttk.Treeview):
+                    return
+                node = getattr(node, "master", None)
+            for sf in _SCROLL_FRAMES:
+                if sf.contains_point(event.x_root, event.y_root):
+                    sf.scroll(event.delta)
+                    return "break"
+        self.bind_all("<MouseWheel>", _global_wheel)
+
+        # Flush all deferred layout on mouse release — covers sash drag and any
+        # in-app resize. OS window-border resize falls back to the 400 ms
+        # debounce (Tkinter never receives those ButtonRelease events).
+        def _on_release(e):
+            for sf in _SCROLL_FRAMES:
+                sf._apply_width()
+            for apply_fn, lbl in list(_WRAP_LABELS):
+                try:
+                    if lbl.winfo_exists():
+                        apply_fn()
+                except Exception:
+                    pass
+        self.bind_all("<ButtonRelease-1>", _on_release)
+
         # ── Top header bar ────────────────────────────────────────────────────
         hdr = tk.Frame(self, bg=BG2)
         hdr.pack(fill="x")
@@ -2897,7 +2981,7 @@ class App(tk.Tk):
                   activeforeground=ORANGE,
                   command=self._connect_and_load).pack(side="left", padx=(4, 0))
 
-        tk.Frame(self, height=1, bg=BORDER).pack(fill="x")
+        _sep(self, pady=0)
 
         s = ttk.Style()
         s.theme_use("default")
@@ -2988,7 +3072,7 @@ class App(tk.Tk):
         self.progress_lbl.pack(side="right")
 
         # Summary line below buttons
-        tk.Frame(run_bar, height=1, bg=BORDER).pack(fill="x")
+        _sep(run_bar, pady=0)
         self._summary_lbl = tk.Label(
             run_bar, text="", font=FONT_SM, bg=BG2, fg=MUTED,
             anchor="w", padx=10, pady=4)
@@ -3324,7 +3408,7 @@ class App(tk.Tk):
 
 
         # ── PERSPECTIVE ───────────────────────────────────────────────────────
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
+        _sep(sec)
         persp_row = tk.Frame(sec, bg=BG2)
         persp_row.pack(fill="x")
         mlabel(persp_row, "Perspective:").pack(side="left")
@@ -3358,7 +3442,7 @@ class App(tk.Tk):
         self.after(50, self._on_perspective_change)
 
 
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
+        _sep(sec, pady=(8, 4))
 
         tg = tk.Frame(sec, bg=BG2)
         tg.pack(fill="x")
@@ -3450,7 +3534,7 @@ class App(tk.Tk):
         self._hs_row = hs_row
 
         # ── KILL FILTERS — data-driven from KILL_FILTER_REGISTRY ──────────────
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
+        _sep(sec)
         _kill_logic_hdr = tk.Frame(sec, bg=BG2)
         _kill_logic_hdr.pack(fill="x", pady=(0, 4))
         slabel(_kill_logic_hdr, "Kill filters (Mods + demoparser2):").pack(side="left")
@@ -3471,7 +3555,7 @@ class App(tk.Tk):
         self._on_kill_logic_change()
 
         # ── Mods (SQL-backed) ─────────────────────────────────────────────────
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
+        _sep(sec)
         _mods_hdr = tk.Frame(sec, bg=BG2)
         _mods_hdr.pack(fill="x", pady=(0, 4))
         slabel(_mods_hdr, "Mods — none checked = all kills:").pack(side="left")
@@ -3482,7 +3566,7 @@ class App(tk.Tk):
         self.after(50, lambda: self._on_logic_mode_change("mods"))
 
         # ── demoparser2 modifiers ─────────────────────────────────────────────
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(6, 4))
+        _sep(sec)
         _dp2_hdr = tk.Frame(sec, bg=BG2)
         _dp2_hdr.pack(fill="x", pady=(0, 4))
         slabel(_dp2_hdr, "demoparser2 modifiers:").pack(side="left")
@@ -3540,7 +3624,7 @@ class App(tk.Tk):
         self.after(50, lambda: self._on_logic_mode_change("dp2"))
 
         # ── Situation (DB + Clutch) ───────────────────────────────────────────
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
+        _sep(sec, pady=(8, 4))
         _sit_hdr = tk.Frame(sec, bg=BG2)
         _sit_hdr.pack(fill="x", pady=(0, 4))
         slabel(_sit_hdr, "Situation (DB):").pack(side="left")
@@ -3575,7 +3659,7 @@ class App(tk.Tk):
         self.after(50, lambda: self._on_logic_mode_change("db"))
 
         # ── CLUTCH ────────────────────────────────────────────────────────────
-        tk.Frame(sec, height=1, bg=BORDER).pack(fill="x", pady=(8, 4))
+        _sep(sec, pady=(8, 4))
         _clutch_hdr = tk.Frame(sec, bg=BG2)
         _clutch_hdr.pack(fill="x", pady=(0, 4))
         _clutch_cb = hchk(_clutch_hdr, "🎯 CLUTCH", self.v["clutch_enabled"])
@@ -4240,7 +4324,8 @@ class App(tk.Tk):
         mlabel(vc, "CRF:").pack(side="left", padx=(16, 0))
         sentry(vc, self.v["crf"], width=4).pack(side="left", padx=(6, 0), ipady=4)
         desc_label(vc, "  0=lossless  18=very good  23=default").pack(side="left", padx=(6, 0))
-        self._vcodec_desc = tk.Label(sec, text="", font=FONT_DESC, fg=BLUE, bg=BG2, anchor="w", wraplength=700)
+        self._vcodec_desc = tk.Label(sec, text="", font=FONT_DESC, fg=BLUE, bg=BG2, anchor="w")
+        _bind_wraplength(self._vcodec_desc)
         self._vcodec_desc.pack(fill="x", pady=(4, 0))
         self._on_vcodec()
 
@@ -4268,7 +4353,8 @@ class App(tk.Tk):
         self._acodec_cb.bind("<<ComboboxSelected>>", self._on_acodec)
         mlabel(ac, "Bitrate (kbps):").pack(side="left", padx=(16, 0))
         sentry(ac, self.v["audio_bitrate"], width=5).pack(side="left", padx=(6, 0), ipady=4)
-        self._acodec_desc = tk.Label(sec, text="", font=FONT_DESC, fg=BLUE, bg=BG2, anchor="w", wraplength=700)
+        self._acodec_desc = tk.Label(sec, text="", font=FONT_DESC, fg=BLUE, bg=BG2, anchor="w")
+        _bind_wraplength(self._acodec_desc)
         self._acodec_desc.pack(fill="x", pady=(4, 0))
         self._on_acodec()
 
@@ -4277,7 +4363,7 @@ class App(tk.Tk):
         for lbl, key in [("Input :", "ffmpeg_input_params"), ("Output :", "ffmpeg_output_params")]:
             row = tk.Frame(sec, bg=BG2)
             row.pack(fill="x", pady=(4, 0))
-            mlabel(row, lbl, width=8, anchor="w").pack(side="left")
+            mlabel(row, lbl, anchor="w").pack(side="left")
             sentry(row, self.v[key]).pack(side="left", fill="x", expand=True, ipady=4)
 
         sec = Sec(p, "IN-GAME OPTIONS")
@@ -4287,9 +4373,7 @@ class App(tk.Tk):
             ("Death notices only", "show_only_death_notices", "Show only death notices on screen."),
             ("X-Ray",               "show_xray",               "Skeletons visible through walls (showXRay)."),
         ]:
-            _cb = hchk(sec, txt, self.v[key])
-            _cb.pack(anchor="w", pady=2)
-            add_tip(_cb, tip)
+            _chk_tip(sec, txt, self.v[key], tip)
         dr = tk.Frame(sec, bg=BG2)
         dr.pack(fill="x", pady=(6, 0))
         _dn_lbl = mlabel(dr, "Death notices (s):")
@@ -4308,27 +4392,21 @@ class App(tk.Tk):
                 "closeGameAfterRecording — closes CS2 after each recorded demo.\n"
                 "Recommended: ON. Leaving CS2 open between demos can cause\n"
                 "instability on long batches.")
-        tk.Frame(sec_asm, height=1, bg=BORDER).pack(fill="x", pady=(0, 4))
+        _sep(sec_asm, pady=(0, 4))
 
-        _asm_cb1 = hchk(sec_asm, "Assemble all clips at the end",
-             self.v["assemble_after"])
-        _asm_cb1.pack(anchor="w", pady=(4, 2))
-        add_tip(_asm_cb1, "After batch, concatenate all clips into a single file.\n"
-                          "Video copied without re-encoding (-c:v copy) — fast, lossless.\n"
-                          "Audio re-encoded to AAC to fix drift.\n"
-                          "Requires the same codec and resolution on all clips.")
-        _asm_cb2 = hchk(sec_asm, "Delete source clips after assembly",
-             self.v["delete_after_assemble"])
-        _asm_cb2.pack(anchor="w", pady=2)
-        add_tip(_asm_cb2, "Deletes source files (and their folders) after successful assembly.\n"
-                          "⚠ Incompatible with Concatenate sequences — automatically disables that option.")
-        _asm_cb3 = hchk(sec_asm, "Concatenate sequences",
-             self.v["concatenate_sequences"])
-        _asm_cb3.pack(anchor="w", pady=2)
-        add_tip(_asm_cb3,
-                "Merge all sequences from the same demo into a single clip (CSDM side, before FFmpeg).\n"
-                "⚠ Useless if 'Assemble all clips' is active — final assembly already does this.\n"
-                "⛔ Automatically disabled if 'Delete source clips' is checked.")
+        _asm_cb1 = _chk_tip(sec_asm, "Assemble all clips at the end", self.v["assemble_after"],
+                            "After batch, concatenate all clips into a single file.\n"
+                            "Video copied without re-encoding (-c:v copy) — fast, lossless.\n"
+                            "Audio re-encoded to AAC to fix drift.\n"
+                            "Requires the same codec and resolution on all clips.",
+                            pady=(4, 2))
+        _asm_cb2 = _chk_tip(sec_asm, "Delete source clips after assembly", self.v["delete_after_assemble"],
+                            "Deletes source files (and their folders) after successful assembly.\n"
+                            "⚠ Incompatible with Concatenate sequences — automatically disables that option.")
+        _asm_cb3 = _chk_tip(sec_asm, "Concatenate sequences", self.v["concatenate_sequences"],
+                            "Merge all sequences from the same demo into a single clip (CSDM side, before FFmpeg).\n"
+                            "⚠ Useless if 'Assemble all clips' is active — final assembly already does this.\n"
+                            "⛔ Automatically disabled if 'Delete source clips' is checked.")
 
         def _sync_concat_state(*_):
             del_active = self.v["delete_after_assemble"].get()
@@ -4462,7 +4540,7 @@ class App(tk.Tk):
                 "Requires pywin32 (pip install pywin32). Silently ignored otherwise.")
 
         # Physics grid
-        tk.Frame(self._cs2_sec, height=1, bg=BORDER).pack(fill="x", pady=(10, 6))
+        _sep(self._cs2_sec, pady=(10, 6))
         mlabel(self._cs2_sec, "Physics & visuals:").pack(anchor="w")
         desc_label(self._cs2_sec,
                    "Non-default values are injected as CS2 console commands on startup.").pack(
@@ -4644,6 +4722,8 @@ class App(tk.Tk):
             split = int(round(self._outer_paned.sashpos(0) * 100 / total))
             split = self._clamp_layout_values(1600, 900, split)[2]
             self.v["ui_split_pct"].set(split)
+            # Snap the sash to the clamped position after the drag ends.
+            self._outer_paned.sashpos(0, int(total * (split / 100.0)))
         except Exception:
             pass
 
