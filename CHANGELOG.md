@@ -9,6 +9,54 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v172]
+
+### Fixed: Ferrari Peek dp2_badge placement
+
+`dp2_badge` was packed inside the expandable `_hv_inner` frame (visible only when "Enable" is checked). Moved to the main `_hv_row` frame so it appears inline with the label and checkboxes — consistent with every other dp2-category filter row.
+
+### Improved: Light mode (white theme)
+
+- **White preset softened**: `BG2` changed from `#ffffff` to `#f8f8f8`, `BG3` to `#e4e4e4` — reduces harsh pure-white contrast zones.
+- **Light-mode status colours**: Added `_STATUS_COLOURS_LIGHT` with dark-saturated variants (`GREEN #15803d`, `RED #b91c1c`, `YELLOW #b45309`, `BLUE #1d4ed8`) that provide adequate contrast on light backgrounds. `_build_theme` selects the light set when the bg preset has `_is_light: True`; existing dark-mode pastel colours are unchanged.
+- Log tags (`ok`, `err`, `warn`, `blue`, badges) reapply via `_reapply_ttk_styles` on theme change, so switching dark → white correctly updates all coloured text in the console.
+
+### Added: Live clock in console header
+
+A `HH:MM:SS` clock label ticks every second in the LOG header bar (next to "LOG"). Always visible regardless of the TS toggle. Implemented via `_tick_log_clock` with `after(1000, ...)` — zero blocking.
+
+### Added: INJECTION PREVIEW section (Tools tab)
+
+New collapsible section below PERFORMANCE in the Tools tab shows the exact args that will be injected into CS2 for the current config:
+- **HLAE mode**: shows the full `extraArgs` token string broken one-per-line.
+- **CS mode**: shows `launch_args` and each `console_cmds` entry.
+- Displays on load (`after(200, ...)`), plus a **⟳ Refresh** button for manual update.
+- Text widget auto-sizes (4–12 lines). Key labels in accent colour, values in text colour.
+
+### Added: HTML export for preview results
+
+A new **📤 Export HTML** button in the log toolbar. After running a preview (F6), generates a standalone HTML file with:
+- Per-clip rows: date, demo name, clip index, weapon, active filters, tick, `playdemo <demo> <tick>` command (click-to-select).
+- Dark-themed CSS embedded in the file — no external dependencies.
+- Summary footer with total clip count and duration.
+- Data sourced from `_last_preview_data` (set at end of `_show_preview_impl`).
+
+### Refactor: File split — `csdm_registry.py`
+
+Static data extracted to a separate file (`csdm_registry.py`, ~330 lines):
+- `FilterDef`, `KILL_FILTER_REGISTRY` and all derived structures (`KILL_FILTER_KEYS_ALL`, `KILL_FILTER_LABELS`, `KILL_FILTER_SQL_COLS`, `_FILTER_CONFIG_DEFAULTS`, `_FILTER_BOOL_KEYS`, `_FILTER_PRESET_PLAYER_KEYS`)
+- `WEAPON_CATEGORIES`, `WEAPON_ICONS`, `_weapon_category`, `_WEAPON_LOOKUP`
+- `MATCH_TYPE_DEFS`, `_MATCH_TYPE_KEY_TO_DB`, `_MATCH_TYPE_CFG_KEYS`
+- `VIDEO_CODECS_INFO`, `AUDIO_CODECS_INFO`, `RESOLUTIONS`, `FRAMERATES`, `DEFINITIONS`, `ASPECT_RATIOS`
+- `TROIS_SHOT_THRESHOLDS`, `CSDM_TO_DP2_WEAPON`, `DP2_TICK_WINDOW`
+- `SPRAY_TRANSFER_WEAPONS`, `SPRAY_MAX_GAP_TICKS`, `DELAYED_EFFECT_WEAPONS`
+- `EVENTS`, `ENCODER_OPTIONS`, `RECSYS_OPTIONS`, `VIDEO_CONTAINERS`, `PERSP_LABELS`
+- `CSDM_RUNTIME_CFG_NAME`, `TAG_PRESET_COLORS`
+
+Main file gains `from csdm_registry import *` and loses ~407 lines. No theme dependencies in the registry file — safe to edit, import, and test in isolation.
+
+---
+
 ## [v171]
 
 ### Improved: demoparsing performance
