@@ -5994,22 +5994,26 @@ class App(tk.Tk):
             from demoparser2 import DemoParser
             parser = DemoParser(demo_path)
             df = parser.parse_ticks(needed, props=["X", "Y", "Z", "pitch", "yaw", "team_num"])
-        except Exception:
+        except Exception as e:
+            self._alog(f"  ⚠ Mate POV parse_ticks error: {e}", "warn")
             return cached
 
         try:
             if df is None or len(df) == 0:
+                self._alog("  ⚠ Mate POV: parse_ticks returned empty DataFrame", "warn")
                 return cached
             cols = list(df.columns)
             # steamid column varies across demoparser2 versions
             sid_col = next((c for c in cols
                             if c.lower() in ("steamid", "player_steamid", "user_steamid")), None)
             if not sid_col:
+                self._alog(f"  ⚠ Mate POV: no steamid column in {cols}", "warn")
                 return cached
 
             def _fc(name):
                 return next((c for c in cols if c.lower() == name.lower()), None)
 
+            col_tick = _fc("tick")
             col_x    = _fc("X")
             col_y    = _fc("Y")
             col_z    = _fc("Z")
@@ -6017,15 +6021,15 @@ class App(tk.Tk):
             col_pit  = _fc("pitch")
             col_team = _fc("team_num")
 
-            if not (col_x and col_y and col_z):
+            if not (col_tick and col_x and col_y and col_z):
+                self._alog(f"  ⚠ Mate POV: missing columns tick/X/Y/Z in {cols}", "warn")
                 return cached
 
             arr = df[[c for c in [
-                "tick", sid_col, col_x, col_y, col_z,
+                col_tick, sid_col, col_x, col_y, col_z,
                 col_yaw, col_pit, col_team,
             ] if c]].to_numpy()
 
-            idx = {"tick": 0, "sid": 1, "X": 2, "Y": 3, "Z": 4}
             base = 5
             yaw_i  = base     if col_yaw  else None
             pit_i  = base + (1 if col_yaw else 0) if col_pit  else None
@@ -6044,8 +6048,8 @@ class App(tk.Tk):
                     "pitch":float(row[pit_i]  or 0) if pit_i  is not None else 0.0,
                     "team": int(row[team_i]   or 0) if team_i is not None else 0,
                 }
-        except Exception:
-            pass
+        except Exception as e:
+            self._alog(f"  ⚠ Mate POV: position parse failed: {e}", "warn")
 
         with self._dp2_cache_lock:
             merged = self._dp2_cache.get(demo_path, {})
@@ -6073,10 +6077,15 @@ class App(tk.Tk):
 
         victim_data = tick_data.get(str(victim_sid))
         if not victim_data:
+            self._alog(
+                f"  ⚠ Mate POV: victim {victim_sid} not in tick {kill_tick} data "
+                f"(players in tick: {list(tick_data.keys())[:5]}…)", "dim")
             return None
 
         vx, vy, vz = victim_data["X"], victim_data["Y"], victim_data["Z"]
         victim_team = victim_data.get("team", 0)
+        # team==0 means team_num wasn't available; skip team check in that case
+        team_check_enabled = victim_team != 0
 
         best_sid   = None
         best_score = float("inf")   # lower = better centred
@@ -6084,7 +6093,7 @@ class App(tk.Tk):
         for sid, pd in tick_data.items():
             if sid == str(victim_sid):
                 continue
-            if pd.get("team", -1) != victim_team:
+            if team_check_enabled and pd.get("team", -1) != victim_team:
                 continue   # must be same team as victim
             if sid in sids_active or str(sid) in sids_active:
                 continue   # active (our) player is not a "mate" for POV
@@ -6145,6 +6154,7 @@ class App(tk.Tk):
         sids_active = set(str(s) for s in self._get_sids(cfg))
         must_mode   = cfg.get("kill_mod_mate_pov_req", False)
 
+        found = 0
         result = []
         for evt in events:
             if evt.get("type") != "kill":
@@ -6156,11 +6166,15 @@ class App(tk.Tk):
                                                    kill_tick, sids_active)
             if mate_sid:
                 evt["_mate_pov_sid"] = mate_sid
+                found += 1
                 result.append(evt)
             elif must_mode:
                 pass   # no qualifying mate → skip this kill in Must mode
             else:
                 result.append(evt)   # keep kill, camera falls back normally
+
+        n_kills = len(kill_ticks)
+        self._alog(f"  👥 Mate POV: {found}/{n_kills} kill(s) have a qualifying teammate", "info")
         return result
 
     def _mate_pov_camera_sid(self, demo_path, event, cfg):
@@ -10233,7 +10247,10 @@ class App(tk.Tk):
             sections.add("death")
         if cfg.get("kill_mod_sauveur"):
             sections.add("hurt")
-        sections.add("names")  # always collect in-demo player names for deathnotice
+        # Collect in-demo player names only when dp2 is already running for something else.
+        # When no filter needs dp2, DB names serve as fallback — no extra parse triggered.
+        if sections:
+            sections.add("names")
         return sections
 
 
