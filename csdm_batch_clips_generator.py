@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v166"""
+"""CSDM Batch Clips Generator v176"""
 
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
 import subprocess, threading, json, os, tempfile, time, shutil, re, uuid, random, shlex
-import bisect, concurrent.futures
+import bisect, concurrent.futures, math
 from functools import lru_cache
 from collections import defaultdict, deque
 import calendar as cal_mod
@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v173"
+APP_VERSION = "v176"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -239,6 +239,7 @@ class FilterDef(NamedTuple):
     special:      Optional[str]  = None  # "trois_shot"|"trois_tap"|"one_tap"|"high_velocity"
     hide_ui:      bool           = False # True → no standalone row (rendered by another)
     extra_config: Optional[dict] = None  # extra DEFAULT_CONFIG entries for this filter
+    camera_fn:    Optional[str]  = None  # App method: (demo_path, event, cfg) → override camera SID or None
 
 
 KILL_FILTER_REGISTRY: _List[FilterDef] = [
@@ -252,15 +253,26 @@ KILL_FILTER_REGISTRY: _List[FilterDef] = [
     FilterDef("kill_mod_assisted_flash", "⚡ VICTIM FLASHED:","⚡ VIC.FLASH",  "mods",
         "Victim was blinded by a flashbang (DB column).",
         sql_cols=["is_assisted_flash", "assisted_flash"]),
-    # ── dp2 — player_death flag filters ─────────────────────────────────
-    FilterDef("kill_mod_wall_bang",      "🧱 WALLBANG:",      "🧱 WALLBANG",   "dp2",
-        ("Kill where the bullet penetrated an obstacle and is not a collateral chain.\n"
-         "Uses player_death.penetrated with per-shot grouping via demoparser2."),
+    # ── DB-backed mods (CSDM stores these columns in the kills table) ────
+    FilterDef("kill_mod_wall_bang",      "🧱 WALLBANG:",      "🧱 WALLBANG",   "mods",
+        ("Kill where the bullet penetrated at least one obstacle.\n"
+         "Uses kills.penetrated_objects > 0  or  kills.has_penetrated / kills.penetrated.\n"
+         "Falls back to demoparser2 if no matching column is found in the DB."),
+        sql_cols=["penetrated_objects", "has_penetrated", "penetrated"],
         dp2_filter="_wall_bang_dp2_filter",     dp2_apply="_apply_wall_bang_dp2_to_events",
         dp2_log="🧱 WALLBANG",  dp2_result="wallbang",    dp2_skip="0 WALLBANG"),
+    FilterDef("kill_mod_attacker_blind", "😵 BLIND FIRE:",    "😵 BLIND",      "mods",
+        ("Bullet fired while the killer was blinded by a flashbang.\n"
+         "Uses kills.attacker_blinded / kills.is_attacker_blinded / kills.attacker_blind.\n"
+         "Falls back to demoparser2 if no matching column is found in the DB."),
+        sql_cols=["attacker_blinded", "is_attacker_blinded", "attacker_blind",
+                  "is_blinded", "attackerblind"],
+        dp2_filter="_attacker_blind_dp2_filter",dp2_apply="_apply_attacker_blind_dp2_to_events",
+        dp2_log="😵 BLIND FIRE",dp2_result="blind fire",  dp2_skip="0 BLIND FIRE"),
+    # ── dp2-only — no DB equivalent ──────────────────────────────────────
     FilterDef("kill_mod_airborne",       "🪂 AIRBORNE:",      "🪂 AIR",        "dp2",
-        ("Bullet of the kill was fired while the killer was not on ground.\n"
-         "Uses player_death.attackerinair from the demo file via demoparser2."),
+        ("Bullet fired while the killer was in the air (not on ground).\n"
+         "Uses player_death.attackerinair — demoparser2 required, not stored in CSDM DB."),
         dp2_filter="_airborne_dp2_filter",      dp2_apply="_apply_airborne_dp2_to_events",
         dp2_log="🪂 AIRBORNE",  dp2_result="airborne",    dp2_skip="0 AIRBORNE"),
     FilterDef("kill_mod_collateral",     "🎯 COLLATERAL:",    "🎯 COLLAT.",    "dp2",
@@ -268,11 +280,6 @@ KILL_FILTER_REGISTRY: _List[FilterDef] = [
          "Uses player_death.penetrated + shot grouping via demoparser2."),
         dp2_filter="_collateral_dp2_filter",    dp2_apply="_apply_collateral_dp2_to_events",
         dp2_log="🎯 COLLATERAL",dp2_result="collateral",  dp2_skip="0 COLLATERAL"),
-    FilterDef("kill_mod_attacker_blind", "😵 BLIND FIRE:",    "😵 BLIND",      "dp2",
-        ("Bullet fired while the killer was blinded.\n"
-         "Uses player_death.attackerblind from the demo file via demoparser2."),
-        dp2_filter="_attacker_blind_dp2_filter",dp2_apply="_apply_attacker_blind_dp2_to_events",
-        dp2_log="😵 BLIND FIRE",dp2_result="blind fire",  dp2_skip="0 BLIND FIRE"),
     # ── dp2 — weapon_fire-based filters ─────────────────────────────────
     FilterDef("kill_mod_trois_shot",     "🎲 TROIS SHOT:",    "🎲 TROIS SHOT", "dp2",
         ("Lucky kills on precision weapons — detected via demoparser2.\n\n"
@@ -344,6 +351,18 @@ KILL_FILTER_REGISTRY: _List[FilterDef] = [
     FilterDef("kill_mod_eco_frag",       "💰 ECO FRAG:",      "💰 ECO",         "db",
         ("Pistol kill against a full-buy opponent (rifle / sniper / LMG).\n"
          "Falls back to all pistol kills if victim_weapon column is missing.")),
+    # ── Camera modifier — not a kill filter, rendered in Capture & Timing ────
+    FilterDef("kill_mod_mate_pov",       "👥 MATE POV:",      "👥 MATE POV",   "dp2",
+        ("Record from the victim's teammate who has the best angular view of the kill.\n"
+         "Uses demoparser2 player positions + view angles at kill tick.\n"
+         "⚠ LOS is angle-based (no BSP ray-cast). At least 2 of 3 body points must be\n"
+         "within the teammate's field of view.\n"
+         "★ Must = skip clips with no qualifying teammate."),
+        dp2_filter="_mate_pov_filter",
+        dp2_apply=None,
+        dp2_log="👥 MATE POV", dp2_result="mate pov", dp2_skip="0 mate POV",
+        camera_fn="_mate_pov_camera_sid",
+        hide_ui=True),   # rendered in Capture & Timing, not in Kill Filters
 ]
 
 # ── Derived structures (auto-generated — DO NOT EDIT, edit KILL_FILTER_REGISTRY) ──
@@ -514,7 +533,7 @@ TAG_PRESET_COLORS = [
 WEAPON_CATEGORIES = {
     "Pistols": [
         "usp_silencer", "hkp2000", "glock", "p250", "fiveseven",
-        "cz75a", "tec9", "elite", "deagle", "revolver",
+        "cz75a", "cz75_auto", "tec9", "elite", "deagle", "revolver",
         "usp-s", "p2000", "glock-18", "five-seven", "cz75-auto",
         "tec-9", "dual berettas", "desert eagle", "r8 revolver",
         "USP-S", "P2000", "Glock-18", "P250", "Five-SeveN",
@@ -576,15 +595,54 @@ WEAPON_ICONS = {
     'C4 / World': '💥', 'Misc': '⚡', 'Other': '❓',
 }
 
-# Flat lookup built once at load time — O(1) instead of O(n²)
-_WEAPON_LOOKUP: dict = {
-    w.lower(): cat
-    for cat, weapons in WEAPON_CATEGORIES.items()
-    for w in weapons
-}
+# Flat lookup built once at load time — O(1) instead of O(n²).
+# Also indexes the "weapon_" prefixed form so internal names resolve without extra stripping.
+_WEAPON_LOOKUP: dict = {}
+for _cat, _weapons in WEAPON_CATEGORIES.items():
+    for _w in _weapons:
+        _k = _w.lower()
+        _WEAPON_LOOKUP[_k] = _cat
+        if not _k.startswith("weapon_"):
+            _WEAPON_LOOKUP["weapon_" + _k] = _cat
+
+# Substring → category fallback for weapons whose DB name varies (e.g. "CZ75 Auto",
+# "weapon_cz75a", "cz75_auto" …).  Checked only when the exact lookup misses.
+_WEAPON_SUBSTR_FALLBACK: list = [
+    # (substring, category)  — checked in order, first match wins
+    ("cz75",    "Pistols"),
+    ("glock",   "Pistols"),
+    ("deagle",  "Pistols"),
+    ("desert",  "Pistols"),   # "desert eagle"
+    ("revolver","Pistols"),
+    ("usp",     "Pistols"),
+    ("p2000",   "Pistols"),
+    ("fiveseven","Pistols"),
+    ("tec",     "Pistols"),
+    ("elite",   "Pistols"),
+    ("p250",    "Pistols"),
+    ("ak",      "Rifles"),
+    ("m4",      "Rifles"),
+    ("awp",     "Snipers"),
+    ("knife",   "Knives"),
+    ("grenade", "Grenades & Utility"),
+    ("molotov", "Grenades & Utility"),
+    ("smoke",   "Grenades & Utility"),
+    ("flash",   "Grenades & Utility"),
+]
 
 def _weapon_category(weapon_name: str) -> str:
-    return _WEAPON_LOOKUP.get(weapon_name.lower().strip(), "Other")
+    key = weapon_name.lower().strip()
+    # Strip common "weapon_" prefix used internally
+    if key.startswith("weapon_"):
+        key = key[7:]
+    cat = _WEAPON_LOOKUP.get(key)
+    if cat:
+        return cat
+    # Substring fallback — catches variant spellings not in the exact lookup
+    for substr, fallback_cat in _WEAPON_SUBSTR_FALLBACK:
+        if substr in key:
+            return fallback_cat
+    return "Other"
 
 
 # ── Match type / game mode filter ─────────────────────────────────────────────
@@ -2592,6 +2650,8 @@ class App(tk.Tk):
 
         for cat in sorted(categorized.keys(), key=lambda c: list(WEAPON_CATEGORIES.keys()).index(c)
                           if c in WEAPON_CATEGORIES else 999):
+            if cat == "Other":
+                continue  # unknown DB weapon names are silently dropped from the UI
             cat_weapons = categorized[cat]
             cat_frame = tk.Frame(self._wg_frame, bg=BG2)
             cat_frame.pack(fill="x", pady=(4, 0))
@@ -3055,6 +3115,19 @@ class App(tk.Tk):
             nb.add(f, text=f"  {title}  ")
             builder(f)
 
+        def _on_tab_changed(_event=None):
+            # Flush pending ScrollableFrame width jobs immediately so the newly
+            # visible tab lays out at the correct width without the 400 ms delay.
+            for sf in _SCROLL_FRAMES:
+                sf._apply_width()
+            for apply_fn, lbl in list(_WRAP_LABELS):
+                try:
+                    if lbl.winfo_exists():
+                        apply_fn()
+                except Exception:
+                    pass
+        nb.bind("<<NotebookTabChanged>>", _on_tab_changed)
+
         right_frame = tk.Frame(outer, bg=BG)
         outer.add(right_frame, weight=2)
         right_frame.rowconfigure(1, weight=1)
@@ -3498,19 +3571,52 @@ class App(tk.Tk):
         _vp_lbl = mlabel(self._victim_pre_row, "Switch delay (s):")
         _vp_lbl.pack(side="left")
         add_tip(_vp_lbl,
-                "Seconds before the kill tick at which the camera switches from killer to victim.\n"
-                "0 = switch exactly at the kill. Capped at BEFORE seconds.")
+                "Seconds before the kill tick at which the camera switches from killer → victim.\n"
+                "Killer phase = BEFORE seconds.  Victim phase = this value.\n"
+                "Total clip before kill = BEFORE + Switch delay.")
         _vp_val_lbl = tk.Label(self._victim_pre_row, text=f"{self.v['victim_pre_s'].get()}s",
                                font=FONT_SM, fg=ORANGE, bg=BG2)
         _vp_val_lbl.pack(side="right")
+
+        # "Total before" hint — shows killer + victim seconds combined
+        self._both_total_lbl = tk.Label(self._victim_pre_row, text="", font=FONT_SM,
+                                        fg=_t("MUTED"), bg=BG2)
+        self._both_total_lbl.pack(side="right", padx=(0, 6))
+
+        def _update_both_total(*_):
+            b  = int(float(self.v["before"].get()))
+            vp = int(float(self.v["victim_pre_s"].get()))
+            _vp_val_lbl.config(text=f"{vp}s")
+            self._both_total_lbl.config(text=f"total before: {b + vp}s")
+
         tk.Scale(self._victim_pre_row, from_=0, to=10, variable=self.v["victim_pre_s"],
                  orient="horizontal", bg=BG2, fg=TEXT, troughcolor=BG3,
                  activebackground=ORANGE, highlightthickness=0, bd=0,
                  showvalue=False, cursor="hand2",
-                 command=lambda v: _vp_val_lbl.config(text=f"{int(float(v))}s")
+                 command=_update_both_total,
                  ).pack(side="left", fill="x", expand=True, pady=(2, 0))
-        self.after(50, self._on_perspective_change)
 
+        # Mate POV row — visible in Victim and Both modes only
+        self._mate_pov_row = tk.Frame(sec, bg=BG2)
+        self._mate_pov_row.pack(fill="x", pady=(4, 0))
+        _mp_lbl = mlabel(self._mate_pov_row, "Mate POV:")
+        _mp_lbl.pack(side="left")
+        add_tip(_mp_lbl,
+                "Record from the best-angle teammate of the victim instead of the victim.\n"
+                "Uses demoparser2 player positions + view angles at kill tick.\n"
+                "⚠ LOS is angle-based (no BSP ray-cast).\n"
+                "Only applies in Victim / Both perspective modes.")
+        _mp_en = hchk(self._mate_pov_row, "Enable", self.v["kill_mod_mate_pov"])
+        _mp_en.pack(side="left", padx=(4, 0))
+        _mp_must = hchk(self._mate_pov_row, "★ Must", self.v["kill_mod_mate_pov_req"])
+        _mp_must.pack(side="left", padx=(8, 0))
+        add_tip(_mp_must,
+                "Must: skip clips where no qualifying teammate is found.\n"
+                "Without Must: fall back to normal victim camera when no mate qualifies.")
+        self._wire_enable_must(self.v["kill_mod_mate_pov"],
+                               self.v["kill_mod_mate_pov_req"])
+
+        self.after(50, self._on_perspective_change)
 
         _sep(sec, pady=(8, 4))
 
@@ -3519,8 +3625,10 @@ class App(tk.Tk):
         tg.columnconfigure(0, weight=1)
         tg.columnconfigure(1, weight=1)
         _sb = self._slider(tg, "Seconds BEFORE", self.v["before"], 1, 15, 0, 0)
-        add_tip(_sb, "Seconds of footage recorded before the event tick.\n"
-                     "In 'Both' mode, victim_pre_s is added on top of this value.")
+        add_tip(_sb, "Killer-phase duration in Both mode / total before in Killer|Victim mode.\n"
+                     "In Both mode the full clip before kill = BEFORE + Switch delay.")
+        # Update the "total before" hint whenever the BEFORE slider changes too.
+        self.v["before"].trace_add("write", _update_both_total)
         _sa = self._slider(tg, "Seconds AFTER", self.v["after"],  1, 15, 0, 1)
         add_tip(_sa, "Seconds of footage recorded after the event tick.")
 
@@ -4818,7 +4926,10 @@ class App(tk.Tk):
             w, h, _ = self._clamp_layout_values(w, h, self.v["ui_split_pct"].get())
             self.v["ui_window_w"].set(w)
             self.v["ui_window_h"].set(h)
-            self._on_splitter_release()
+            # Do NOT call _on_splitter_release() here — that sets sashpos() which
+            # fires <Configure> on every pane → re-triggers all ScrollableFrame
+            # reflows 400 ms later, producing the "momentum" drag feel.
+            # Sash snapping happens only on actual sash-drag via the outer binding.
         except Exception:
             pass
 
@@ -4851,13 +4962,21 @@ class App(tk.Tk):
 
     # ── v60: structured resolution selectors ─────────────────────────────────
     def _on_perspective_change(self, *_):
-        """Show/hide the 'Switch delay' slider based on the perspective mode."""
+        """Show/hide the 'Switch delay' slider, total-before hint, and Mate POV row."""
         try:
             persp = self.v["perspective"].get()
             if persp == "both":
                 self._victim_pre_row.pack(fill="x", pady=(4, 0))
+                b  = int(float(self.v["before"].get()))
+                vp = int(float(self.v["victim_pre_s"].get()))
+                self._both_total_lbl.config(text=f"total before: {b + vp}s")
             else:
                 self._victim_pre_row.pack_forget()
+            # Mate POV is only meaningful in victim/both mode
+            if persp in ("victim", "both"):
+                self._mate_pov_row.pack(fill="x", pady=(4, 0))
+            else:
+                self._mate_pov_row.pack_forget()
         except Exception:
             pass
 
@@ -5839,6 +5958,214 @@ class App(tk.Tk):
             if pos < len(ticks) and ticks[pos] <= kill_tick:
                 filtered.append(evt)
         return filtered
+
+    # ── Mate POV camera modifier ───────────────────────────────────────────────
+    # kill_mod_mate_pov: show the kill from the best-angle teammate's perspective.
+    # Architecture:
+    #   1. _mate_pov_filter stamps evt["_mate_pov_sid"] on each kill that has a
+    #      qualifying teammate; optionally removes kills with no match (Must mode).
+    #   2. _build_cams_victim / _build_cams_both read _mate_pov_sid via cfg flag.
+    #   3. camera_fn="_mate_pov_camera_sid" lets _build_json look it up generically.
+    # LOS is angle-based only (no BSP ray-cast available via demoparser2).
+
+    _MATE_POV_BODY_HEIGHTS = (64, 40, 10)   # head / chest / legs (units above feet)
+    _MATE_POV_FOV_HALF_DEG = 45.0           # half-angle: point must be within ±45° to count
+    _MATE_POV_MIN_VISIBLE   = 2             # body points in FOV required ("≥50% visible")
+    _MATE_POV_MAX_DIST      = 5000          # ignore mates further than this (Hammer units)
+
+    def _parse_mate_positions(self, demo_path, kill_ticks):
+        """Lazily parse player positions + view-angles at the given ticks and cache them.
+
+        Returns the positions dict: {tick: {steamid: {X, Y, Z, pitch, yaw, team}}}.
+        Called just-in-time from _mate_pov_filter so pre-parse doesn't need tick list.
+        """
+        if not kill_ticks or not os.path.isfile(demo_path):
+            return {}
+
+        with self._dp2_cache_lock:
+            existing = self._dp2_cache.get(demo_path, {})
+            cached = dict(existing.get("mate_positions") or {})
+
+        needed = [t for t in kill_ticks if t not in cached]
+        if not needed:
+            return cached
+
+        try:
+            from demoparser2 import DemoParser
+            parser = DemoParser(demo_path)
+            df = parser.parse_ticks(needed, props=["X", "Y", "Z", "pitch", "yaw", "team_num"])
+        except Exception:
+            return cached
+
+        try:
+            if df is None or len(df) == 0:
+                return cached
+            cols = list(df.columns)
+            # steamid column varies across demoparser2 versions
+            sid_col = next((c for c in cols
+                            if c.lower() in ("steamid", "player_steamid", "user_steamid")), None)
+            if not sid_col:
+                return cached
+
+            def _fc(name):
+                return next((c for c in cols if c.lower() == name.lower()), None)
+
+            col_x    = _fc("X")
+            col_y    = _fc("Y")
+            col_z    = _fc("Z")
+            col_yaw  = _fc("yaw")
+            col_pit  = _fc("pitch")
+            col_team = _fc("team_num")
+
+            if not (col_x and col_y and col_z):
+                return cached
+
+            arr = df[[c for c in [
+                "tick", sid_col, col_x, col_y, col_z,
+                col_yaw, col_pit, col_team,
+            ] if c]].to_numpy()
+
+            idx = {"tick": 0, "sid": 1, "X": 2, "Y": 3, "Z": 4}
+            base = 5
+            yaw_i  = base     if col_yaw  else None
+            pit_i  = base + (1 if col_yaw else 0) if col_pit  else None
+            team_i = base + (1 if col_yaw else 0) + (1 if col_pit else 0) if col_team else None
+
+            for row in arr:
+                t   = int(row[0] or 0)
+                sid = str(row[1] or "")
+                if not t or not sid or sid == "0":
+                    continue
+                cached.setdefault(t, {})[sid] = {
+                    "X":    float(row[2] or 0),
+                    "Y":    float(row[3] or 0),
+                    "Z":    float(row[4] or 0),
+                    "yaw":  float(row[yaw_i]  or 0) if yaw_i  is not None else 0.0,
+                    "pitch":float(row[pit_i]  or 0) if pit_i  is not None else 0.0,
+                    "team": int(row[team_i]   or 0) if team_i is not None else 0,
+                }
+        except Exception:
+            pass
+
+        with self._dp2_cache_lock:
+            merged = self._dp2_cache.get(demo_path, {})
+            if not isinstance(merged, dict):
+                merged = {}
+            merged["mate_positions"] = cached
+            self._dp2_cache_put_locked(demo_path, merged)
+
+        return cached
+
+    def _find_best_mate_sid(self, demo_path, victim_sid, kill_tick, sids_active):
+        """Return the victim's teammate with the best angular view of the victim, or None.
+
+        Scans positions at kill_tick.  A teammate qualifies when ≥ _MATE_POV_MIN_VISIBLE
+        of the body test points are within _MATE_POV_FOV_HALF_DEG of their look direction.
+        Among all qualifying teammates the one with the smallest average body-point
+        angle is returned ("best angle" = most centred on the victim).
+        """
+        with self._dp2_cache_lock:
+            data = self._dp2_cache.get(demo_path, {})
+        positions = data.get("mate_positions", {})
+        tick_data = positions.get(kill_tick) or positions.get(kill_tick - 1) or {}
+        if not tick_data:
+            return None
+
+        victim_data = tick_data.get(str(victim_sid))
+        if not victim_data:
+            return None
+
+        vx, vy, vz = victim_data["X"], victim_data["Y"], victim_data["Z"]
+        victim_team = victim_data.get("team", 0)
+
+        best_sid   = None
+        best_score = float("inf")   # lower = better centred
+
+        for sid, pd in tick_data.items():
+            if sid == str(victim_sid):
+                continue
+            if pd.get("team", -1) != victim_team:
+                continue   # must be same team as victim
+            if sid in sids_active or str(sid) in sids_active:
+                continue   # active (our) player is not a "mate" for POV
+
+            dx = vx - pd["X"]
+            dy = vy - pd["Y"]
+            dist = math.sqrt(dx * dx + dy * dy)
+            if dist > self._MATE_POV_MAX_DIST:
+                continue
+
+            # View direction from yaw / pitch
+            yaw_r   = math.radians(pd.get("yaw",   0))
+            pitch_r = math.radians(pd.get("pitch", 0))
+            lx = math.cos(pitch_r) * math.cos(yaw_r)
+            ly = math.cos(pitch_r) * math.sin(yaw_r)
+            lz = -math.sin(pitch_r)
+
+            # Test body points (head / chest / legs)
+            visible   = 0
+            angle_sum = 0.0
+            for bz_offset in self._MATE_POV_BODY_HEIGHTS:
+                bdx = vx - pd["X"]
+                bdy = vy - pd["Y"]
+                bdz = (vz + bz_offset) - pd["Z"]
+                bd_len = math.sqrt(bdx * bdx + bdy * bdy + bdz * bdz)
+                if bd_len < 1:
+                    continue
+                dot = (lx * bdx + ly * bdy + lz * bdz) / bd_len
+                ang = math.degrees(math.acos(max(-1.0, min(1.0, dot))))
+                if ang <= self._MATE_POV_FOV_HALF_DEG:
+                    visible   += 1
+                    angle_sum += ang
+
+            if visible < self._MATE_POV_MIN_VISIBLE:
+                continue
+
+            score = angle_sum / visible   # average angle — lower = more centred
+            if score < best_score:
+                best_score = score
+                best_sid   = sid
+
+        return best_sid
+
+    def _mate_pov_filter(self, demo_path, events, cfg):
+        """Stamp evt['_mate_pov_sid'] on qualifying kills; optionally filter out the rest.
+
+        Must mode (kill_mod_mate_pov_req=True): kills with no qualifying teammate are
+        removed (clip skipped entirely if none remain).
+        Optional mode: kill is kept and _mate_pov_sid is absent — camera falls back to
+        the normal perspective for that kill.
+        """
+        kill_ticks = [int(e.get("tick", 0)) for e in events if e.get("type") == "kill"]
+        if not kill_ticks:
+            return events
+
+        self._parse_mate_positions(demo_path, kill_ticks)
+
+        sids_active = set(str(s) for s in self._get_sids(cfg))
+        must_mode   = cfg.get("kill_mod_mate_pov_req", False)
+
+        result = []
+        for evt in events:
+            if evt.get("type") != "kill":
+                result.append(evt)
+                continue
+            victim_sid = str(evt.get("victim_sid", ""))
+            kill_tick  = int(evt.get("tick", 0))
+            mate_sid   = self._find_best_mate_sid(demo_path, victim_sid,
+                                                   kill_tick, sids_active)
+            if mate_sid:
+                evt["_mate_pov_sid"] = mate_sid
+                result.append(evt)
+            elif must_mode:
+                pass   # no qualifying mate → skip this kill in Must mode
+            else:
+                result.append(evt)   # keep kill, camera falls back normally
+        return result
+
+    def _mate_pov_camera_sid(self, demo_path, event, cfg):
+        """camera_fn hook: return the stamped mate SID for this kill event, or None."""
+        return event.get("_mate_pov_sid")
 
     # ── Death-flag filters (dp2 — from player_death event fields) ─────────────
     # A single generic filter reads death_flags[(tick, killer_sid)][flag_name].
@@ -8012,19 +8339,25 @@ class App(tk.Tk):
                 modsql = ""
                 _mods_dp2_or_any = self._mods_dp2_global_any_union_enabled(cfg)
 
+                def _mod_sql_expr(mod_key, col, positive=True):
+                    """Return the SQL expression for one mod column.
+                    penetrated_objects is an integer — use > 0 / = 0.
+                    All other mod columns are boolean — use = TRUE / IS NOT TRUE.
+                    """
+                    if mod_key == "kill_mod_wall_bang" and col == "penetrated_objects":
+                        if positive:
+                            return f'k."{col}" > 0'
+                        return f'(k."{col}" IS NULL OR k."{col}" = 0)'
+                    if positive:
+                        return f'k."{col}" = TRUE'
+                    return f'k."{col}" IS NOT TRUE'
+
                 # Build exclusion SQL first — these are always AND NOT
                 excl_clauses = []
                 for mod_key in excluded_mods:
                     col = self._find_col("kills", _MOD_COLS[mod_key])
                     if col:
-                        if mod_key == "kill_mod_wall_bang":
-                            pen_col = self._find_col("kills", ["penetrated_objects"])
-                            excl_clauses.append(
-                                f'(k."{col}" IS NOT TRUE'
-                                + (f' AND (k."{pen_col}" IS NULL OR k."{pen_col}" = 0)' if pen_col else "")
-                                + ")")
-                        else:
-                            excl_clauses.append(f'k."{col}" IS NOT TRUE')
+                        excl_clauses.append(_mod_sql_expr(mod_key, col, positive=False))
                 excl_sql = (" AND " + " AND ".join(excl_clauses)) if excl_clauses else ""
 
                 if active_mods:
@@ -8033,15 +8366,7 @@ class App(tk.Tk):
                     for mod_key in active_mods:
                         col = self._find_col("kills", _MOD_COLS[mod_key])
                         if col:
-                            # wallbang alternatif : penetrated_objects > 0
-                            if mod_key == "kill_mod_wall_bang":
-                                pen_col = self._find_col("kills", ["penetrated_objects"])
-                                if pen_col and not col:
-                                    mod_clauses.append(f'k."{pen_col}" > 0')
-                                else:
-                                    mod_clauses.append(f'k."{col}" = TRUE')
-                            else:
-                                mod_clauses.append(f'k."{col}" = TRUE')
+                            mod_clauses.append(_mod_sql_expr(mod_key, col, positive=True))
                         else:
                             missing_mods.append(mod_key)
                     if missing_mods:
@@ -9429,6 +9754,7 @@ class App(tk.Tk):
         def _build_cams_victim(seq):
             """Victim mode: camera fixed on the victim of the first kill by our player.
             If the event is our player's death, the camera follows our player.
+            If kill_mod_mate_pov is on and a mate SID was stamped, use that instead.
             No camera switch during the whole sequence."""
             sorted_evts = sorted(
                 [e for e in seq["events"] if e.get("killer_sid") in sids_active
@@ -9444,8 +9770,9 @@ class App(tk.Tk):
                     # Our player dies: follow them
                     target_sid = first_ev["victim_sid"]
                 elif first_ev.get("victim_sid"):
-                    # Our player kills: follow the victim
-                    target_sid = first_ev["victim_sid"]
+                    # Our player kills: follow victim (or their best-angle teammate)
+                    mate_sid = first_ev.get("_mate_pov_sid") if cfg.get("kill_mod_mate_pov") else None
+                    target_sid = mate_sid or first_ev["victim_sid"]
 
             # A single camera point at start_tick is enough — CSDM holds the target
             return [{"tick": seq["start_tick"], "playerSteamId": target_sid,
@@ -9465,33 +9792,45 @@ class App(tk.Tk):
                 return [{"tick": seq["start_tick"], "playerSteamId": primary_sid,
                          "playerName": _name(primary_sid)}]
 
-            # Build an explicit (tick, target_sid) timeline
-            timeline = []
-
-            for ev in sorted_evts:
-                ev_tick = ev["tick"]
-                if ev.get("type") == "death" and ev.get("victim_sid") in sids_active:
-                    # Our player dies: follow them throughout
-                    our_sid = ev["victim_sid"]
-                    timeline.append((seq["start_tick"], our_sid))
-                else:
-                    ksid = ev.get("killer_sid") or primary_sid
-                    vsid = ev.get("victim_sid") or primary_sid
-                    # Killer phase: from the start of the sequence
-                    timeline.append((seq["start_tick"], ksid))
-                    # Victim phase: switch victim_pre_ticks before the kill
-                    switch_tick = max(seq["start_tick"], ev_tick - victim_pre_ticks)
-                    timeline.append((switch_tick, vsid))
-
-            # Deduplicate: keep the last instruction per tick
-            timeline.sort(key=lambda x: x[0])
-            deduped = {}
-            for t_entry, tsid in timeline:
-                deduped[t_entry] = tsid
-            sorted_timeline = sorted(deduped.items())
-
-            # Initial target = our killer (or our player)
+            # initial_sid = first relevant active player — used as camera default
+            # for any tick before the first timeline entry.  Do NOT put this into
+            # the timeline itself: doing so (and dedup-overwriting with later kills)
+            # was the root cause of the wrong-POV bug in multi-kill sequences.
             initial_sid = _seq_anchor_sid(seq)
+
+            # timeline maps tick → target_sid for SWITCH events only.
+            # First-write wins at any given tick (don't overwrite with later events
+            # that happen to share the same tick).
+            timeline: dict = {}
+
+            for i, ev in enumerate(sorted_evts):
+                ev_tick = ev["tick"]
+
+                if ev.get("type") == "death" and ev.get("victim_sid") in sids_active:
+                    # Our player dies — follow them from the very start.
+                    initial_sid = ev["victim_sid"]
+                    timeline.clear()
+                    break
+
+                ksid = ev.get("killer_sid") or primary_sid
+                # In mate_pov mode, switch to the best-angle teammate instead of victim
+                mate_sid = ev.get("_mate_pov_sid") if cfg.get("kill_mod_mate_pov") else None
+                vsid = mate_sid or ev.get("victim_sid") or primary_sid
+
+                # If there was a previous kill, return to this kill's killer right
+                # after that kill so the viewer sees the correct attacker.
+                if i > 0:
+                    prev_ev = sorted_evts[i - 1]
+                    if prev_ev.get("victim_sid") not in sids_active:
+                        back_tick = prev_ev["tick"] + 1
+                        if back_tick not in timeline:
+                            timeline[back_tick] = ksid
+
+                # Switch to victim (or mate) victim_pre_ticks before this kill.
+                switch_tick = max(seq["start_tick"], ev_tick - victim_pre_ticks)
+                timeline[switch_tick] = vsid
+
+            sorted_timeline = sorted(timeline.items())
 
             cam_ticks = build_camera_ticks(seq, tickrate)
             cams = []
@@ -9882,10 +10221,10 @@ class App(tk.Tk):
             "kill_mod_high_velocity",
         }
         death_keys = {
-            "kill_mod_wall_bang",
-            "kill_mod_airborne",
-            "kill_mod_attacker_blind",
-            "kill_mod_collateral",
+            # kill_mod_wall_bang → now "mods" (DB column penetrated_objects / has_penetrated)
+            # kill_mod_attacker_blind → now "mods" (DB column attacker_blinded)
+            "kill_mod_airborne",    # no DB equivalent — attackerinair from demo only
+            "kill_mod_collateral",  # penetrated + shot grouping — requires dp2
             "kill_mod_flick",
         }
         if any(cfg.get(k) for k in fire_keys):

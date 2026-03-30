@@ -26,7 +26,7 @@ Pick your filters → Preview → Run. CSDM handles the actual recording; this t
 | **FFmpeg** | Must be in `PATH` |
 | **CS Demo Manager** | [cs-demo-manager.com](https://cs-demo-manager.com/) — provides the CLI and PostgreSQL DB |
 | `pip install psycopg2-binary` | Required |
-| `pip install demoparser2` | Needed for advanced kill modifiers (TROIS SHOT, ONE TAP, WALLBANG, AIRBORNE, etc.) |
+| `pip install demoparser2` | Needed for advanced kill modifiers (TROIS SHOT, ONE TAP, SPRAY TRANSFER, AIRBORNE, FLICK, etc.) |
 | `pip install pywin32` | Optional — sends CS2 behind all windows on launch |
 
 ---

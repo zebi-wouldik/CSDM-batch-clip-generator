@@ -9,6 +9,84 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v176]
+
+### Added: Victim's Mate POV feature
+
+Record kills from the perspective of the victim's teammate who has the best angular line-of-sight to the kill, instead of following the victim directly.
+
+**How it works:**
+
+- At each kill tick, player positions and view angles are fetched via `demoparser2` (`parse_ticks`).
+- Three body points per potential teammate are checked (head / chest / legs at heights 64, 40, 10 units above feet).
+- A teammate qualifies when ≥ 2 of 3 body points fall within the ±45° horizontal FOV of their look direction — equivalent to "at least 50% of the body visible".
+- Among all qualifying teammates, the one with the smallest absolute angle to the kill point is chosen ("best angle").
+- Active players (the clip subject) are excluded from the mate pool.
+- LOS is angle-based only — no BSP ray-cast is available via `demoparser2`.
+
+**Two modes:**
+
+- **Optional** (default): if no qualifying teammate is found, the camera falls back to the normal victim/both perspective for that clip — nothing is skipped.
+- **★ Must**: clips with no qualifying teammate are dropped entirely.
+
+**UI:** A new "Mate POV" row with **Enable** and **★ Must** checkboxes appears in the **Capture & Timing** section, below the Switch delay slider. The row is only visible when **POV Victim** or **Both** perspective is selected (Killer mode has no victim phase to override).
+
+**Camera wiring:**
+
+- *Victim mode*: the single camera target is replaced by the mate SID when available.
+- *Both mode*: the victim-phase switch (victim_pre_ticks before kill) points to the mate SID when available; killer phase is unaffected.
+
+---
+
+## [v175]
+
+### Fixed: CZ75-Auto (and other weapons) still appearing in "Other" category
+
+Three-layer fix so any DB storage variant resolves correctly:
+
+1. **`weapon_` prefix indexed** — `_WEAPON_LOOKUP` now also stores every key with the `weapon_` prefix (`weapon_cz75a`, `weapon_ak47`, etc.) so internal game names resolve without extra processing.
+2. **`_weapon_category` strips prefix** — before the exact lookup, strips a leading `weapon_` from the key so `weapon_cz75a` → lookup `cz75a` → Pistols.
+3. **Substring fallback** — `_WEAPON_SUBSTR_FALLBACK` maps substrings to categories for variant spellings that slip past the exact lookup (e.g. `"cz75 auto"`, `"cz75_auto"`, any `"cz75…"` form → Pistols). Covers other common weapons too (deagle, glock, usp, awp, etc.).
+4. **"Other" category hidden in UI** — unknown weapons are silently skipped during weapon-filter render rather than grouped under a confusing "Other" header.
+
+---
+
+## [v174]
+
+### Fixed: Tab switching lag and window-drag "momentum"
+
+Two separate root causes:
+
+- **Window drag momentum**: `_remember_layout_state` (debounced 250 ms after every window move) was calling `_on_splitter_release()`, which calls `sashpos(0, x)`. Setting the sash position programmatically fires `<Configure>` on both panes → all `ScrollableFrame`s schedule a 400 ms `_apply_width` reflow → widgets relayout long after the window has stopped moving. Removed the `_on_splitter_release()` call from `_remember_layout_state`; sash snapping now only happens on actual sash-drag.
+
+- **Tab switching lag**: `ScrollableFrame` canvases inside a newly visible tab received `<Configure>` and scheduled `_apply_width` in 400 ms — content reflowed correctly, but 400 ms late. Added `<<NotebookTabChanged>>` binding that immediately flushes all pending scroll-frame widths and wrap-label sizes.
+
+### Fixed: CZ75-Auto shown in "Other" weapon category
+
+Added `"cz75_auto"` (underscore variant) to `WEAPON_CATEGORIES["Pistols"]`. CSDM DB sometimes stores this weapon with an underscore instead of a dash.
+
+### Changed: WALLBANG and BLIND FIRE moved from dp2 to Mods (DB-backed)
+
+CSDM stores penetration and attacker-blind data in the kills table. These two filters can now run directly from the DB without parsing the demo file, matching how Smoke / No-scope / Victim Flashed already work.
+
+- **🧱 WALLBANG** → `kills.penetrated_objects > 0`  or  `kills.has_penetrated / kills.penetrated = TRUE`. Category changed from `dp2` → `mods`.
+- **😵 BLIND FIRE** → `kills.attacker_blinded / kills.is_attacker_blinded`. Category changed from `dp2` → `mods`.
+- **🪂 AIRBORNE** → no DB equivalent (`attackerinair` is not stored by CSDM). Stays in `dp2`.
+- `_dp2_required_sections` no longer adds the `"death"` section for wall_bang and blind_fire.
+- The SQL builder's dead `kill_mod_wall_bang` special-case (`if pen_col and not col`) has been removed and replaced with a clean `_mod_sql_expr()` helper that handles int vs bool columns correctly for both inclusion and exclusion clauses.
+
+### Fixed: Both mode — wrong player POV before victim switch
+
+Root cause: `_build_cams_both` appended `(seq["start_tick"], killer_sid)` to the timeline for every kill event in the sequence. Since the timeline was deduplicated by keeping the **last** entry per tick, the camera at `start_tick` ended up on the last-processed kill's killer, not the first active player — visible as a brief flash of a random player's POV at the start of multi-kill clips.
+
+Fix: `initial_sid` from `_seq_anchor_sid` is now the true starting camera and is never placed into the timeline. Only **switch events** go in the timeline: victim switches (`switch_tick → vsid`) and killer-return events (`prev_kill_tick + 1 → next_killer_sid`). First-write-wins per tick (dict, no overwrite).
+
+### Improved: Both mode — switch delay slider shows total clip duration
+
+Added a live **"total before: Xs"** hint label next to the Switch delay slider that updates whenever either the BEFORE or the Switch delay slider changes. Updated tooltip to clarify the three phases: killer phase = BEFORE, victim phase = Switch delay, total before kill = their sum.
+
+---
+
 ## [v173]
 
 ### Fixed: Deathnotice player names now sourced from the demo file
