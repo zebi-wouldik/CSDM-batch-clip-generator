@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v172"
+APP_VERSION = "v173"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -5175,7 +5175,7 @@ class App(tk.Tk):
 
     def _dp2_parse_demo(self, demo_path, required_sections=None):
         if required_sections is None:
-            required_sections = {"fire", "death", "hurt"}
+            required_sections = {"fire", "death", "hurt", "names"}
         required_sections = set(required_sections)
         with self._dp2_cache_lock:
             existing = self._dp2_cache.get(demo_path)
@@ -5216,6 +5216,7 @@ class App(tk.Tk):
         view_angles = dict(existing.get("view_angles") or {})
         hurt_index = dict(existing.get("hurt_index") or {})
         death_flags = dict(existing.get("death_flags") or {})
+        demo_names = dict(existing.get("demo_names") or {})
 
         if "fire" in needed:
             try:
@@ -5373,6 +5374,24 @@ class App(tk.Tk):
             except Exception:
                 pass
 
+        if "names" in needed:
+            try:
+                info_df = parser.parse_player_info()
+                if info_df is not None and len(info_df) > 0:
+                    icols = list(info_df.columns)
+                    sid_col  = next((c for c in icols if "steamid" in c.lower()
+                                     or "steam_id" in c.lower()), None)
+                    name_col = next((c for c in icols if c.lower() == "name"), None)
+                    if sid_col and name_col:
+                        for sid, nm in zip(
+                            info_df[sid_col].fillna("").astype(str),
+                            info_df[name_col].fillna("").astype(str),
+                        ):
+                            if sid and nm:
+                                demo_names[sid] = nm
+            except Exception:
+                pass
+
         with self._dp2_cache_lock:
             merged = self._dp2_cache.get(demo_path, {})
             if not isinstance(merged, dict):
@@ -5382,6 +5401,7 @@ class App(tk.Tk):
             merged["view_angles"] = view_angles
             merged["hurt_index"] = hurt_index
             merged["death_flags"] = death_flags
+            merged["demo_names"]  = demo_names
             merged["_sections"] = set(merged.get("_sections", set())) | required_sections
             self._dp2_cache_put_locked(demo_path, merged)
         return True
@@ -9351,6 +9371,16 @@ class App(tk.Tk):
     def _build_json(self, demo_path, sequences, cfg):
         # In multi-player, sid = first SID (JSON compat), but we determine
         # the "owner" of each event dynamically from killer_sid/victim_sid.
+
+        # Prefer names extracted from the demo itself (username at record time)
+        # and fall back to the DB player table.
+        with self._dp2_cache_lock:
+            _demo_names = dict(self._dp2_cache.get(demo_path, {}).get("demo_names") or {})
+
+        def _name(psid):
+            psid = str(psid or "")
+            return _demo_names.get(psid) or self._player_names.get(psid, "")
+
         sids_active_list = []
         for _sid in self._get_sids(cfg):
             _sid = str(_sid or "")
@@ -9393,7 +9423,7 @@ class App(tk.Tk):
                         if ks in sids_active:
                             target = ks
                 cams.append({"tick": t, "playerSteamId": target,
-                             "playerName": self._player_names.get(target, "")})
+                             "playerName": _name(target)})
             return cams
 
         def _build_cams_victim(seq):
@@ -9419,7 +9449,7 @@ class App(tk.Tk):
 
             # A single camera point at start_tick is enough — CSDM holds the target
             return [{"tick": seq["start_tick"], "playerSteamId": target_sid,
-                     "playerName": self._player_names.get(target_sid, "")}]
+                     "playerName": _name(target_sid)}]
 
         def _build_cams_both(seq):
             """Both mode: camera on the killer from the start of the sequence,
@@ -9433,7 +9463,7 @@ class App(tk.Tk):
             )
             if not sorted_evts:
                 return [{"tick": seq["start_tick"], "playerSteamId": primary_sid,
-                         "playerName": self._player_names.get(primary_sid, "")}]
+                         "playerName": _name(primary_sid)}]
 
             # Build an explicit (tick, target_sid) timeline
             timeline = []
@@ -9473,7 +9503,7 @@ class App(tk.Tk):
                     else:
                         break
                 cams.append({"tick": t, "playerSteamId": target,
-                             "playerName": self._player_names.get(target, "")})
+                             "playerName": _name(target)})
             return cams
 
         seqs = []
@@ -9510,7 +9540,7 @@ class App(tk.Tk):
                 if not psid or psid in seen_opts:
                     continue
                 seen_opts.add(psid)
-                pname = self._player_names.get(psid, "")
+                pname = _name(psid)
                 is_our    = psid in sids_active
                 is_killer = psid in seq_killer_sids
                 is_cam_target = psid in cam_target_sids
@@ -9864,6 +9894,7 @@ class App(tk.Tk):
             sections.add("death")
         if cfg.get("kill_mod_sauveur"):
             sections.add("hurt")
+        sections.add("names")  # always collect in-demo player names for deathnotice
         return sections
 
 

@@ -9,6 +9,19 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v173]
+
+### Fixed: Deathnotice player names now sourced from the demo file
+
+Player names shown in CSDM deathnotices were previously looked up from the database (`players` table), which reflects the current/latest known name — not the name the player had at the time the demo was recorded.
+
+- `_dp2_parse_demo` now calls `parser.parse_player_info()` as a new `"names"` cache section.
+- The resulting `{steamid: name}` map is stored as `demo_names` in the dp2 cache, keyed per demo.
+- `_dp2_required_sections` always includes `"names"` so every demo gets at least this minimal parse, even when no dp2 kill modifiers are active.
+- `_build_json` resolves player names via a `_name(psid)` helper: **demo cache first, DB fallback**. All `playerName` fields in `playerCameras` and `playersOptions` use this helper.
+
+---
+
 ## [v172]
 
 ### Fixed: Ferrari Peek dp2_badge placement
