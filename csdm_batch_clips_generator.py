@@ -12,6 +12,14 @@ import calendar as cal_mod
 from datetime import datetime, timedelta, date
 from pathlib import Path
 
+# Limit Rayon (Rust) + BLAS thread pools to 1 per worker so that
+# ThreadPoolExecutor(max_workers=dp2_threads) is the sole concurrency
+# knob — must be set before demoparser2 / numpy / pandas are imported.
+os.environ.setdefault("RAYON_NUM_THREADS",   "1")
+os.environ.setdefault("OMP_NUM_THREADS",     "1")
+os.environ.setdefault("MKL_NUM_THREADS",     "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS","1")
+
 try:
     import psycopg2
     HAS_PG = True
@@ -1855,12 +1863,18 @@ def _bind_wraplength(lbl):
 
     400 ms fallback for OS window resize; sash/in-app drags are flushed
     immediately via the global <ButtonRelease-1> handler in _build_ui.
+
+    The apply function guards against re-entrancy: it only calls w.config() when
+    the computed value actually differs from the current one, preventing the
+    <Configure> → _apply → <Configure> feedback loop that caused continuous redraws.
     """
     _job = [None]
     def _apply(w=lbl):
         _job[0] = None
         try:
-            w.config(wraplength=max(200, w.winfo_width() - 10))
+            new_wrap = max(200, w.winfo_width() - 10)
+            if int(w.cget("wraplength") or 0) != new_wrap:
+                w.config(wraplength=new_wrap)
         except Exception:
             pass
     def _schedule(e, w=lbl):
@@ -2962,7 +2976,11 @@ class App(tk.Tk):
         # Flush all deferred layout on mouse release — covers sash drag and any
         # in-app resize. OS window-border resize falls back to the 400 ms
         # debounce (Tkinter never receives those ButtonRelease events).
+        # Guard: only do work when at least one scroll frame has a pending resize,
+        # so ordinary button/checkbox clicks are free of layout overhead.
         def _on_release(e):
+            if not any(sf._pending_width is not None for sf in _SCROLL_FRAMES):
+                return
             for sf in _SCROLL_FRAMES:
                 sf._apply_width()
             for apply_fn, lbl in list(_WRAP_LABELS):
@@ -6873,15 +6891,22 @@ class App(tk.Tk):
                 except Exception:
                     pass
             try:
+                # One configure() call returns all options; far cheaper than
+                # 15 individual cget() round-trips through the Tcl interpreter.
+                conf = widget.configure()
+                updates = {}
                 for prop in _COLOUR_PROPS:
-                    try:
-                        cur = widget.cget(prop)
-                        if isinstance(cur, str):
-                            mapped = colour_map.get(cur.lower())
-                            if mapped:
-                                widget.configure(**{prop: mapped})
-                    except (tk.TclError, Exception):
-                        pass
+                    spec = conf.get(prop)
+                    if spec is None:
+                        continue
+                    cur = spec[-1]          # current value is last element of tuple
+                    if not isinstance(cur, str):
+                        continue
+                    mapped = colour_map.get(cur.lower())
+                    if mapped:
+                        updates[prop] = mapped
+                if updates:
+                    widget.configure(**updates)
             except Exception:
                 pass
             try:

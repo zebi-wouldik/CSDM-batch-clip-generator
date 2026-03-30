@@ -43,6 +43,17 @@ The **📤 Export ▾** button in the log toolbar opens a format menu. After run
 
 All three formats source clip data from `_last_preview_data`. **Filters column shows the filters that actually matched each clip** (`_mf` set from event data), not just the active config filters.
 
+### Fixed: dp2_threads setting not respected (all CPU cores used)
+
+`demoparser2` is a Rust extension that uses Rayon internally. Rayon's global thread pool defaults to all available CPU cores regardless of Python's `ThreadPoolExecutor(max_workers=n)`.
+
+- Added `os.environ.setdefault("RAYON_NUM_THREADS", "1")` at import time (before demoparser2/numpy/pandas are first loaded).
+- Also sets `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS` to `"1"` for the same reason.
+- `setdefault` is used so a user who deliberately sets those env vars before launching the app keeps their preference.
+- Result: `dp2_threads = N` now means N Python workers × 1 Rayon thread each = N cores used, matching the user's intention.
+
+---
+
 ### Fixed: Theme change retaining old colours on some widgets
 
 Root cause: `_CHK_KW` and `_BTN_KW` are module-level dicts built at import time with default dark/green values. Any session started with a non-default saved theme would create those widgets (log filter radiobuttons, preset-type radiobuttons, weapon-category checkboxes, autoscroll toggle) with wrong colours. Subsequent `_change_theme` calls could not fix them because the colour_map was keyed on the current theme's values, not the stale defaults.
