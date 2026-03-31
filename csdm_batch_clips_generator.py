@@ -7698,45 +7698,16 @@ class App(tk.Tk):
 
     @staticmethod
     def _preset_tooltip(p):
-        """Build a human-readable tooltip showing what a preset contains."""
+        """Build a human-readable tooltip showing what categories a preset covers."""
         cats = p.get("cats") or [p.get("type", "full")]
         cat_names = {
-            "full": "All", "player": "Player (legacy)", "video": "Video (legacy)",
-            "timing": "Timing",
-            "players": "Players", "date": "Date", "filters": "Filters",
-            "mode": "Mode", "output_name": "Output name", "encoding": "Encoding",
-            "hlae_opts": "HLAE opts", "physics": "Physics",
+            "full": "Full config",
+            "player": "Player (legacy)", "video": "Video (legacy)", "timing": "Timing",
+            "players": "Active players", "date": "Date range", "filters": "Filters",
+            "mode": "Mode (HLAE/CS)", "output_name": "Output name",
+            "encoding": "Encoding", "hlae_opts": "HLAE options", "physics": "Physics",
         }
-        cats_str = " + ".join(cat_names.get(c, c) for c in cats)
-        data = p.get("data", {})
-        lines = [f"Categories: {cats_str}  ({len(data)} keys)", "─" * 36]
-        # Show a curated selection of notable key-value pairs
-        notable = [
-            ("player_name", "Player"),
-            ("perspective", "Perspective"),
-            ("date_from",   "Date from"),
-            ("date_to",     "Date to"),
-            ("width",       "Width"),
-            ("height",      "Height"),
-            ("framerate",   "FPS"),
-            ("before",      "Before (s)"),
-            ("after",       "After (s)"),
-            ("encoder",     "Encoder"),
-            ("recsys",      "RecSys"),
-        ]
-        for key, label in notable:
-            if key in data:
-                val = data[key]
-                if val not in (None, "", [], {}):
-                    lines.append(f"{label:<14} {val}")
-        # Show active events if present
-        if "events" in data and data["events"]:
-            lines.append(f"{'Events':<14} {', '.join(data['events'])}")
-        elif "events_kills" in data:
-            evts = [e for e, k in [("Kills","events_kills"),("Deaths","events_deaths"),
-                                    ("Rounds","events_rounds")] if data.get(k)]
-            if evts:
-                lines.append(f"{'Events':<14} {', '.join(evts)}")
+        lines = [cat_names.get(c, c) for c in cats]
         return "\n".join(lines)
 
     def _refresh_preset_list(self):
