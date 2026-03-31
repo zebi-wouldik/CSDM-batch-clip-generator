@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v176"
+APP_VERSION = "v177"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -775,29 +775,72 @@ PRESET_CATEGORIES = {
     "timing": "Timing + robustness",
 }
 PRESET_KEYS = {
-    "full": None,
-    "player": ["steam_id", "player_name", "events", "weapons", "date_from", "date_to",
-               "perspective", "victim_pre_s", "headshots_mode", "include_suicides", "teamkills_mode",
-               "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
-               # Filter keys auto-derived from KILL_FILTER_REGISTRY
-               *_FILTER_PRESET_PLAYER_KEYS,
-               "clip_order", "show_xray",
-               # Clutch
-               "clutch_enabled", "clutch_wins_only", "clutch_mode",
-               "clutch_1v1", "clutch_1v2", "clutch_1v3", "clutch_1v4", "clutch_1v5"],
-    "video": ["encoder", "recsys", "width", "height", "framerate",
-              "crf", "video_codec", "video_preset", "audio_codec", "audio_bitrate",
-              "video_container", "ffmpeg_input_params", "ffmpeg_output_params",
-              "death_notices_duration", "show_only_death_notices", "concatenate_sequences",
-              "subfolder_per_demo", "true_view",
-              "hlae_fov", "hlae_slow_motion", "hlae_afx_stream",
-              "hlae_no_spectator_ui", "hlae_fix_scope_fov", "hlae_workshop_download",
-              "hlae_extra_args",
-              "phys_ragdoll_gravity", "phys_ragdoll_scale", "phys_ragdoll_enable",
-              "phys_sv_gravity", "phys_blood", "phys_dynamic_lighting"],
-    "timing": ["before", "after", "close_game_after",
-               "retry_count", "retry_delay", "delay_between_demos"],
+    "full":        None,
+    # ── Capture group ──────────────────────────────────────────────────────────
+    "players":     ["steam_id", "player_name"],
+    "date":        ["date_from", "date_to"],
+    "filters":     ["events", "weapons", "perspective", "victim_pre_s",
+                    "headshots_mode", "include_suicides", "teamkills_mode",
+                    "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
+                    *_FILTER_PRESET_PLAYER_KEYS,
+                    "clip_order", "show_xray",
+                    "clutch_enabled", "clutch_wins_only", "clutch_mode",
+                    "clutch_1v1", "clutch_1v2", "clutch_1v3", "clutch_1v4", "clutch_1v5"],
+    # ── Video group ────────────────────────────────────────────────────────────
+    "mode":        ["recsys", "encoder"],
+    "output_name": ["assemble_output", "output_dir_clips", "output_dir_concat",
+                    "output_dir_assembled"],
+    "encoding":    ["width", "height", "framerate", "crf", "video_codec", "video_preset",
+                    "audio_codec", "audio_bitrate", "video_container",
+                    "ffmpeg_input_params", "ffmpeg_output_params",
+                    "death_notices_duration", "show_only_death_notices",
+                    "concatenate_sequences", "subfolder_per_demo", "true_view"],
+    "hlae_opts":   ["hlae_fov", "hlae_slow_motion", "hlae_afx_stream",
+                    "hlae_no_spectator_ui", "hlae_fix_scope_fov", "hlae_workshop_download",
+                    "hlae_extra_args"],
+    "physics":     ["phys_ragdoll_gravity", "phys_ragdoll_scale", "phys_ragdoll_enable",
+                    "phys_sv_gravity", "phys_blood", "phys_dynamic_lighting"],
+    # ── Timing group ───────────────────────────────────────────────────────────
+    "timing":      ["before", "after", "close_game_after",
+                    "retry_count", "retry_delay", "delay_between_demos"],
+    # ── Backward-compat aliases (old format → new granular keys) ───────────────
+    "player":      ["steam_id", "player_name", "events", "weapons", "date_from", "date_to",
+                    "perspective", "victim_pre_s", "headshots_mode", "include_suicides",
+                    "teamkills_mode", "kill_mod_logic_mods", "kill_mod_logic_dp2",
+                    "kill_mod_logic_db", *_FILTER_PRESET_PLAYER_KEYS, "clip_order",
+                    "show_xray", "clutch_enabled", "clutch_wins_only", "clutch_mode",
+                    "clutch_1v1", "clutch_1v2", "clutch_1v3", "clutch_1v4", "clutch_1v5"],
+    "video":       ["encoder", "recsys", "width", "height", "framerate",
+                    "crf", "video_codec", "video_preset", "audio_codec", "audio_bitrate",
+                    "video_container", "ffmpeg_input_params", "ffmpeg_output_params",
+                    "death_notices_duration", "show_only_death_notices",
+                    "concatenate_sequences", "subfolder_per_demo", "true_view",
+                    "hlae_fov", "hlae_slow_motion", "hlae_afx_stream",
+                    "hlae_no_spectator_ui", "hlae_fix_scope_fov", "hlae_workshop_download",
+                    "hlae_extra_args",
+                    "phys_ragdoll_gravity", "phys_ragdoll_scale", "phys_ragdoll_enable",
+                    "phys_sv_gravity", "phys_blood", "phys_dynamic_lighting"],
 }
+
+# Canonical new categories (used by the UI tab selector)
+_PRESET_TAB_GROUPS = [
+    ("CAPTURE", [
+        ("players",  "Active players"),
+        ("date",     "Date range"),
+        ("filters",  "Filters"),
+    ]),
+    ("VIDEO", [
+        ("mode",        "Mode  (HLAE / CS)"),
+        ("output_name", "Output name"),
+        ("encoding",    "Encoding"),
+        ("hlae_opts",   "HLAE options"),
+        ("physics",     "Physics"),
+    ]),
+    ("TIMING", [
+        ("timing", "Timing & retry"),
+    ]),
+]
+_PRESET_ALL_CATS = [k for _, items in _PRESET_TAB_GROUPS for k, _ in items]
 
 # ═══════════════════════════════════════════════════════
 #  Persistence
@@ -4304,7 +4347,7 @@ class App(tk.Tk):
         self._demo_picker_state = {}
         try:
             self._demo_tree.delete(*self._demo_tree.get_children())
-            self._picker_count_lbl.config(text="")
+            self._picker_count_lbl.config(text="— all demos (run Preview to filter)", fg=MUTED)
         except Exception:
             pass
 
@@ -4690,10 +4733,10 @@ class App(tk.Tk):
              "Prevents mirv_fov from overriding the zoomed FOV on scoped weapons.\n"
              "Recommended: ON."),
             ("Auto Workshop DL", "hlae_workshop_download",
-             "Injects +sv_pure 0 +sv_lan 1 — lets CS2 load a locally installed old Workshop map\n"
-             "version without re-downloading or validating it against the Workshop CDN.\n"
-             "⚠ The old map version must already be installed/cached on your machine.\n"
-             "⚠ Do NOT enable if you want CS2 to download the current map version."),
+             "Auto-confirms the CSDM Workshop download dialog (downloadWorkshopMap: true).\n"
+             "Also injects +sv_pure 0 +sv_lan 1 so CS2 loads the locally installed map version\n"
+             "without re-downloading or validating against the Workshop CDN.\n"
+             "⚠ The old map version must already be installed/cached on your machine."),
         ]:
             _cb = hchk(bool_opts, txt, self.v[key])
             _cb.pack(side="left", padx=(0, 6))
@@ -4977,6 +5020,9 @@ class App(tk.Tk):
                 self._mate_pov_row.pack(fill="x", pady=(4, 0))
             else:
                 self._mate_pov_row.pack_forget()
+                # Reset mate POV vars so they don't silently run in killer mode
+                self.v["kill_mod_mate_pov"].set(False)
+                self.v["kill_mod_mate_pov_req"].set(False)
         except Exception:
             pass
 
@@ -5993,7 +6039,7 @@ class App(tk.Tk):
         try:
             from demoparser2 import DemoParser
             parser = DemoParser(demo_path)
-            df = parser.parse_ticks(needed, props=["X", "Y", "Z", "pitch", "yaw", "team_num"])
+            df = parser.parse_ticks(["X", "Y", "Z", "pitch", "yaw", "team_num"], ticks=needed)
         except Exception as e:
             self._alog(f"  ⚠ Mate POV parse_ticks error: {e}", "warn")
             return cached
@@ -6036,17 +6082,34 @@ class App(tk.Tk):
             team_i = base + (1 if col_yaw else 0) + (1 if col_pit else 0) if col_team else None
 
             for row in arr:
-                t   = int(row[0] or 0)
-                sid = str(row[1] or "")
+                # numpy stores large steamids as float64 — convert via int() to get
+                # the correct integer string (e.g. 76561198331095429, not 7.65e+16)
+                raw_t   = row[0]
+                raw_sid = row[1]
+                if raw_t is None or (isinstance(raw_t,   float) and math.isnan(raw_t)):
+                    continue
+                if raw_sid is None or (isinstance(raw_sid, float) and math.isnan(raw_sid)):
+                    continue
+                t   = int(float(raw_t))
+                sid = str(int(float(raw_sid)))
                 if not t or not sid or sid == "0":
                     continue
+
+                def _fv(v):
+                    if v is None: return 0.0
+                    try:
+                        f = float(v)
+                        return 0.0 if math.isnan(f) else f
+                    except Exception:
+                        return 0.0
+
                 cached.setdefault(t, {})[sid] = {
-                    "X":    float(row[2] or 0),
-                    "Y":    float(row[3] or 0),
-                    "Z":    float(row[4] or 0),
-                    "yaw":  float(row[yaw_i]  or 0) if yaw_i  is not None else 0.0,
-                    "pitch":float(row[pit_i]  or 0) if pit_i  is not None else 0.0,
-                    "team": int(row[team_i]   or 0) if team_i is not None else 0,
+                    "X":    _fv(row[2]),
+                    "Y":    _fv(row[3]),
+                    "Z":    _fv(row[4]),
+                    "yaw":  _fv(row[yaw_i])  if yaw_i  is not None else 0.0,
+                    "pitch":_fv(row[pit_i])  if pit_i  is not None else 0.0,
+                    "team": int(_fv(row[team_i])) if team_i is not None else 0,
                 }
         except Exception as e:
             self._alog(f"  ⚠ Mate POV: position parse failed: {e}", "warn")
@@ -6145,6 +6208,9 @@ class App(tk.Tk):
         Optional mode: kill is kept and _mate_pov_sid is absent — camera falls back to
         the normal perspective for that kill.
         """
+        # Mate POV only applies in victim/both perspective — no-op for killer mode
+        if cfg.get("perspective", "killer") not in ("victim", "both"):
+            return events
         kill_ticks = [int(e.get("tick", 0)) for e in events if e.get("type") == "kill"]
         if not kill_ticks:
             return events
@@ -7494,11 +7560,48 @@ class App(tk.Tk):
         sentry(nr, self._preset_name_var).pack(side="left", fill="x", expand=True,
                                                 padx=(6, 0), ipady=4)
 
-        self._preset_cat_var = tk.StringVar(value="full")
-        mlabel(sec_pre, "Type :").pack(anchor="w", pady=(8, 2))
-        for key, label in PRESET_CATEGORIES.items():
-            tk.Radiobutton(sec_pre, text=label, variable=self._preset_cat_var, value=key,
-                           **_CHK_KW).pack(anchor="w", padx=(8, 0), pady=1)
+        mlabel(sec_pre, "Include:").pack(anchor="w", pady=(8, 2))
+        self._preset_cats: dict[str, tk.BooleanVar] = {}
+
+        # Init all vars before building UI so toggle callbacks can reference them
+        for _k in _PRESET_ALL_CATS:
+            self._preset_cats[_k] = tk.BooleanVar(value=(_k == "players"))
+        self._preset_cats["full"] = tk.BooleanVar(value=False)
+
+        def _on_full_toggle():
+            if self._preset_cats["full"].get():
+                for _k in _PRESET_ALL_CATS:
+                    self._preset_cats[_k].set(False)
+
+        def _on_partial_toggle():
+            if any(self._preset_cats[_k].get() for _k in _PRESET_ALL_CATS):
+                self._preset_cats["full"].set(False)
+
+        # ── Mini-tab columns ──────────────────────────────────────────────────
+        tab_row = tk.Frame(sec_pre, bg=BG2)
+        tab_row.pack(fill="x", pady=(4, 0))
+
+        for group_label, group_items in _PRESET_TAB_GROUPS:
+            col = tk.Frame(tab_row, bg=BG2)
+            col.pack(side="left", fill="y", padx=(0, 10))
+            # Mini tab header
+            hdr = tk.Frame(col, bg=BG3)
+            hdr.pack(fill="x", pady=(0, 3))
+            tk.Label(hdr, text=group_label, font=FONT_SM, fg=MUTED, bg=BG3,
+                     padx=6, pady=2).pack(anchor="w")
+            for key, label in group_items:
+                hchk(col, label, self._preset_cats[key],
+                     command=_on_partial_toggle).pack(anchor="w", padx=(2, 0), pady=1)
+
+        # Full / All column
+        full_col = tk.Frame(tab_row, bg=BG2)
+        full_col.pack(side="left", fill="y")
+        hdr_full = tk.Frame(full_col, bg=BG3)
+        hdr_full.pack(fill="x", pady=(0, 3))
+        tk.Label(hdr_full, text="ALL", font=FONT_SM, fg=MUTED, bg=BG3,
+                 padx=6, pady=2).pack(anchor="w")
+        hchk(full_col, "Full config", self._preset_cats["full"],
+             command=_on_full_toggle).pack(anchor="w", padx=(2, 0), pady=1)
 
         tk.Button(sec_pre, text="  SAVE  ", font=FONT_SM, bg=ORANGE, fg="white",
                   relief="flat", cursor="hand2", bd=0, highlightthickness=0,
@@ -7516,20 +7619,41 @@ class App(tk.Tk):
         if not name:
             messagebox.showerror("Preset", "Enter a name.")
             return
-        cat = self._preset_cat_var.get()
+        cats_checked = [k for k, var in self._preset_cats.items() if var.get()]
+        if not cats_checked:
+            messagebox.showerror("Preset", "Select at least one category to include.")
+            return
         cfg = self._collect_config()
-        keys = PRESET_KEYS.get(cat)
-        data = {k: cfg[k] for k in keys if k in cfg} if keys else cfg
-        self.presets[name] = {"type": cat, "data": data}
+        if "full" in cats_checked:
+            data = dict(cfg)
+            cats_checked = ["full"]
+        else:
+            merged_keys: list = []
+            for cat in cats_checked:
+                for k in (PRESET_KEYS.get(cat) or []):
+                    if k not in merged_keys:
+                        merged_keys.append(k)
+            data = {k: cfg[k] for k in merged_keys if k in cfg}
+        self.presets[name] = {"cats": cats_checked, "data": data}
         save_presets(self.presets)
         self._refresh_preset_list()
-        messagebox.showinfo("Preset", f"'{name}' saved.")
+        messagebox.showinfo("Preset", f"'{name}' saved ({len(data)} keys).")
 
     def _load_preset(self, name):
         p = self.presets.get(name)
         if not p:
             return
-        self._apply_config(p["data"], keys=PRESET_KEYS.get(p.get("type", "full")))
+        # Support both old {"type": "..."} and new {"cats": [...]} formats
+        cats = p.get("cats") or [p.get("type", "full")]
+        if "full" in cats:
+            keys = None
+        else:
+            keys: list = []
+            for cat in cats:
+                for k in (PRESET_KEYS.get(cat) or []):
+                    if k not in keys:
+                        keys.append(k)
+        self._apply_config(p["data"], keys=keys)
         self._post_apply_ui()
         self._log(f"Preset '{name}' loaded.", "ok")
 
@@ -7572,6 +7696,49 @@ class App(tk.Tk):
             save_presets(self.presets)
             self._refresh_preset_list()
 
+    @staticmethod
+    def _preset_tooltip(p):
+        """Build a human-readable tooltip showing what a preset contains."""
+        cats = p.get("cats") or [p.get("type", "full")]
+        cat_names = {
+            "full": "All", "player": "Player (legacy)", "video": "Video (legacy)",
+            "timing": "Timing",
+            "players": "Players", "date": "Date", "filters": "Filters",
+            "mode": "Mode", "output_name": "Output name", "encoding": "Encoding",
+            "hlae_opts": "HLAE opts", "physics": "Physics",
+        }
+        cats_str = " + ".join(cat_names.get(c, c) for c in cats)
+        data = p.get("data", {})
+        lines = [f"Categories: {cats_str}  ({len(data)} keys)", "─" * 36]
+        # Show a curated selection of notable key-value pairs
+        notable = [
+            ("player_name", "Player"),
+            ("perspective", "Perspective"),
+            ("date_from",   "Date from"),
+            ("date_to",     "Date to"),
+            ("width",       "Width"),
+            ("height",      "Height"),
+            ("framerate",   "FPS"),
+            ("before",      "Before (s)"),
+            ("after",       "After (s)"),
+            ("encoder",     "Encoder"),
+            ("recsys",      "RecSys"),
+        ]
+        for key, label in notable:
+            if key in data:
+                val = data[key]
+                if val not in (None, "", [], {}):
+                    lines.append(f"{label:<14} {val}")
+        # Show active events if present
+        if "events" in data and data["events"]:
+            lines.append(f"{'Events':<14} {', '.join(data['events'])}")
+        elif "events_kills" in data:
+            evts = [e for e, k in [("Kills","events_kills"),("Deaths","events_deaths"),
+                                    ("Rounds","events_rounds")] if data.get(k)]
+            if evts:
+                lines.append(f"{'Events':<14} {', '.join(evts)}")
+        return "\n".join(lines)
+
     def _refresh_preset_list(self):
         for w in self._preset_list_frame.winfo_children():
             w.destroy()
@@ -7580,11 +7747,23 @@ class App(tk.Tk):
                      bg=BG2).pack(anchor="w")
             return
         for name, p in self.presets.items():
-            cat = p.get("type", "full")
+            cats = p.get("cats") or [p.get("type", "full")]
+            cat_names = {
+                "full": "All", "player": "Player", "video": "Video", "timing": "Timing",
+                "players": "Players", "date": "Date", "filters": "Filters",
+                "mode": "Mode", "output_name": "Name", "encoding": "Encoding",
+                "hlae_opts": "HLAE", "physics": "Physics",
+            }
+            cats_str = " + ".join(cat_names.get(c, c) for c in cats)
             row = tk.Frame(self._preset_list_frame, bg=BG2)
             row.pack(fill="x", pady=2)
-            tk.Label(row, text=name, font=FONT_SM, fg=TEXT, bg=BG2).pack(side="left")
-            tk.Label(row, text=f"  [{cat}]", font=FONT_DESC, fg=MUTED, bg=BG2).pack(side="left")
+            name_lbl = tk.Label(row, text=name, font=FONT_SM, fg=TEXT, bg=BG2)
+            name_lbl.pack(side="left")
+            cat_lbl = tk.Label(row, text=f"  [{cats_str}]", font=FONT_DESC, fg=MUTED, bg=BG2)
+            cat_lbl.pack(side="left")
+            tip = self._preset_tooltip(p)
+            add_tip(name_lbl, tip)
+            add_tip(cat_lbl, tip)
             tk.Button(row, text="Load", font=FONT_DESC, bg=BG3, fg=GREEN, relief="flat",
                       cursor="hand2", bd=0,
                       command=lambda n=name: self._load_preset(n)).pack(side="right", padx=(4, 0))
@@ -8324,6 +8503,12 @@ class App(tk.Tk):
                     hsql = f' AND k."{hc}" = TRUE'
                 elif headshots_exclude and hc:
                     hsql = f' AND k."{hc}" = FALSE'
+
+                # One Tap kills are by definition headshots — force HS filter at SQL level
+                if cfg.get("kill_mod_one_tap") and hc and not headshots_exclude and not headshots_only:
+                    hsql = f' AND k."{hc}" = TRUE'
+                elif cfg.get("kill_mod_one_tap") and not hc:
+                    self._alog("⚠ One Tap: headshot column not found — HS enforcement skipped.", "warn")
 
                 tkc_k = self._find_col("kills", ["killer_team_name", "killer_side", "killer_team"])
                 tkc_v = self._find_col("kills", ["victim_team_name", "victim_side", "victim_team"])
@@ -9965,6 +10150,7 @@ class App(tk.Tk):
             "showOnlyDeathNotices": cfg.get("show_only_death_notices", True),
             "deathNoticesDuration": cfg.get("death_notices_duration", 5),
             "trueView": cfg.get("true_view", True),
+            "downloadWorkshopMap": self._cfg_bool(cfg, "hlae_workshop_download", False),
             "ffmpegSettings": {
                 "audioBitrate": cfg.get("audio_bitrate", 256),
                 "constantRateFactor": cfg.get("crf", 18),

@@ -9,6 +9,71 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v179]
+
+### Fixed: Workshop auto-download confirmation dialog
+
+The "Auto Workshop DL" checkbox now properly auto-confirms the CSDM workshop download dialog by setting `"downloadWorkshopMap": true` in the CSDM video JSON config (in addition to injecting `sv_pure 0 / sv_lan 1` into CS2). Previously, the dialog would still appear, blocking the batch run.
+
+### Fixed: Mate POV parsing in killer mode
+
+Mate POV was being parsed even when perspective was set to killer, doing expensive position lookups for no reason. Two fixes:
+
+1. **Perspective change resets vars**: Switching to killer POV now explicitly resets `kill_mod_mate_pov` and `kill_mod_mate_pov_req` to `False`.
+2. **Filter safety guard**: `_mate_pov_filter` now early-returns in killer mode, preventing silent processing even if the var is stale.
+
+**Scenario fixed**: User checked Mate POV in victim mode, switched to killer POV, then ran Preview — mate POV was still being processed wastefully. Now it resets automatically.
+
+---
+
+## [v178]
+
+### Changed: Preset category selector redesigned — mini-tab columns
+
+Replaced the 4 broad checkboxes (Player, Video, Timing, All) with a granular mini-tab column layout:
+
+- **CAPTURE** tab: Active players, Date range, Filters
+- **VIDEO** tab: Mode (HLAE/CS), Output name, Encoding, HLAE options, Physics
+- **TIMING** tab: Timing & retry
+- **ALL** column: Full config checkbox
+
+**PRESET_KEYS** split into new granular sub-keys: `players`, `date`, `filters`, `mode`, `output_name`, `encoding`, `hlae_opts`, `physics`, `timing` (plus backward-compat aliases `player`, `video` for old presets).
+
+The new UI allows fine-grained control over which settings are saved in each preset. Old presets load correctly via backward-compat path.
+
+---
+
+## [v177]
+
+### Changed: One Tap filter now enforces headshots at SQL level
+
+`kill_mod_one_tap` now adds `AND is_headshot = TRUE` to the SQL query when the headshot column exists, ensuring the DB returns only HS kills before dp2 shot-isolation is applied. Previously, shot count was checked but not headshot. If `headshots_mode = exclude`, the HS clause is skipped (user intent respected). Warns in log if headshot column is missing.
+
+### Fixed: Demo picker "Clear all" UX
+
+When dates are cleared via "Clear all", the demo picker now shows `— all demos (run Preview to filter)` instead of a blank label, making it clear that an empty picker means no filter (all demos included).
+
+### Changed: Preset saving UI — checkboxes instead of radio buttons
+
+Replaced the single "Type" radio selector with four independent checkboxes:
+- **Player + events + weapons + filters**
+- **Video / encoding settings**
+- **Timing + robustness**
+- **All settings (full config)** — exclusive; checking it deselects others
+
+Multiple categories can now be combined in one preset (e.g. Player + Timing).
+Saved format changed from `{"type": "..."}` to `{"cats": [...]}` — old presets with `"type"` load correctly via backward-compat path.
+
+### Added: Preset hover tooltip
+
+Each saved preset in the list now shows a tooltip on hover with: categories saved, key count, and notable settings (player name, perspective, dates, resolution, FPS, encoder, before/after).
+
+### Confirmed: Filter pipeline order already correct
+
+SQL (weapons → DB mods) → Python date filter → dp2 pre-parse → dp2 filters. No change needed.
+
+---
+
 ## [v176]
 
 ### Added: Victim's Mate POV feature
