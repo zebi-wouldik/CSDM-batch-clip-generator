@@ -53,6 +53,20 @@ Capture tab  →  PLAYER + EVENTS + KILL FILTERS  →  F6 Preview  →  F5 Run
 
 ---
 
+## Presets
+
+Save and load your filter configurations. The **SAVE A PRESET** section in the Tools tab lets you define which settings are included:
+
+**Categories:**
+- **Capture**: Active players, Date range, Filters
+- **Video**: Mode (HLAE/CS), Output name, Encoding, HLAE options, Physics
+- **Timing**: Timing & retry
+- **Full**: All settings
+
+Multiple categories can be combined in a single preset. Saved presets appear in the **LOAD / DELETE** list with a tooltip showing what's included.
+
+---
+
 ## Preview header
 
 Each preview shows a clean summary block before the demo list:
@@ -135,7 +149,7 @@ Example: `SMOKE` only → only smoke clips. `SMOKE + WALLBANG` (both non-★) �
 |---|---|---|
 | 🎲 **TROIS SHOT** | Lucky kills on precision weapons — bloom too high, unscoped, or moving at shot time | `weapon_fire` accuracy |
 | 🎲 **TROIS SHOT — Exclude** | Inverse: precise kills only on those same weapons | `weapon_fire` accuracy |
-| 🎯 **ONE TAP** | Isolated headshot with no other shot fired within ±2s | `weapon_fire` ticks |
+| 🎯 **ONE TAP** | Isolated **headshot** with no other shot fired within ±2s | `weapon_fire` ticks + headshot |
 | 🎯🎲 **TROIS TAP** | TROIS SHOT + ONE TAP simultaneously | Combined |
 | 🔫 **Spray Transfer** | ≥2 kills in one continuous burst, no trigger release (auto weapons only) | `weapon_fire` gaps |
 | 🏎 **Ferrari Peek** | Moving peek that kills on a single shot then immediately resumes | `weapon_fire` velocity |
@@ -162,6 +176,24 @@ Example: `SMOKE` only → only smoke clips. `SMOKE + WALLBANG` (both non-★) �
 | ⚡ **Multi-Kill** | N or more kills in one round within a configurable time window |
 | 💀 **BULLY** | Kill the same opponent for the Nth time in the match |
 | 💰 **Eco Frag** | Pistol kill against a full-buy opponent |
+
+---
+
+## Mate POV
+
+Record kills from the perspective of the **victim's teammate with the best angular view** of the kill, instead of following the victim directly. Uses demoparser2 player positions + view angles at kill tick.
+
+**How it works:**
+- Three body points per potential teammate are checked (head / chest / legs).
+- A teammate qualifies when ≥ 2 of 3 body points fall within their ±45° field of view.
+- Among all qualifying teammates, the one with the smallest angle to the kill point is chosen.
+- Active players (the clip subject) are excluded from the mate pool.
+
+**Two modes:**
+- **Optional** (default): if no qualifying teammate is found, the camera falls back to normal victim perspective
+- **★ Must**: clips with no qualifying teammate are skipped entirely
+
+**Availability:** Only visible when **POV Victim** or **Both** is selected. Killer mode has no victim phase to override.
 
 ---
 
