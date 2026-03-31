@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v179"
+APP_VERSION = "v181"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -2679,7 +2679,8 @@ class App(tk.Tk):
 
         if self._wg_frame:
             self._wg_frame.destroy()
-        self._wg_lbl.config(text=f"{len(weapons)} weapons")
+        self._total_weapons = len(weapons)
+        self._refresh_weapon_label()
 
         self._wg_frame = tk.Frame(self._sec_w, bg=BG2)
         self._wg_frame.pack(fill="x", pady=(4, 0))
@@ -2722,13 +2723,25 @@ class App(tk.Tk):
         for v in self.sel_weapons.values():
             v.set(True)
         for cat in self._cat_vars:
-            self._update_cat_var(cat)
+            self._cat_vars[cat][0].set(True)
+        self._refresh_weapon_label()
 
     def _weapons_deselect_all(self):
         for v in self.sel_weapons.values():
             v.set(False)
         for cat in self._cat_vars:
-            self._update_cat_var(cat)
+            self._cat_vars[cat][0].set(False)
+        self._refresh_weapon_label()
+
+    def _refresh_weapon_label(self):
+        total = getattr(self, "_total_weapons", len(self.sel_weapons))
+        n_sel = sum(1 for v in self.sel_weapons.values() if v.get())
+        if n_sel == 0:
+            self._wg_lbl.config(text=f"weapons  (all / {total})", fg=MUTED)
+        elif n_sel == total:
+            self._wg_lbl.config(text=f"weapons  (all / {total})", fg=MUTED)
+        else:
+            self._wg_lbl.config(text=f"weapons  ({n_sel} / {total} selected)", fg=ORANGE)
 
     def _toggle_category(self, cat):
         cat_var, weapons = self._cat_vars[cat]
@@ -2736,11 +2749,13 @@ class App(tk.Tk):
         for w in weapons:
             if w in self.sel_weapons:
                 self.sel_weapons[w].set(val)
+        self._refresh_weapon_label()
 
     def _update_cat_var(self, cat):
         cat_var, weapons = self._cat_vars[cat]
         all_on = all(self.sel_weapons.get(w, tk.BooleanVar(value=False)).get() for w in weapons)
         cat_var.set(all_on)
+        self._refresh_weapon_label()
 
     # ═══════════════════════════════════════════════════
     #  Tags DB
@@ -6018,6 +6033,10 @@ class App(tk.Tk):
     _MATE_POV_FOV_HALF_DEG = 45.0           # half-angle: point must be within ±45° to count
     _MATE_POV_MIN_VISIBLE   = 2             # body points in FOV required ("≥50% visible")
     _MATE_POV_MAX_DIST      = 5000          # ignore mates further than this (Hammer units)
+    # demoparser2 stores SteamIDs with the lower 3 bits zeroed (CS2 entity handle
+    # encoding).  The true SteamID64 differs by at most 7.  We use tolerance=8 so
+    # a simple abs-diff lookup resolves dp2 keys ↔ DB SteamIDs without a full table.
+    _DP2_SID_TOLERANCE      = 8
 
     def _parse_mate_positions(self, demo_path, kill_ticks):
         """Lazily parse player positions + view-angles at the given ticks and cache them.
@@ -6123,46 +6142,108 @@ class App(tk.Tk):
 
         return cached
 
-    def _find_best_mate_sid(self, demo_path, victim_sid, kill_tick, sids_active):
-        """Return the victim's teammate with the best angular view of the victim, or None.
+    # ── SteamID fuzzy helpers ──────────────────────────────────────────────────
 
-        Scans positions at kill_tick.  A teammate qualifies when ≥ _MATE_POV_MIN_VISIBLE
-        of the body test points are within _MATE_POV_FOV_HALF_DEG of their look direction.
-        Among all qualifying teammates the one with the smallest average body-point
-        angle is returned ("best angle" = most centred on the victim).
+    def _find_sid_in_tick(self, tick_data, db_sid):
+        """Return the dp2 SteamID key in tick_data that corresponds to db_sid.
+
+        demoparser2 returns SteamIDs with their lower 3 bits zeroed (CS2 entity
+        handle encoding).  The true SteamID64 stored in the CSDM DB differs by at
+        most 7.  An exact string match is tried first; if that fails we fall back
+        to the closest key within _DP2_SID_TOLERANCE.
+        Returns the matching key string, or None.
+        """
+        if not tick_data:
+            return None
+        try:
+            db_int = int(db_sid)
+        except (TypeError, ValueError):
+            return None
+
+        # fast path: exact match
+        exact = str(db_int)
+        if exact in tick_data:
+            return exact
+
+        # fuzzy path: scan for closest key within tolerance
+        best_key  = None
+        best_diff = self._DP2_SID_TOLERANCE + 1
+        for k in tick_data:
+            try:
+                diff = abs(int(k) - db_int)
+                if diff < best_diff:
+                    best_diff = diff
+                    best_key  = k
+            except (TypeError, ValueError):
+                continue
+        return best_key if best_diff <= self._DP2_SID_TOLERANCE else None
+
+    def _fuzzy_sid_in_set(self, dp2_sid, db_sids_set):
+        """Return True if dp2_sid is within ±_DP2_SID_TOLERANCE of any SID in db_sids_set.
+
+        db_sids_set contains true SteamID64 strings (from the CSDM DB).
+        dp2_sid is a demoparser2 key (lower 3 bits zeroed).  Direct set-lookup would
+        always fail, so we compare numerically.
+        """
+        try:
+            dp2_int = int(dp2_sid)
+        except (TypeError, ValueError):
+            return False
+        for db_sid in db_sids_set:
+            try:
+                if abs(dp2_int - int(db_sid)) <= self._DP2_SID_TOLERANCE:
+                    return True
+            except (TypeError, ValueError):
+                continue
+        return False
+
+    def _find_best_mate_sid(self, demo_path, victim_sid, kill_tick, sids_active):
+        """Return (mate_dp2_sid, victim_dp2_sid) for the best-angle qualifying teammate.
+
+        mate_dp2_sid   — dp2 key of the chosen teammate, or None if none qualifies.
+        victim_dp2_sid — dp2 key of the victim (used by camera builder as fallback);
+                         None if the victim cannot be resolved in tick_data at all.
+
+        Key fixes vs previous version:
+        - SteamID lookup uses _find_sid_in_tick (fuzzy ±8) to resolve DB SIDs → dp2 keys.
+        - Active-player exclusion uses _fuzzy_sid_in_set for the same reason.
+        - Both camera IDs returned so callers always have the correct dp2 SID to give CSDM.
         """
         with self._dp2_cache_lock:
             data = self._dp2_cache.get(demo_path, {})
         positions = data.get("mate_positions", {})
+
+        # Try kill_tick first, then the tick just before (parse_ticks sometimes lags by 1)
         tick_data = positions.get(kill_tick) or positions.get(kill_tick - 1) or {}
         if not tick_data:
-            return None
+            return None, None
 
-        victim_data = tick_data.get(str(victim_sid))
-        if not victim_data:
+        # Resolve victim's dp2 SID key (handles lower-3-bits-zeroed encoding)
+        victim_dp2_sid = self._find_sid_in_tick(tick_data, victim_sid)
+        if not victim_dp2_sid:
             self._alog(
-                f"  ⚠ Mate POV: victim {victim_sid} not in tick {kill_tick} data "
-                f"(players in tick: {list(tick_data.keys())[:5]}…)", "dim")
-            return None
+                f"  ⚠ Mate POV: victim {victim_sid} not found in tick {kill_tick} "
+                f"(dp2 keys: {list(tick_data.keys())[:8]})", "dim")
+            return None, None
 
-        vx, vy, vz = victim_data["X"], victim_data["Y"], victim_data["Z"]
+        victim_data = tick_data[victim_dp2_sid]
+        vx, vy, vz  = victim_data["X"], victim_data["Y"], victim_data["Z"]
         victim_team = victim_data.get("team", 0)
-        # team==0 means team_num wasn't available; skip team check in that case
-        team_check_enabled = victim_team != 0
+        team_check  = victim_team != 0   # team==0 → team_num unavailable, skip check
 
         best_sid   = None
-        best_score = float("inf")   # lower = better centred
+        best_score = float("inf")   # lower = better centred on victim
 
         for sid, pd in tick_data.items():
-            if sid == str(victim_sid):
-                continue
-            if team_check_enabled and pd.get("team", -1) != victim_team:
-                continue   # must be same team as victim
-            if sid in sids_active or str(sid) in sids_active:
-                continue   # active (our) player is not a "mate" for POV
+            if sid == victim_dp2_sid:
+                continue                                  # skip victim themselves
+            if team_check and pd.get("team", -1) != victim_team:
+                continue                                  # must be on victim's team
+            if self._fuzzy_sid_in_set(sid, sids_active):
+                continue                                  # skip the active (our) player(s)
 
-            dx = vx - pd["X"]
-            dy = vy - pd["Y"]
+            dx   = vx - pd["X"]
+            dy   = vy - pd["Y"]
             dist = math.sqrt(dx * dx + dy * dy)
             if dist > self._MATE_POV_MAX_DIST:
                 continue
@@ -6170,21 +6251,21 @@ class App(tk.Tk):
             # View direction from yaw / pitch
             yaw_r   = math.radians(pd.get("yaw",   0))
             pitch_r = math.radians(pd.get("pitch", 0))
-            lx = math.cos(pitch_r) * math.cos(yaw_r)
-            ly = math.cos(pitch_r) * math.sin(yaw_r)
+            lx =  math.cos(pitch_r) * math.cos(yaw_r)
+            ly =  math.cos(pitch_r) * math.sin(yaw_r)
             lz = -math.sin(pitch_r)
 
-            # Test body points (head / chest / legs)
+            # Test body points (head / chest / legs) — ≥ _MATE_POV_MIN_VISIBLE must qualify
             visible   = 0
             angle_sum = 0.0
-            for bz_offset in self._MATE_POV_BODY_HEIGHTS:
-                bdx = vx - pd["X"]
-                bdy = vy - pd["Y"]
-                bdz = (vz + bz_offset) - pd["Z"]
-                bd_len = math.sqrt(bdx * bdx + bdy * bdy + bdz * bdz)
-                if bd_len < 1:
+            for bz_off in self._MATE_POV_BODY_HEIGHTS:
+                bdx  = vx - pd["X"]
+                bdy  = vy - pd["Y"]
+                bdz  = (vz + bz_off) - pd["Z"]
+                blen = math.sqrt(bdx * bdx + bdy * bdy + bdz * bdz)
+                if blen < 1:
                     continue
-                dot = (lx * bdx + ly * bdy + lz * bdz) / bd_len
+                dot = (lx * bdx + ly * bdy + lz * bdz) / blen
                 ang = math.degrees(math.acos(max(-1.0, min(1.0, dot))))
                 if ang <= self._MATE_POV_FOV_HALF_DEG:
                     visible   += 1
@@ -6198,7 +6279,7 @@ class App(tk.Tk):
                 best_score = score
                 best_sid   = sid
 
-        return best_sid
+        return best_sid, victim_dp2_sid
 
     def _mate_pov_filter(self, demo_path, events, cfg):
         """Stamp evt['_mate_pov_sid'] on qualifying kills; optionally filter out the rest.
@@ -6228,8 +6309,14 @@ class App(tk.Tk):
                 continue
             victim_sid = str(evt.get("victim_sid", ""))
             kill_tick  = int(evt.get("tick", 0))
-            mate_sid   = self._find_best_mate_sid(demo_path, victim_sid,
-                                                   kill_tick, sids_active)
+            mate_sid, victim_dp2_sid = self._find_best_mate_sid(
+                demo_path, victim_sid, kill_tick, sids_active)
+
+            # Always stamp the resolved dp2 victim SID so camera builders can use
+            # the correct ID (CSDM needs the dp2 SID, not the DB SID, to find the player).
+            if victim_dp2_sid:
+                evt["_victim_dp2_sid"] = victim_dp2_sid
+
             if mate_sid:
                 evt["_mate_pov_sid"] = mate_sid
                 found += 1
@@ -9578,10 +9665,16 @@ class App(tk.Tk):
         If an event carries _seq_start_tick / _seq_end_tick (set by clutch full_clutch
         mode), those values are used directly as clip boundaries — before/after padding
         has already been baked in by _apply_clutch_filter using the cfg Before/After values.
+
+        Merge rule: two adjacent sequences are joined into one if the gap between them
+        is ≤ before_ticks.  This mirrors native CSDM behaviour: a second kill that
+        occurs "just a few seconds" after the first clip ends extends the clip rather
+        than starting a separate one.  Overlapping sequences (gap ≤ 0) are always
+        merged as before.
         """
         if not events:
             return []
-        bt, at = before_s * tickrate, after_s * tickrate
+        bt, at = int(before_s * tickrate), int(after_s * tickrate)
         raw = []
         for e in events:
             if "_seq_start_tick" in e and "_seq_end_tick" in e:
@@ -9594,7 +9687,8 @@ class App(tk.Tk):
         merged = [raw[0]]
         for s in raw[1:]:
             p = merged[-1]
-            if s["start_tick"] <= p["end_tick"]:
+            # Merge when overlap OR gap is within one "before" window
+            if s["start_tick"] - p["end_tick"] <= bt:
                 p["end_tick"] = max(p["end_tick"], s["end_tick"])
                 p["events"].extend(s["events"])
             else:
@@ -9940,9 +10034,12 @@ class App(tk.Tk):
                     # Our player dies: follow them
                     target_sid = first_ev["victim_sid"]
                 elif first_ev.get("victim_sid"):
-                    # Our player kills: follow victim (or their best-angle teammate)
-                    mate_sid = first_ev.get("_mate_pov_sid") if cfg.get("kill_mod_mate_pov") else None
-                    target_sid = mate_sid or first_ev["victim_sid"]
+                    # Our player kills: follow victim (or their best-angle teammate).
+                    # Use dp2 victim SID for camera — CSDM needs the demo-internal SID,
+                    # not the DB SteamID64 (they differ by up to 7 due to entity handle encoding).
+                    mate_sid   = first_ev.get("_mate_pov_sid") if cfg.get("kill_mod_mate_pov") else None
+                    victim_cam = first_ev.get("_victim_dp2_sid") or first_ev["victim_sid"]
+                    target_sid = mate_sid or victim_cam
 
             # A single camera point at start_tick is enough — CSDM holds the target
             return [{"tick": seq["start_tick"], "playerSteamId": target_sid,
@@ -9983,9 +10080,12 @@ class App(tk.Tk):
                     break
 
                 ksid = ev.get("killer_sid") or primary_sid
-                # In mate_pov mode, switch to the best-angle teammate instead of victim
-                mate_sid = ev.get("_mate_pov_sid") if cfg.get("kill_mod_mate_pov") else None
-                vsid = mate_sid or ev.get("victim_sid") or primary_sid
+                # In mate_pov mode, switch to the best-angle teammate instead of victim.
+                # Use dp2 victim SID for fallback — CSDM needs the demo-internal SID
+                # (differs from DB SteamID64 by up to 7 due to entity handle encoding).
+                mate_sid   = ev.get("_mate_pov_sid") if cfg.get("kill_mod_mate_pov") else None
+                victim_cam = ev.get("_victim_dp2_sid") or ev.get("victim_sid") or primary_sid
+                vsid = mate_sid or victim_cam
 
                 # If there was a previous kill, return to this kill's killer right
                 # after that kill so the viewer sees the correct attacker.
