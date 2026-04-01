@@ -11,33 +11,25 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [v181]
 
-### Fixed: Mate POV — SteamID mismatch (complete rewrite)
+### Fixed: Mate POV — SteamID precision loss (complete rewrite)
 
-**Root cause**: demoparser2 stores SteamIDs with the **lower 3 bits zeroed** (CS2 entity handle encoding). The CSDM DB stores the true SteamID64. These differ by 0–7. Every exact string comparison (`tick_data.get(str(victim_sid))`, `sid in sids_active`) was always failing, causing 90%+ of clips to fall through to wrong or random camera targets.
+**Root cause**: `_parse_mate_positions` called `.to_numpy()` on a mixed int/float DataFrame (tick, steamid, X, Y, Z, yaw, pitch, team). NumPy upcasts the entire array to `float64`, which only has 53 bits of mantissa — not enough for 17-digit SteamID64 values. `int(float(76561198347183079))` silently becomes `76561198347183072` (off by 7). Every exact string comparison in `_find_best_mate_sid` was failing because tick_data keys were corrupted.
 
-**What was happening in practice (from test log)**:
-- Victim lookup always returned `None` → mate search never ran → camera fell back to DB `victim_sid` → CSDM couldn't find the player in the demo → random player spectated (clip 1).
-- When a mate was accidentally found (keys happened to collide), the active-player exclusion also failed → the active player itself was selected as the "mate" (clip 2).
-- Fallback camera used DB SteamID instead of dp2 SID → spectated wrong person (clip 3).
+**What was happening in practice**:
+- Victim lookup `tick_data.get(str(victim_sid))` always returned `None` → mate search never ran → camera fell back to raw victim SID → wrong or random player spectated.
+- Active-player exclusion (`sid in sids_active`) also failed → wrong mate could be selected.
 
-**Fix architecture**:
+**Fix — preserve SteamID precision at the source**:
 
-1. **`_DP2_SID_TOLERANCE = 8`** — new class constant documenting the encoding delta.
+1. **`_parse_mate_positions`** — SteamID column is now extracted via `astype("Int64").astype(str)` while still in pandas (preserving full int64 precision), BEFORE the `.to_numpy()` call that would corrupt it. Numeric columns (positions/angles) go through `.to_numpy()` separately. Tick_data keys now contain correct SteamID64 strings that match the DB.
 
-2. **`_find_sid_in_tick(tick_data, db_sid)`** — new helper. Tries exact match first, then scans all dp2 keys for `abs(dp2_int - db_int) ≤ 8`. Returns the matching dp2 key or `None`.
+2. **Fuzzy matching as safety net** — `_find_sid_in_tick(tick_data, db_sid)` and `_fuzzy_sid_in_set(dp2_sid, db_sids_set)` provide tolerance-based lookup (±8) in case any edge case slips through.
 
-3. **`_fuzzy_sid_in_set(dp2_sid, db_sids_set)`** — new helper. Numeric comparison of a dp2 key against a set of DB SteamID64 strings. Used to check whether a player in tick_data is one of the active (tracked) players.
+3. **`_find_best_mate_sid`** — rewritten to use fuzzy helpers and return `(mate_sid, victim_sid)` tuple so callers always have the correct SID for CSDM.
 
-4. **`_find_best_mate_sid`** — rewritten to:
-   - Use `_find_sid_in_tick` to resolve the victim's dp2 key (no more silent None returns).
-   - Use `_fuzzy_sid_in_set` for active-player exclusion.
-   - Return `(mate_dp2_sid, victim_dp2_sid)` tuple so callers always have the correct dp2 SID.
+4. **`_mate_pov_filter`** — stamps `evt["_victim_dp2_sid"]` on every kill for camera fallback.
 
-5. **`_mate_pov_filter`** — now unpacks the tuple and stamps `evt["_victim_dp2_sid"]` on every kill event (even when no mate found), so camera builders have the correct dp2 SID for fallback.
-
-6. **`_build_cams_victim`** — fallback camera now uses `_victim_dp2_sid` instead of raw `victim_sid` from the DB.
-
-7. **`_build_cams_both`** — same fix for victim-phase camera target.
+5. **`_build_cams_victim`** + **`_build_cams_both`** — fallback camera uses `_victim_dp2_sid` instead of raw DB `victim_sid`.
 
 ---
 

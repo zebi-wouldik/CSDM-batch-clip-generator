@@ -6090,42 +6090,51 @@ class App(tk.Tk):
                 self._alog(f"  ⚠ Mate POV: missing columns tick/X/Y/Z in {cols}", "warn")
                 return cached
 
-            arr = df[[c for c in [
-                col_tick, sid_col, col_x, col_y, col_z,
-                col_yaw, col_pit, col_team,
-            ] if c]].to_numpy()
+            # ── Extract SteamIDs at full int64 precision BEFORE to_numpy() ──
+            # to_numpy() on a mixed int/float DataFrame upcasts everything to
+            # float64, which only has 53 bits of mantissa — not enough for
+            # 17-digit SteamID64 values.  int(float(76561198347183079)) gives
+            # 76561198347183072 (off by 7).  By converting the SteamID column
+            # to string while still in pandas (which preserves int64), we get
+            # exact values that match the DB SteamID64s.
+            sid_series = df[sid_col]
+            try:
+                sids_str = sid_series.astype("Int64").astype(str).to_numpy()
+            except (TypeError, ValueError):
+                sids_str = sid_series.astype(str).to_numpy()
 
-            base = 5
+            # Numeric columns → float64 numpy (fine for positions/angles)
+            num_cols = [c for c in [col_tick, col_x, col_y, col_z,
+                                    col_yaw, col_pit, col_team] if c]
+            arr = df[num_cols].to_numpy()
+
+            base = 4   # tick, X, Y, Z are always present → indices 0-3
             yaw_i  = base     if col_yaw  else None
             pit_i  = base + (1 if col_yaw else 0) if col_pit  else None
             team_i = base + (1 if col_yaw else 0) + (1 if col_pit else 0) if col_team else None
 
-            for row in arr:
-                # numpy stores large steamids as float64 — convert via int() to get
-                # the correct integer string (e.g. 76561198331095429, not 7.65e+16)
-                raw_t   = row[0]
-                raw_sid = row[1]
-                if raw_t is None or (isinstance(raw_t,   float) and math.isnan(raw_t)):
-                    continue
-                if raw_sid is None or (isinstance(raw_sid, float) and math.isnan(raw_sid)):
-                    continue
-                t   = int(float(raw_t))
-                sid = str(int(float(raw_sid)))
-                if not t or not sid or sid == "0":
-                    continue
+            def _fv(v):
+                if v is None: return 0.0
+                try:
+                    f = float(v)
+                    return 0.0 if math.isnan(f) else f
+                except Exception:
+                    return 0.0
 
-                def _fv(v):
-                    if v is None: return 0.0
-                    try:
-                        f = float(v)
-                        return 0.0 if math.isnan(f) else f
-                    except Exception:
-                        return 0.0
+            for i, row in enumerate(arr):
+                raw_t = row[0]
+                if raw_t is None or (isinstance(raw_t, float) and math.isnan(raw_t)):
+                    continue
+                t = int(float(raw_t))
+
+                sid = sids_str[i]
+                if not t or not sid or sid in ("0", "<NA>", "nan", "None"):
+                    continue
 
                 cached.setdefault(t, {})[sid] = {
-                    "X":    _fv(row[2]),
-                    "Y":    _fv(row[3]),
-                    "Z":    _fv(row[4]),
+                    "X":    _fv(row[1]),
+                    "Y":    _fv(row[2]),
+                    "Z":    _fv(row[3]),
                     "yaw":  _fv(row[yaw_i])  if yaw_i  is not None else 0.0,
                     "pitch":_fv(row[pit_i])  if pit_i  is not None else 0.0,
                     "team": int(_fv(row[team_i])) if team_i is not None else 0,
