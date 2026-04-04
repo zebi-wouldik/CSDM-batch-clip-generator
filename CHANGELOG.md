@@ -9,6 +9,34 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v182]
+
+### Fixed: Mate POV log output contradiction
+
+`_mate_pov_filter` was emitting its own per-demo log ("0/2 qualifying") while `_apply_filter_to_events` also logged `n_before → n_after` (always equal in optional mode, e.g. "2 → 2"). The two lines together were contradictory and confusing.
+
+Fix: removed the internal `_alog` call from `_mate_pov_filter`. `_apply_filter_to_events` now has a `cfg_key == "kill_mod_mate_pov"` branch that logs `X/N with qualifying mate` instead of the generic `N → N` line.
+
+### Added: Quick preset dropdown + save button in top bar
+
+A combobox (18-char wide) and a 💾 save button are now embedded in the top header bar, left of the DB status area. Selecting a name immediately loads that preset. The 💾 button saves the current config to the selected preset name (or prompts for a new name if none is selected). `_refresh_preset_list` syncs both the sidebar list and the header combobox.
+
+### Fixed: Non-demoparser mod exclusion triggered unnecessary on-demand parsing
+
+`_dp2_required_sections` only checked if a filter was enabled (`cfg.get(k)`), not if its exclusion flag was set. Scenarios where only `<key>_exclude` was active skipped pre-parsing and fell through to slow on-demand parsing. Fix: each check now also tests `cfg.get(f"{k}_exclude")` alongside the primary flag.
+
+### Changed: Capture tab section order
+
+Sections reordered to: Players → Demo Selection → Weapon Filter → Capture & Timing → Kill Filters → Match Types.
+
+### Changed: Video tab section order + encoding merge
+
+- **FINAL ASSEMBLY** moved to top of the Video tab (first section, immediately visible on open).
+- **RECORDING SYSTEM** moved to bottom, just before ⚡ HLAE OPTIONS (logically adjacent to the sections it controls).
+- **VIDEO CODEC**, **AUDIO CODEC**, and **ADVANCED FFMPEG PARAMS** merged into a single **ENCODING** section with Audio and Advanced FFmpeg as sub-headings, reducing visual noise.
+
+---
+
 ## [v181]
 
 ### Fixed: Mate POV — SteamID precision loss (complete rewrite)

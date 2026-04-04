@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v181"
+APP_VERSION = "v182"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -3130,6 +3130,22 @@ class App(tk.Tk):
         # Right side: DB status
         db_area = tk.Frame(inner_hdr, bg=BG2)
         db_area.pack(side="right")
+
+        # Quick preset widget — left of DB area
+        qp_area = tk.Frame(inner_hdr, bg=BG2)
+        qp_area.pack(side="right", padx=(0, 16))
+        tk.Label(qp_area, text="Preset:", font=FONT_DESC, bg=BG2, fg=MUTED).pack(side="left")
+        self._quick_preset_var = tk.StringVar()
+        self._quick_preset_combo = ttk.Combobox(
+            qp_area, textvariable=self._quick_preset_var,
+            width=18, state="readonly", font=FONT_SM)
+        self._quick_preset_combo.pack(side="left", padx=(4, 0))
+        self._quick_preset_combo.bind("<<ComboboxSelected>>",
+                                      lambda _e: self._quick_preset_load())
+        tk.Button(qp_area, text="💾", font=FONT_DESC, bg=BG2, fg=MUTED,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activeforeground=ORANGE,
+                  command=self._quick_preset_save).pack(side="left", padx=(4, 0))
         tk.Label(db_area, text="DB ", font=FONT_DESC, bg=BG2, fg=MUTED).pack(side="left")
         self.db_status_lbl = tk.Label(db_area, textvariable=self.db_status,
                                       font=("Consolas", 9, "bold"), bg=BG2, fg=YELLOW)
@@ -3567,6 +3583,209 @@ class App(tk.Tk):
         self.player_search = PlayerSearchWidget(sec, on_change=self._on_player_change)
         self.player_search.pack(fill="x")
 
+        sec = Sec(p, "DEMO SELECTION")
+        sec.pack(fill="x")
+
+        # ── Date range row ────────────────────────────────────────────────────
+        dr1 = tk.Frame(sec, bg=BG2)
+        dr1.pack(fill="x")
+        mlabel(dr1, "From:").pack(side="left")
+        tk.Entry(dr1, textvariable=self.v["date_from"], font=FONT_MONO, bg=BG3, fg=TEXT,
+                 insertbackground=ORANGE, relief="flat", bd=0, highlightthickness=1,
+                 highlightbackground=BORDER, highlightcolor=ORANGE, width=12
+                 ).pack(side="left", padx=(4, 0), ipady=4, ipadx=4)
+        _btn_from = tk.Button(dr1, text="📅", font=FONT_SM, bg=BG3, fg=ORANGE, relief="flat",
+                  bd=0, cursor="hand2", highlightthickness=0,
+                  activebackground=BORDER, activeforeground=ORANGE)
+        _btn_from.configure(command=lambda b=_btn_from: self._open_cal(self.v["date_from"], b))
+        _btn_from.pack(side="left", padx=(2, 0), ipady=4, ipadx=4)
+        mlabel(dr1, "  To:").pack(side="left", padx=(10, 0))
+        tk.Entry(dr1, textvariable=self.v["date_to"], font=FONT_MONO, bg=BG3, fg=TEXT,
+                 insertbackground=ORANGE, relief="flat", bd=0, highlightthickness=1,
+                 highlightbackground=BORDER, highlightcolor=ORANGE, width=12
+                 ).pack(side="left", padx=(4, 0), ipady=4, ipadx=4)
+        _btn_to = tk.Button(dr1, text="📅", font=FONT_SM, bg=BG3, fg=ORANGE, relief="flat",
+                  bd=0, cursor="hand2", highlightthickness=0,
+                  activebackground=BORDER, activeforeground=ORANGE)
+        _btn_to.configure(command=lambda b=_btn_to: self._open_cal(self.v["date_to"], b))
+        _btn_to.pack(side="left", padx=(2, 0), ipady=4, ipadx=4)
+        tk.Button(dr1, text="Today", font=FONT_DESC, bg=BG3, fg=GREEN,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activebackground=BORDER, activeforeground=GREEN,
+                  command=lambda: self.v["date_to"].set(date.today().strftime("%d-%m-%Y"))
+                  ).pack(side="left", padx=(6, 0), ipady=4, ipadx=5)
+        tk.Button(dr1, text="Clear all", font=FONT_DESC, bg=BG3, fg=MUTED,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activebackground=BORDER, activeforeground=MUTED,
+                  command=lambda: [self.v["date_from"].set(""), self.v["date_to"].set(""),
+                                   self._demo_picker_clear()]
+                  ).pack(side="left", padx=(4, 0), ipady=4, ipadx=5)
+
+        qr = tk.Frame(sec, bg=BG2)
+        qr.pack(fill="x", pady=(4, 0))
+        tk.Label(qr, text="Shortcuts:", font=FONT_DESC, fg=MUTED, bg=BG2).pack(side="left")
+        for lbl, key in [("Yesterday","yesterday"),("7d",7),("30d",30),
+                         ("This month","month"),("3m",90),("6m",180),("Year","year"),("All",0)]:
+            tk.Button(qr, text=lbl, font=FONT_DESC, bg=BG3, fg=TEXT, relief="flat", bd=0,
+                      cursor="hand2", activebackground=ORANGE, activeforeground="white",
+                      highlightthickness=0,
+                      command=lambda k=key: self._set_date_range(k)).pack(
+                side="left", padx=(4, 0), ipady=2, ipadx=4)
+
+        # ── Demo picker ───────────────────────────────────────────────────────
+        picker_hdr = tk.Frame(sec, bg=BG2)
+        picker_hdr.pack(fill="x", pady=(10, 0))
+        mlabel(picker_hdr, "Demo selection:").pack(side="left")
+        add_tip(picker_hdr.winfo_children()[-1],
+                "After Preview, demos in the date range are shown here.\n"
+                "Uncheck any demo to exclude it from the batch.\n"
+                "Enable 'Manual mode' to see all demos from the DB\n"
+                "and add/remove them individually.")
+        self._picker_manual_var = tk.BooleanVar(value=False)
+        _pm_cb = hchk(picker_hdr, "Manual mode", self._picker_manual_var,
+                      command=self._on_picker_mode_change)
+        _pm_cb.pack(side="left", padx=(12, 0))
+        add_tip(_pm_cb,
+                "Off: shows only demos found by the date range (after Preview).\n"
+                "On: loads all demos from DB so you can pick or exclude individually.")
+        self._picker_count_lbl = tk.Label(picker_hdr, text="", font=FONT_DESC,
+                                          fg=MUTED, bg=BG2)
+        self._picker_count_lbl.pack(side="right")
+
+        # Treeview: columns = checkbox-state (not real col) + date + name
+        tree_frame = tk.Frame(sec, bg=BG2)
+        tree_frame.pack(fill="x", pady=(4, 0))
+        style = ttk.Style()
+        style.configure("DemoPicker.Treeview",
+                        background=BG3, fieldbackground=BG3,
+                        foreground=TEXT, rowheight=18,
+                        font=FONT_SM)
+        style.configure("DemoPicker.Treeview.Heading",
+                        background=BG2, foreground=MUTED,
+                        font=FONT_DESC, relief="flat")
+        style.map("DemoPicker.Treeview",
+                  background=[("selected", BORDER)],
+                  foreground=[("selected", ORANGE)])
+        self._demo_tree = ttk.Treeview(
+            tree_frame, style="DemoPicker.Treeview",
+            columns=("sel", "date", "map", "name"), show="headings", height=7,
+            selectmode="extended")
+        self._demo_tree.heading("sel",  text="✓",      anchor="center")
+        self._demo_tree.heading("date", text="Date",   anchor="w")
+        self._demo_tree.heading("map",  text="Map",    anchor="w")
+        self._demo_tree.heading("name", text="Demo",   anchor="w")
+        self._demo_tree.column("sel",  width=24,  minwidth=24,  stretch=False, anchor="center")
+        self._demo_tree.column("date", width=118, minwidth=90,  stretch=False)
+        self._demo_tree.column("map",  width=80,  minwidth=60,  stretch=False)
+        self._demo_tree.column("name", width=280, minwidth=160, stretch=True)
+        _tree_sb = ttk.Scrollbar(tree_frame, orient="vertical",
+                                 command=self._demo_tree.yview)
+        self._demo_tree.configure(yscrollcommand=_tree_sb.set)
+        self._demo_tree.pack(side="left", fill="x", expand=True)
+        _tree_sb.pack(side="right", fill="y")
+        self._demo_tree.bind("<Button-1>", self._on_demo_tree_click)
+        self._demo_tree.bind("<MouseWheel>",
+                             lambda e: self._demo_tree.yview_scroll(
+                                 -1 * (e.delta // 120), "units"))
+        # Show compat tooltip on hover for warned rows
+        self._tree_tip_win = None
+
+        def _tree_tip_hide():
+            if self._tree_tip_win:
+                try: self._tree_tip_win.destroy()
+                except Exception: pass
+                self._tree_tip_win = None
+
+        def _tree_motion(event):
+            iid = self._demo_tree.identify_row(event.y)
+            if not iid:
+                _tree_tip_hide(); return
+            tags = self._demo_tree.item(iid, "tags")
+            if "warn_compat" not in tags:
+                _tree_tip_hide(); return
+            compat = self._check_demo_compat(iid)
+            tip = compat.get("tip") or ""
+            brk = compat.get("break") or ""
+            if not tip:
+                _tree_tip_hide(); return
+            # Only recreate if not already showing this demo's tip
+            if self._tree_tip_win and getattr(self._tree_tip_win, "_iid", None) == iid:
+                return
+            _tree_tip_hide()
+            tw = tk.Toplevel(self._demo_tree)
+            tw.wm_overrideredirect(True)
+            tw.attributes("-topmost", True)
+            tw.wm_geometry(f"+{event.x_root + 12}+{event.y_root + 12}")
+            tk.Label(tw, text=f"⚠ {brk}\n{tip}",
+                     font=("Consolas", 8), fg=TEXT, bg="#2a2a2a",
+                     relief="flat", bd=0, padx=8, pady=4,
+                     justify="left").pack()
+            tw._iid = iid
+            self._tree_tip_win = tw
+
+        self._demo_tree.bind("<Motion>", _tree_motion)
+        self._demo_tree.bind("<Leave>",  lambda e: _tree_tip_hide())
+
+        # Per-row toggle buttons row
+        pick_btns = tk.Frame(sec, bg=BG2)
+        pick_btns.pack(fill="x", pady=(4, 0))
+        tk.Button(pick_btns, text="✓ Check all", font=FONT_DESC, bg=BG3, fg=GREEN,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activeforeground=GREEN, activebackground=BG3,
+                  command=lambda: self._demo_picker_set_all(True)
+                  ).pack(side="left", padx=(0, 6))
+        tk.Button(pick_btns, text="✕ Uncheck all", font=FONT_DESC, bg=BG3, fg=RED,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activeforeground=RED, activebackground=BG3,
+                  command=lambda: self._demo_picker_set_all(False)
+                  ).pack(side="left")
+        tk.Button(pick_btns, text="✓ Check selected", font=FONT_DESC, bg=BG3, fg=GREEN,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activeforeground=GREEN, activebackground=BG3,
+                  command=lambda: self._demo_picker_set_selected(True)
+                  ).pack(side="left", padx=(6, 0))
+        tk.Button(pick_btns, text="✕ Uncheck selected", font=FONT_DESC, bg=BG3, fg=RED,
+                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
+                  activeforeground=RED, activebackground=BG3,
+                  command=lambda: self._demo_picker_set_selected(False)
+                  ).pack(side="left", padx=(4, 0))
+
+        # Compatibility legend
+        compat_row = tk.Frame(sec, bg=BG2)
+        compat_row.pack(fill="x", pady=(4, 0))
+        tk.Label(compat_row, text="● ", font=FONT_DESC, fg=YELLOW, bg=BG2).pack(side="left")
+        _compat_tip = (
+            "CS2 had hard breaking updates that made older demos unplayable:\n"
+            "  • Jul 28 2025 — AnimGraph2: ALL demos before this date are broken.\n"
+            "    Requires CS2 ≤ 1.40.8.8 (Steam beta) to replay them.\n"
+            "  • Feb 6 2024 — Major format change: demos before this are also broken\n"
+            "    on current CS2."
+        )
+        _warn_lbl = tk.Label(compat_row,
+                 text="Demo recorded before a CS2 breaking update — likely unplayable.",
+                 font=FONT_DESC, fg=MUTED, bg=BG2, cursor="hand2")
+        _warn_lbl.pack(side="left")
+        add_tip(_warn_lbl, _compat_tip)
+
+        # Internal state: {demo_path: bool} — True = included
+        self._demo_picker_state: dict = {}
+        # Last preview result — used by HTML export
+        self._last_preview_data: dict | None = None
+
+        self._sec_w = Sec(p, "WEAPON FILTER  (empty = all)")
+        self._sec_w.pack(fill="x")
+        self._wg_lbl = tk.Label(self._sec_w, text="Waiting for DB…", font=FONT_DESC, fg=MUTED, bg=BG2)
+        self._wg_lbl.pack(anchor="w")
+        self._wg_frame = None
+        br = tk.Frame(self._sec_w, bg=BG2)
+        br.pack(fill="x", pady=(4, 0))
+        tk.Button(br, text="Select all", font=FONT_DESC, bg=BG3, fg=GREEN, relief="flat",
+                  cursor="hand2", bd=0, highlightthickness=0, activeforeground=GREEN,
+                  command=self._weapons_select_all).pack(side="left", padx=(0, 6))
+        tk.Button(br, text="Deselect all", font=FONT_DESC, bg=BG3, fg=RED, relief="flat",
+                  cursor="hand2", bd=0, highlightthickness=0, activeforeground=RED,
+                  command=self._weapons_deselect_all).pack(side="left")
+
         sec = Sec(p, "CAPTURE & TIMING")
         sec.pack(fill="x")
 
@@ -3716,21 +3935,6 @@ class App(tk.Tk):
                           "Random: demos shuffled before the batch starts.")
         for lbl, val in [("Chrono","chrono"),("Random 🎲","random")]:
             hradio(rg, lbl, self.v["clip_order"], val).pack(side="left", padx=(4, 0))
-
-        # ══════════════════════════════════════════════════════════════════════
-        # Match type section — always visible; types absent from DB are greyed out
-        self._match_type_sec = Sec(p, "MATCH TYPES")
-        self._match_type_sec.pack(fill="x")
-        desc_label(self._match_type_sec,
-            "Filter demos by CS2 match type.\n"
-            "Greyed-out types are not present in your database.\n"
-            "When the filter toggle is off, all types pass (no SQL overhead)."
-        ).pack(anchor="w", pady=(0, 4))
-        self._match_type_frame = tk.Frame(self._match_type_sec, bg=BG2)
-        self._match_type_frame.pack(fill="x")
-        self._mt_checkboxes: list = []
-        # Populated immediately below with all known types (greyed until DB connects)
-        self._refresh_match_type_ui()
 
         # ══════════════════════════════════════════════════════════════════════
         sec = Sec(p, "KILL FILTERS")
@@ -3958,209 +4162,20 @@ class App(tk.Tk):
         self.v["clutch_enabled"].trace_add("write", _clutch_toggle_state)
         _clutch_toggle_state()
 
-
-        sec = Sec(p, "DEMO SELECTION")
-        sec.pack(fill="x")
-
-        # ── Date range row ────────────────────────────────────────────────────
-        dr1 = tk.Frame(sec, bg=BG2)
-        dr1.pack(fill="x")
-        mlabel(dr1, "From:").pack(side="left")
-        tk.Entry(dr1, textvariable=self.v["date_from"], font=FONT_MONO, bg=BG3, fg=TEXT,
-                 insertbackground=ORANGE, relief="flat", bd=0, highlightthickness=1,
-                 highlightbackground=BORDER, highlightcolor=ORANGE, width=12
-                 ).pack(side="left", padx=(4, 0), ipady=4, ipadx=4)
-        _btn_from = tk.Button(dr1, text="📅", font=FONT_SM, bg=BG3, fg=ORANGE, relief="flat",
-                  bd=0, cursor="hand2", highlightthickness=0,
-                  activebackground=BORDER, activeforeground=ORANGE)
-        _btn_from.configure(command=lambda b=_btn_from: self._open_cal(self.v["date_from"], b))
-        _btn_from.pack(side="left", padx=(2, 0), ipady=4, ipadx=4)
-        mlabel(dr1, "  To:").pack(side="left", padx=(10, 0))
-        tk.Entry(dr1, textvariable=self.v["date_to"], font=FONT_MONO, bg=BG3, fg=TEXT,
-                 insertbackground=ORANGE, relief="flat", bd=0, highlightthickness=1,
-                 highlightbackground=BORDER, highlightcolor=ORANGE, width=12
-                 ).pack(side="left", padx=(4, 0), ipady=4, ipadx=4)
-        _btn_to = tk.Button(dr1, text="📅", font=FONT_SM, bg=BG3, fg=ORANGE, relief="flat",
-                  bd=0, cursor="hand2", highlightthickness=0,
-                  activebackground=BORDER, activeforeground=ORANGE)
-        _btn_to.configure(command=lambda b=_btn_to: self._open_cal(self.v["date_to"], b))
-        _btn_to.pack(side="left", padx=(2, 0), ipady=4, ipadx=4)
-        tk.Button(dr1, text="Today", font=FONT_DESC, bg=BG3, fg=GREEN,
-                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
-                  activebackground=BORDER, activeforeground=GREEN,
-                  command=lambda: self.v["date_to"].set(date.today().strftime("%d-%m-%Y"))
-                  ).pack(side="left", padx=(6, 0), ipady=4, ipadx=5)
-        tk.Button(dr1, text="Clear all", font=FONT_DESC, bg=BG3, fg=MUTED,
-                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
-                  activebackground=BORDER, activeforeground=MUTED,
-                  command=lambda: [self.v["date_from"].set(""), self.v["date_to"].set(""),
-                                   self._demo_picker_clear()]
-                  ).pack(side="left", padx=(4, 0), ipady=4, ipadx=5)
-
-        qr = tk.Frame(sec, bg=BG2)
-        qr.pack(fill="x", pady=(4, 0))
-        tk.Label(qr, text="Shortcuts:", font=FONT_DESC, fg=MUTED, bg=BG2).pack(side="left")
-        for lbl, key in [("Yesterday","yesterday"),("7d",7),("30d",30),
-                         ("This month","month"),("3m",90),("6m",180),("Year","year"),("All",0)]:
-            tk.Button(qr, text=lbl, font=FONT_DESC, bg=BG3, fg=TEXT, relief="flat", bd=0,
-                      cursor="hand2", activebackground=ORANGE, activeforeground="white",
-                      highlightthickness=0,
-                      command=lambda k=key: self._set_date_range(k)).pack(
-                side="left", padx=(4, 0), ipady=2, ipadx=4)
-
-        # ── Demo picker ───────────────────────────────────────────────────────
-        picker_hdr = tk.Frame(sec, bg=BG2)
-        picker_hdr.pack(fill="x", pady=(10, 0))
-        mlabel(picker_hdr, "Demo selection:").pack(side="left")
-        add_tip(picker_hdr.winfo_children()[-1],
-                "After Preview, demos in the date range are shown here.\n"
-                "Uncheck any demo to exclude it from the batch.\n"
-                "Enable 'Manual mode' to see all demos from the DB\n"
-                "and add/remove them individually.")
-        self._picker_manual_var = tk.BooleanVar(value=False)
-        _pm_cb = hchk(picker_hdr, "Manual mode", self._picker_manual_var,
-                      command=self._on_picker_mode_change)
-        _pm_cb.pack(side="left", padx=(12, 0))
-        add_tip(_pm_cb,
-                "Off: shows only demos found by the date range (after Preview).\n"
-                "On: loads all demos from DB so you can pick or exclude individually.")
-        self._picker_count_lbl = tk.Label(picker_hdr, text="", font=FONT_DESC,
-                                          fg=MUTED, bg=BG2)
-        self._picker_count_lbl.pack(side="right")
-
-        # Treeview: columns = checkbox-state (not real col) + date + name
-        tree_frame = tk.Frame(sec, bg=BG2)
-        tree_frame.pack(fill="x", pady=(4, 0))
-        style = ttk.Style()
-        style.configure("DemoPicker.Treeview",
-                        background=BG3, fieldbackground=BG3,
-                        foreground=TEXT, rowheight=18,
-                        font=FONT_SM)
-        style.configure("DemoPicker.Treeview.Heading",
-                        background=BG2, foreground=MUTED,
-                        font=FONT_DESC, relief="flat")
-        style.map("DemoPicker.Treeview",
-                  background=[("selected", BORDER)],
-                  foreground=[("selected", ORANGE)])
-        self._demo_tree = ttk.Treeview(
-            tree_frame, style="DemoPicker.Treeview",
-            columns=("sel", "date", "map", "name"), show="headings", height=7,
-            selectmode="extended")
-        self._demo_tree.heading("sel",  text="✓",      anchor="center")
-        self._demo_tree.heading("date", text="Date",   anchor="w")
-        self._demo_tree.heading("map",  text="Map",    anchor="w")
-        self._demo_tree.heading("name", text="Demo",   anchor="w")
-        self._demo_tree.column("sel",  width=24,  minwidth=24,  stretch=False, anchor="center")
-        self._demo_tree.column("date", width=118, minwidth=90,  stretch=False)
-        self._demo_tree.column("map",  width=80,  minwidth=60,  stretch=False)
-        self._demo_tree.column("name", width=280, minwidth=160, stretch=True)
-        _tree_sb = ttk.Scrollbar(tree_frame, orient="vertical",
-                                 command=self._demo_tree.yview)
-        self._demo_tree.configure(yscrollcommand=_tree_sb.set)
-        self._demo_tree.pack(side="left", fill="x", expand=True)
-        _tree_sb.pack(side="right", fill="y")
-        self._demo_tree.bind("<Button-1>", self._on_demo_tree_click)
-        self._demo_tree.bind("<MouseWheel>",
-                             lambda e: self._demo_tree.yview_scroll(
-                                 -1 * (e.delta // 120), "units"))
-        # Show compat tooltip on hover for warned rows
-        self._tree_tip_win = None
-
-        def _tree_tip_hide():
-            if self._tree_tip_win:
-                try: self._tree_tip_win.destroy()
-                except Exception: pass
-                self._tree_tip_win = None
-
-        def _tree_motion(event):
-            iid = self._demo_tree.identify_row(event.y)
-            if not iid:
-                _tree_tip_hide(); return
-            tags = self._demo_tree.item(iid, "tags")
-            if "warn_compat" not in tags:
-                _tree_tip_hide(); return
-            compat = self._check_demo_compat(iid)
-            tip = compat.get("tip") or ""
-            brk = compat.get("break") or ""
-            if not tip:
-                _tree_tip_hide(); return
-            # Only recreate if not already showing this demo's tip
-            if self._tree_tip_win and getattr(self._tree_tip_win, "_iid", None) == iid:
-                return
-            _tree_tip_hide()
-            tw = tk.Toplevel(self._demo_tree)
-            tw.wm_overrideredirect(True)
-            tw.attributes("-topmost", True)
-            tw.wm_geometry(f"+{event.x_root + 12}+{event.y_root + 12}")
-            tk.Label(tw, text=f"⚠ {brk}\n{tip}",
-                     font=("Consolas", 8), fg=TEXT, bg="#2a2a2a",
-                     relief="flat", bd=0, padx=8, pady=4,
-                     justify="left").pack()
-            tw._iid = iid
-            self._tree_tip_win = tw
-
-        self._demo_tree.bind("<Motion>", _tree_motion)
-        self._demo_tree.bind("<Leave>",  lambda e: _tree_tip_hide())
-
-        # Per-row toggle buttons row
-        pick_btns = tk.Frame(sec, bg=BG2)
-        pick_btns.pack(fill="x", pady=(4, 0))
-        tk.Button(pick_btns, text="✓ Check all", font=FONT_DESC, bg=BG3, fg=GREEN,
-                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
-                  activeforeground=GREEN, activebackground=BG3,
-                  command=lambda: self._demo_picker_set_all(True)
-                  ).pack(side="left", padx=(0, 6))
-        tk.Button(pick_btns, text="✕ Uncheck all", font=FONT_DESC, bg=BG3, fg=RED,
-                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
-                  activeforeground=RED, activebackground=BG3,
-                  command=lambda: self._demo_picker_set_all(False)
-                  ).pack(side="left")
-        tk.Button(pick_btns, text="✓ Check selected", font=FONT_DESC, bg=BG3, fg=GREEN,
-                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
-                  activeforeground=GREEN, activebackground=BG3,
-                  command=lambda: self._demo_picker_set_selected(True)
-                  ).pack(side="left", padx=(6, 0))
-        tk.Button(pick_btns, text="✕ Uncheck selected", font=FONT_DESC, bg=BG3, fg=RED,
-                  relief="flat", bd=0, cursor="hand2", highlightthickness=0,
-                  activeforeground=RED, activebackground=BG3,
-                  command=lambda: self._demo_picker_set_selected(False)
-                  ).pack(side="left", padx=(4, 0))
-
-        # Compatibility legend
-        compat_row = tk.Frame(sec, bg=BG2)
-        compat_row.pack(fill="x", pady=(4, 0))
-        tk.Label(compat_row, text="● ", font=FONT_DESC, fg=YELLOW, bg=BG2).pack(side="left")
-        _compat_tip = (
-            "CS2 had hard breaking updates that made older demos unplayable:\n"
-            "  • Jul 28 2025 — AnimGraph2: ALL demos before this date are broken.\n"
-            "    Requires CS2 ≤ 1.40.8.8 (Steam beta) to replay them.\n"
-            "  • Feb 6 2024 — Major format change: demos before this are also broken\n"
-            "    on current CS2."
-        )
-        _warn_lbl = tk.Label(compat_row,
-                 text="Demo recorded before a CS2 breaking update — likely unplayable.",
-                 font=FONT_DESC, fg=MUTED, bg=BG2, cursor="hand2")
-        _warn_lbl.pack(side="left")
-        add_tip(_warn_lbl, _compat_tip)
-
-        # Internal state: {demo_path: bool} — True = included
-        self._demo_picker_state: dict = {}
-        # Last preview result — used by HTML export
-        self._last_preview_data: dict | None = None
-
-        self._sec_w = Sec(p, "WEAPON FILTER  (empty = all)")
-        self._sec_w.pack(fill="x")
-        self._wg_lbl = tk.Label(self._sec_w, text="Waiting for DB…", font=FONT_DESC, fg=MUTED, bg=BG2)
-        self._wg_lbl.pack(anchor="w")
-        self._wg_frame = None
-        br = tk.Frame(self._sec_w, bg=BG2)
-        br.pack(fill="x", pady=(4, 0))
-        tk.Button(br, text="Select all", font=FONT_DESC, bg=BG3, fg=GREEN, relief="flat",
-                  cursor="hand2", bd=0, highlightthickness=0, activeforeground=GREEN,
-                  command=self._weapons_select_all).pack(side="left", padx=(0, 6))
-        tk.Button(br, text="Deselect all", font=FONT_DESC, bg=BG3, fg=RED, relief="flat",
-                  cursor="hand2", bd=0, highlightthickness=0, activeforeground=RED,
-                  command=self._weapons_deselect_all).pack(side="left")
+        # ══════════════════════════════════════════════════════════════════════
+        # Match type section — always visible; types absent from DB are greyed out
+        self._match_type_sec = Sec(p, "MATCH TYPES")
+        self._match_type_sec.pack(fill="x")
+        desc_label(self._match_type_sec,
+            "Filter demos by CS2 match type.\n"
+            "Greyed-out types are not present in your database.\n"
+            "When the filter toggle is off, all types pass (no SQL overhead)."
+        ).pack(anchor="w", pady=(0, 4))
+        self._match_type_frame = tk.Frame(self._match_type_sec, bg=BG2)
+        self._match_type_frame.pack(fill="x")
+        self._mt_checkboxes: list = []
+        # Populated immediately below with all known types (greyed until DB connects)
+        self._refresh_match_type_ui()
 
         # Auto-tag managed from the Tags tab (active selection)
 
@@ -4471,22 +4486,56 @@ class App(tk.Tk):
     def _tab_video(self, parent):
         p = self._make_tab_scroll(parent)
 
-        sec = Sec(p, "RECORDING SYSTEM")
-        sec.pack(fill="x")
-        rg = tk.Frame(sec, bg=BG2)
-        rg.pack(fill="x")
-        mlabel(rg, "System:").pack(anchor="w")
-        for o in RECSYS_OPTIONS:
-            hradio(rg, o, self.v["recsys"], o).pack(anchor="w")
-        desc_label(rg,
-            "HLAE = injects via HLAE into CS2 (recommended — full options).\n"
-            "CS = native CSDM recording via CS2's startmovie command.\n\n"
-            "⚠ HLAE-exclusive features not available in CS mode:\n"
-            "  custom FOV (mirv_fov), AFX streams, No spectator UI,\n"
-            "  Fix scope FOV, and other mirv_* commands.\n"
-            "ℹ Vanilla CS2 effects (physics, gravity, blood) are injected in both modes:\n"
-            "  HLAE via extraArgs, CS via autoexec + runtime cfg injection."
-        ).pack(anchor="w", pady=(4, 0))
+        sec_asm = Sec(p, "FINAL ASSEMBLY")
+        sec_asm.pack(fill="x")
+
+        _asm_cb1 = _chk_tip(sec_asm, "Assemble all clips at the end", self.v["assemble_after"],
+                            "After batch, concatenate all clips into a single file.\n"
+                            "Video copied without re-encoding (-c:v copy) — fast, lossless.\n"
+                            "Audio re-encoded to AAC to fix drift.\n"
+                            "Requires the same codec and resolution on all clips.",
+                            pady=(4, 2))
+        _asm_cb2 = _chk_tip(sec_asm, "Delete source clips after assembly", self.v["delete_after_assemble"],
+                            "Deletes source files (and their folders) after successful assembly.\n"
+                            "⚠ Incompatible with Concatenate sequences — automatically disables that option.")
+        _asm_cb3 = _chk_tip(sec_asm, "Concatenate sequences", self.v["concatenate_sequences"],
+                            "Merge all sequences from the same demo into a single clip (CSDM side, before FFmpeg).\n"
+                            "⚠ Useless if 'Assemble all clips' is active — final assembly already does this.\n"
+                            "⛔ Automatically disabled if 'Delete source clips' is checked.")
+
+        def _sync_concat_state(*_):
+            del_active = self.v["delete_after_assemble"].get()
+            if del_active:
+                self.v["concatenate_sequences"].set(False)
+                _asm_cb3.config(state="disabled")
+            else:
+                _asm_cb3.config(state="normal")
+        self.v["delete_after_assemble"].trace_add("write", _sync_concat_state)
+        _sync_concat_state()
+
+        asm_row = tk.Frame(sec_asm, bg=BG2)
+        asm_row.pack(fill="x", pady=(8, 0))
+        mlabel(asm_row, "Output filename:").pack(side="left")
+        asm_entry = sentry(asm_row, self.v["assemble_output"])
+        asm_entry.pack(side="left", fill="x", expand=True, padx=(6, 0), ipady=4)
+        desc_label(asm_row, "  (extension .mp4/.mkv… auto-added if missing)").pack(
+            side="left", padx=(6, 0))
+
+        saved_names_frame = tk.Frame(sec_asm, bg=BG2)
+        saved_names_frame.pack(fill="x", pady=(10, 0))
+
+        names_hdr = tk.Frame(saved_names_frame, bg=BG2)
+        names_hdr.pack(fill="x")
+        mlabel(names_hdr, "Saved names:").pack(side="left")
+        tk.Button(names_hdr, text="+ Save current name", font=FONT_DESC,
+                  bg=BG3, fg=GREEN, relief="flat", bd=0, cursor="hand2",
+                  activeforeground=GREEN, activebackground=BG3,
+                  command=self._asm_save_current_name).pack(side="left", padx=(10, 0))
+
+        self._asm_names_frame = tk.Frame(saved_names_frame, bg=BG2)
+        self._asm_names_frame.pack(fill="x", pady=(6, 0))
+        self._asm_names = load_asm_names()
+        self._refresh_asm_names()
 
         sec = Sec(p, "RESOLUTION, FRAMERATE & WINDOW")
         sec.pack(fill="x")
@@ -4573,7 +4622,7 @@ class App(tk.Tk):
                 "the Z-order so your desktop stays on top.\n"
                 "Requires pywin32 (pip install pywin32). Silently ignored otherwise.")
 
-        sec = Sec(p, "VIDEO CODEC")
+        sec = Sec(p, "ENCODING")
         sec.pack(fill="x")
         vc = tk.Frame(sec, bg=BG2)
         vc.pack(fill="x", pady=(4, 0))
@@ -4603,8 +4652,8 @@ class App(tk.Tk):
         mlabel(ct, "Container:").pack(side="left")
         scombo(ct, self.v["video_container"], VIDEO_CONTAINERS, 8).pack(side="left", padx=(6, 0))
 
-        sec = Sec(p, "AUDIO CODEC")
-        sec.pack(fill="x")
+        _sep(sec)
+        slabel(sec, "Audio").pack(anchor="w", pady=(0, 4))
         ac = tk.Frame(sec, bg=BG2)
         ac.pack(fill="x")
         mlabel(ac, "Codec:").pack(side="left")
@@ -4618,8 +4667,8 @@ class App(tk.Tk):
         self._acodec_desc.pack(fill="x", pady=(4, 0))
         self._on_acodec()
 
-        sec = Sec(p, "ADVANCED FFMPEG PARAMS")
-        sec.pack(fill="x")
+        _sep(sec)
+        slabel(sec, "Advanced FFmpeg").pack(anchor="w", pady=(0, 4))
         for lbl, key in [("Input :", "ffmpeg_input_params"), ("Output :", "ffmpeg_output_params")]:
             row = tk.Frame(sec, bg=BG2)
             row.pack(fill="x", pady=(4, 0))
@@ -4646,56 +4695,22 @@ class App(tk.Tk):
                  "Recommended: ON. Leaving CS2 open between demos can cause\n"
                  "instability on long batches.")
 
-        sec_asm = Sec(p, "FINAL ASSEMBLY")
-        sec_asm.pack(fill="x")
-
-        _asm_cb1 = _chk_tip(sec_asm, "Assemble all clips at the end", self.v["assemble_after"],
-                            "After batch, concatenate all clips into a single file.\n"
-                            "Video copied without re-encoding (-c:v copy) — fast, lossless.\n"
-                            "Audio re-encoded to AAC to fix drift.\n"
-                            "Requires the same codec and resolution on all clips.",
-                            pady=(4, 2))
-        _asm_cb2 = _chk_tip(sec_asm, "Delete source clips after assembly", self.v["delete_after_assemble"],
-                            "Deletes source files (and their folders) after successful assembly.\n"
-                            "⚠ Incompatible with Concatenate sequences — automatically disables that option.")
-        _asm_cb3 = _chk_tip(sec_asm, "Concatenate sequences", self.v["concatenate_sequences"],
-                            "Merge all sequences from the same demo into a single clip (CSDM side, before FFmpeg).\n"
-                            "⚠ Useless if 'Assemble all clips' is active — final assembly already does this.\n"
-                            "⛔ Automatically disabled if 'Delete source clips' is checked.")
-
-        def _sync_concat_state(*_):
-            del_active = self.v["delete_after_assemble"].get()
-            if del_active:
-                self.v["concatenate_sequences"].set(False)
-                _asm_cb3.config(state="disabled")
-            else:
-                _asm_cb3.config(state="normal")
-        self.v["delete_after_assemble"].trace_add("write", _sync_concat_state)
-        _sync_concat_state()
-
-        asm_row = tk.Frame(sec_asm, bg=BG2)
-        asm_row.pack(fill="x", pady=(8, 0))
-        mlabel(asm_row, "Output filename:").pack(side="left")
-        asm_entry = sentry(asm_row, self.v["assemble_output"])
-        asm_entry.pack(side="left", fill="x", expand=True, padx=(6, 0), ipady=4)
-        desc_label(asm_row, "  (extension .mp4/.mkv… auto-added if missing)").pack(
-            side="left", padx=(6, 0))
-
-        saved_names_frame = tk.Frame(sec_asm, bg=BG2)
-        saved_names_frame.pack(fill="x", pady=(10, 0))
-
-        names_hdr = tk.Frame(saved_names_frame, bg=BG2)
-        names_hdr.pack(fill="x")
-        mlabel(names_hdr, "Saved names:").pack(side="left")
-        tk.Button(names_hdr, text="+ Save current name", font=FONT_DESC,
-                  bg=BG3, fg=GREEN, relief="flat", bd=0, cursor="hand2",
-                  activeforeground=GREEN, activebackground=BG3,
-                  command=self._asm_save_current_name).pack(side="left", padx=(10, 0))
-
-        self._asm_names_frame = tk.Frame(saved_names_frame, bg=BG2)
-        self._asm_names_frame.pack(fill="x", pady=(6, 0))
-        self._asm_names = load_asm_names()
-        self._refresh_asm_names()
+        sec = Sec(p, "RECORDING SYSTEM")
+        sec.pack(fill="x")
+        rg = tk.Frame(sec, bg=BG2)
+        rg.pack(fill="x")
+        mlabel(rg, "System:").pack(anchor="w")
+        for o in RECSYS_OPTIONS:
+            hradio(rg, o, self.v["recsys"], o).pack(anchor="w")
+        desc_label(rg,
+            "HLAE = injects via HLAE into CS2 (recommended — full options).\n"
+            "CS = native CSDM recording via CS2's startmovie command.\n\n"
+            "⚠ HLAE-exclusive features not available in CS mode:\n"
+            "  custom FOV (mirv_fov), AFX streams, No spectator UI,\n"
+            "  Fix scope FOV, and other mirv_* commands.\n"
+            "ℹ Vanilla CS2 effects (physics, gravity, blood) are injected in both modes:\n"
+            "  HLAE via extraArgs, CS via autoexec + runtime cfg injection."
+        ).pack(anchor="w", pady=(4, 0))
 
         self._hlae_sec = Sec(p, "⚡ HLAE OPTIONS  —  HLAE mode only")
         self._hlae_sec.pack(fill="x")
@@ -6335,8 +6350,6 @@ class App(tk.Tk):
             else:
                 result.append(evt)   # keep kill, camera falls back normally
 
-        n_kills = len(kill_ticks)
-        self._alog(f"  👥 Mate POV: {found}/{n_kills} kill(s) have a qualifying teammate", "info")
         return result
 
     def _mate_pov_camera_sid(self, demo_path, event, cfg):
@@ -6557,11 +6570,19 @@ class App(tk.Tk):
         for dp, events in evts.items():
             n_before = _count_kills(events)
             filtered = filter_fn(dp, events, cfg)
-            n_after  = _count_kills(filtered)
-            self._alog(
-                f"  {label} [{Path(dp).name}] : {n_before} kills → {n_after}",
-                "info" if n_after else "dim")
             combined = filtered or []
+            n_after  = _count_kills(combined)
+            # Mate POV is a camera modifier: kills aren't removed in optional mode,
+            # so n_before == n_after gives no useful info.  Show stamped/total instead.
+            if cfg_key == "kill_mod_mate_pov":
+                n_with_mate = sum(1 for e in combined if e.get("_mate_pov_sid"))
+                self._alog(
+                    f"  {label} [{Path(dp).name}] : {n_with_mate}/{n_before} with qualifying mate",
+                    "info" if n_with_mate else "dim")
+            else:
+                self._alog(
+                    f"  {label} [{Path(dp).name}] : {n_before} kills → {n_after}",
+                    "info" if n_after else "dim")
             if combined:
                 self._stamp_mf(combined, cfg_key)
                 result[dp] = combined
@@ -7792,6 +7813,25 @@ class App(tk.Tk):
             save_presets(self.presets)
             self._refresh_preset_list()
 
+    def _quick_preset_load(self):
+        name = self._quick_preset_var.get()
+        if name:
+            self._load_preset(name)
+
+    def _quick_preset_save(self):
+        name = self._quick_preset_var.get().strip()
+        if not name:
+            name = simpledialog.askstring("Quick Save", "Preset name:", parent=self)
+            if not name:
+                return
+            name = name.strip()
+        cfg = self._collect_config()
+        self.presets[name] = {"cats": ["full"], "data": dict(cfg)}
+        save_presets(self.presets)
+        self._refresh_preset_list()
+        self._quick_preset_var.set(name)
+        self._log(f"Preset '{name}' quick-saved.", "ok")
+
     @staticmethod
     def _preset_tooltip(p):
         """Build a human-readable tooltip showing what categories a preset covers."""
@@ -7807,6 +7847,13 @@ class App(tk.Tk):
         return "\n".join(lines)
 
     def _refresh_preset_list(self):
+        # Sync top-bar quick preset combo
+        if hasattr(self, "_quick_preset_combo"):
+            names = list(self.presets.keys())
+            self._quick_preset_combo["values"] = names
+            if self._quick_preset_var.get() not in names:
+                self._quick_preset_var.set(names[0] if names else "")
+
         for w in self._preset_list_frame.winfo_children():
             w.destroy()
         if not self.presets:
@@ -10507,11 +10554,14 @@ class App(tk.Tk):
             "kill_mod_collateral",  # penetrated + shot grouping — requires dp2
             "kill_mod_flick",
         }
-        if any(cfg.get(k) for k in fire_keys):
+        # Also pre-parse when only the exclusion flag is active (no positive filter).
+        # Without this, exclusion-only scenarios skip the pre-parse and each demo
+        # gets parsed on-demand inside the exclusion loop — very slow.
+        if any(cfg.get(k) or cfg.get(f"{k}_exclude") for k in fire_keys):
             sections.add("fire")
-        if any(cfg.get(k) for k in death_keys):
+        if any(cfg.get(k) or cfg.get(f"{k}_exclude") for k in death_keys):
             sections.add("death")
-        if cfg.get("kill_mod_sauveur"):
+        if cfg.get("kill_mod_sauveur") or cfg.get("kill_mod_sauveur_exclude"):
             sections.add("hurt")
         # Collect in-demo player names only when dp2 is already running for something else.
         # When no filter needs dp2, DB names serve as fallback — no extra parse triggered.
