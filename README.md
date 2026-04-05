@@ -273,8 +273,9 @@ A **UI THEME** section in the Tools tab lets you change the entire interface col
 
 <div align="center">
 
-**Built with [Claude Code](https://claude.com/claude-code)**
+*Built with Claude. My code knowledge is equal to the void space separating our planet from the sun.*
+*Do as you wish with it.*
 
-*Open source. Do as you wish with it.*
+*Assisted by GPT-5.3 Codex alongside Claude.*
 
 </div>
