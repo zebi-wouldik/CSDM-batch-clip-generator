@@ -9,6 +9,21 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v188]
+
+### Fixed: Tag range calculation after DB migration
+
+**`_tag_calc_range` date detection bug:**
+When calculating the date range of demos with selected tags (after DB migration), the query was only fetching `demo_path` and `checksum` columns — the date column was omitted. If demo files were moved or removed from disk, `_get_demo_ts()` would return `None` (can't read `.dem` file mtime), and since `_demo_dates` was never populated, dates came back unavailable, resulting in "[TAGS/range] X demo(s) — dates undetermined."
+
+**Fix:**
+- Also `SELECT` the date column in the same query
+- Populate `self._demo_dates` with DB dates for those demos
+- When `_get_demo_ts()` returns `None`, `_demo_sort_key()` falls back to `_demo_dates` and produces correct date strings
+- Safe via `setdefault` — any previously-cached date from earlier in the session is preserved
+
+---
+
 ## [v187]
 
 ### Added: Tag import / export

@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v187"
+APP_VERSION = "v188"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -7076,6 +7076,7 @@ class App(tk.Tk):
         mkm     = self._find_col("matches", ["checksum", "id", "match_id"])
         dc      = self._find_col("matches", ["demo_path", "demo_file_path", "demo_filepath",
                                               "share_code", "file_path", "path"])
+        date_col = self._date_col
         if not jt or not jt_tag or not jt_match or not mkm or not dc:
             self._alog("[TAGS/range] Insufficient DB schema.", "err")
             return
@@ -7090,8 +7091,9 @@ class App(tk.Tk):
                 conn = self._pg_fresh()
                 with conn.cursor() as cur:
                     ph = ",".join(["%s"] * len(active_ids))
+                    date_sel = f', m."{date_col}"' if date_col else ""
                     cur.execute(
-                        f'SELECT DISTINCT m."{dc}", m."{mkm}" '
+                        f'SELECT DISTINCT m."{dc}", m."{mkm}"{date_sel} '
                         f'FROM "{jt}" ct JOIN matches m ON m."{mkm}"=ct."{jt_match}" '
                         f'WHERE ct."{jt_tag}" IN ({ph})',
                         active_ids)
@@ -7108,6 +7110,9 @@ class App(tk.Tk):
                 dp_r, chk = str(r[0]), r[1]
                 if chk and dp_r not in self._demo_checksums:
                     self._demo_checksums[dp_r] = chk
+                # Populate _demo_dates so _demo_sort_key works when files are off-disk
+                if date_col and len(r) > 2 and r[2] is not None:
+                    self._demo_dates.setdefault(dp_r, r[2])
 
             if not demos:
                 self.after(0, lambda: (
