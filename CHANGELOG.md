@@ -107,29 +107,28 @@ The old code sent CS2 to back once, then stopped. CS2 immediately regained focus
 
 ## [v182]
 
-### Fixed: Mate POV log output contradiction
+### Fixed and improved: Preset UI, logging clarity, and tab organization
 
-`_mate_pov_filter` was emitting its own per-demo log ("0/2 qualifying") while `_apply_filter_to_events` also logged `n_before → n_after` (always equal in optional mode, e.g. "2 → 2"). The two lines together were contradictory and confusing.
+**What changed:**
+- Quick preset selector added to the top bar with save button
+- Duplicate log messages for Mate POV filter removed
+- UI tab sections reorganized for better workflow
+- Video codec/audio codec controls consolidated into one section
+- Fixed exclusion filters being ignored when only `-exclude` was set
 
-Fix: removed the internal `_alog` call from `_mate_pov_filter`. `_apply_filter_to_events` now has a `cfg_key == "kill_mod_mate_pov"` branch that logs `X/N with qualifying mate` instead of the generic `N → N` line.
+**Preset bar:** New dropdown (combobox) + 💾 button in the top header bar — select a preset instantly, save current config to selected name or new preset. `_refresh_preset_list` keeps sidebar and header in sync.
 
-### Added: Quick preset dropdown + save button in top bar
+**Logging:** Removed confusing duplicate logs. Mate POV now shows clean `X/N with qualifying mate` message instead of contradictory "0/2 qualifying" + "2 → 2" pair.
 
-A combobox (18-char wide) and a 💾 save button are now embedded in the top header bar, left of the DB status area. Selecting a name immediately loads that preset. The 💾 button saves the current config to the selected preset name (or prompts for a new name if none is selected). `_refresh_preset_list` syncs both the sidebar list and the header combobox.
+**Tab reorganization:**
+- Capture tab: Players → Demo Selection → Weapon Filter → Capture & Timing → Kill Filters → Match Types
+- Video tab: FINAL ASSEMBLY moved to top, RECORDING SYSTEM to bottom
+- **ENCODING section** now consolidates VIDEO CODEC, AUDIO CODEC, and ADVANCED FFMPEG PARAMS
 
-### Fixed: Non-demoparser mod exclusion triggered unnecessary on-demand parsing
-
-`_dp2_required_sections` only checked if a filter was enabled (`cfg.get(k)`), not if its exclusion flag was set. Scenarios where only `<key>_exclude` was active skipped pre-parsing and fell through to slow on-demand parsing. Fix: each check now also tests `cfg.get(f"{k}_exclude")` alongside the primary flag.
-
-### Changed: Capture tab section order
-
-Sections reordered to: Players → Demo Selection → Weapon Filter → Capture & Timing → Kill Filters → Match Types.
-
-### Changed: Video tab section order + encoding merge
-
-- **FINAL ASSEMBLY** moved to top of the Video tab (first section, immediately visible on open).
-- **RECORDING SYSTEM** moved to bottom, just before ⚡ HLAE OPTIONS (logically adjacent to the sections it controls).
-- **VIDEO CODEC**, **AUDIO CODEC**, and **ADVANCED FFMPEG PARAMS** merged into a single **ENCODING** section with Audio and Advanced FFmpeg as sub-headings, reducing visual noise.
+**Technical details:**
+- `_dp2_required_sections` now checks both `cfg.get(k)` and `cfg.get(f"{k}_exclude")` so exclusion-only filters don't skip pre-parsing
+- `_apply_filter_to_events` has dedicated Mate POV log branch instead of generic log
+- ENCODING section structure reduces visual noise by grouping related codec settings
 
 ---
 
@@ -159,17 +158,17 @@ Sections reordered to: Players → Demo Selection → Weapon Filter → Capture 
 
 ## [v180]
 
-### Changed: Sequence merge gap — close kills now join into one clip
+### Improved: Clip merging and weapon filter visibility
 
-`_build_sequences` previously only merged two adjacent clip windows when they **overlapped**. Now it also merges them when the **gap** between them is ≤ `before_ticks` (the configured Before duration in ticks).
+**What changed:**
+- Adjacent kills that are close together now automatically merge into one clip
+- Weapon selector now shows how many weapons are currently selected
 
-This matches native CSDM behaviour: a second qualifying kill that happens just a few seconds after the first clip ends extends that clip instead of generating a separate one. No new setting needed — the Before duration is the natural gap tolerance.
+**Sequence merge gap:** `_build_sequences` now merges two adjacent clip windows not just when they overlap, but also when the gap between them is ≤ your configured Before duration. This matches native CSDM: a kill happening just a few seconds after the first clip ends extends that clip instead of creating a separate one. No new settings — Before duration is the natural tolerance.
 
-**Example**: Before = 5s @ 64 ticks/s → two kills up to 5 s apart (after the first clip's `after` padding) get merged into a single sequence.
+**Example:** Before = 5s @ 64 ticks/s → two kills up to 5 seconds apart (after the first clip's after padding) merge into one.
 
-### Changed: Weapon selector shows active filter count
-
-The weapon section label now reads `weapons (X / Y selected)` in **orange** whenever a partial filter is active, making it immediately visible when unexpected weapons are still checked. Shows `weapons (all / Y)` in muted text when no filter is applied.
+**Weapon filter indicator:** The weapon label now shows `weapons (X / Y selected)` in **orange** whenever a partial filter is active, making it obvious when unexpected weapons are still checked. Shows `weapons (all / Y)` muted when no filter is applied.
 
 ---
 
@@ -209,32 +208,21 @@ The new UI allows fine-grained control over which settings are saved in each pre
 
 ## [v177]
 
-### Changed: One Tap filter now enforces headshots at SQL level
+### Improved: Preset system and One Tap filter, UX refinements
 
-`kill_mod_one_tap` now adds `AND is_headshot = TRUE` to the SQL query when the headshot column exists, ensuring the DB returns only HS kills before dp2 shot-isolation is applied. Previously, shot count was checked but not headshot. If `headshots_mode = exclude`, the HS clause is skipped (user intent respected). Warns in log if headshot column is missing.
+**What changed:**
+- Preset saving now uses checkboxes instead of single radio button
+- Preset tooltips show all settings at a glance
+- One Tap filter now properly enforces headshots via SQL
+- "Clear all" in demo picker shows clear feedback
 
-### Fixed: Demo picker "Clear all" UX
+**Preset UI:** Replaced single "Type" radio with four independent checkboxes — **Player + events + filters**, **Video / encoding**, **Timing + robustness**, **All settings** (exclusive). Now you can combine multiple categories in one preset (e.g. Player + Timing). Format changed from `{"type": "..."}` to `{"cats": [...]}` with backward-compat for old presets.
 
-When dates are cleared via "Clear all", the demo picker now shows `— all demos (run Preview to filter)` instead of a blank label, making it clear that an empty picker means no filter (all demos included).
+**Preset tooltips:** Hover over any saved preset to see categories saved, key count, and notable settings (player name, perspective, dates, resolution, FPS, encoder, before/after).
 
-### Changed: Preset saving UI — checkboxes instead of radio buttons
+**One Tap + headshots:** `kill_mod_one_tap` now adds `AND is_headshot = TRUE` to the SQL query (when headshot column exists), ensuring DB returns only HS kills before dp2 shot-isolation. If `headshots_mode = exclude`, the HS clause is skipped. Warns in log if headshot column is missing.
 
-Replaced the single "Type" radio selector with four independent checkboxes:
-- **Player + events + weapons + filters**
-- **Video / encoding settings**
-- **Timing + robustness**
-- **All settings (full config)** — exclusive; checking it deselects others
-
-Multiple categories can now be combined in one preset (e.g. Player + Timing).
-Saved format changed from `{"type": "..."}` to `{"cats": [...]}` — old presets with `"type"` load correctly via backward-compat path.
-
-### Added: Preset hover tooltip
-
-Each saved preset in the list now shows a tooltip on hover with: categories saved, key count, and notable settings (player name, perspective, dates, resolution, FPS, encoder, before/after).
-
-### Confirmed: Filter pipeline order already correct
-
-SQL (weapons → DB mods) → Python date filter → dp2 pre-parse → dp2 filters. No change needed.
+**Demo picker UX:** When dates are cleared via "Clear all", now shows `— all demos (run Preview to filter)` instead of blank, making it clear an empty picker means no filter (all demos included).
 
 ---
 
@@ -242,135 +230,126 @@ SQL (weapons → DB mods) → Python date filter → dp2 pre-parse → dp2 filte
 
 ### Added: Victim's Mate POV feature
 
-Record kills from the perspective of the victim's teammate who has the best angular line-of-sight to the kill, instead of following the victim directly.
+**What changed:** Record kills from the perspective of the victim's teammate with the best view of the action, instead of just following the victim.
 
 **How it works:**
-
-- At each kill tick, player positions and view angles are fetched via `demoparser2` (`parse_ticks`).
-- Three body points per potential teammate are checked (head / chest / legs at heights 64, 40, 10 units above feet).
-- A teammate qualifies when ≥ 2 of 3 body points fall within the ±45° horizontal FOV of their look direction — equivalent to "at least 50% of the body visible".
-- Among all qualifying teammates, the one with the smallest absolute angle to the kill point is chosen ("best angle").
-- Active players (the clip subject) are excluded from the mate pool.
-- LOS is angle-based only — no BSP ray-cast is available via `demoparser2`.
+- At each kill tick, teammate positions and view angles are checked (`demoparser2` parse_ticks)
+- Teammate qualifies if ≥2 of 3 body points (head/chest/legs) fall within ±45° of their look direction (≈50% body visible)
+- Best teammate = smallest angle to kill point; active players excluded from consideration
+- LOS is angle-based only (no BSP ray-cast available)
 
 **Two modes:**
+- **Optional** (default): Falls back to normal victim/both perspective if no qualifying teammate found
+- **★ Must**: Drops clips with no qualifying teammate entirely
 
-- **Optional** (default): if no qualifying teammate is found, the camera falls back to the normal victim/both perspective for that clip — nothing is skipped.
-- **★ Must**: clips with no qualifying teammate are dropped entirely.
-
-**UI:** A new "Mate POV" row with **Enable** and **★ Must** checkboxes appears in the **Capture & Timing** section, below the Switch delay slider. The row is only visible when **POV Victim** or **Both** perspective is selected (Killer mode has no victim phase to override).
+**UI:** New "Mate POV" row (Enable + ★ Must checkboxes) in **Capture & Timing** section, below Switch delay slider. Only visible when POV is Victim or Both (Killer mode has no victim phase).
 
 **Camera wiring:**
-
-- *Victim mode*: the single camera target is replaced by the mate SID when available.
-- *Both mode*: the victim-phase switch (victim_pre_ticks before kill) points to the mate SID when available; killer phase is unaffected.
+- Victim mode: single camera target replaced by mate SID when available
+- Both mode: victim-phase switch points to mate SID; killer phase unaffected
 
 ---
 
 ## [v175]
 
-### Fixed: CZ75-Auto (and other weapons) still appearing in "Other" category
+### Fixed: Weapons misclassified into "Other" category
 
-Three-layer fix so any DB storage variant resolves correctly:
+**What changed:** CZ75-Auto and other weapons now appear in correct categories instead of getting lumped into "Other".
 
-1. **`weapon_` prefix indexed** — `_WEAPON_LOOKUP` now also stores every key with the `weapon_` prefix (`weapon_cz75a`, `weapon_ak47`, etc.) so internal game names resolve without extra processing.
-2. **`_weapon_category` strips prefix** — before the exact lookup, strips a leading `weapon_` from the key so `weapon_cz75a` → lookup `cz75a` → Pistols.
-3. **Substring fallback** — `_WEAPON_SUBSTR_FALLBACK` maps substrings to categories for variant spellings that slip past the exact lookup (e.g. `"cz75 auto"`, `"cz75_auto"`, any `"cz75…"` form → Pistols). Covers other common weapons too (deagle, glock, usp, awp, etc.).
-4. **"Other" category hidden in UI** — unknown weapons are silently skipped during weapon-filter render rather than grouped under a confusing "Other" header.
+**Three-layer fix:**
+1. **Prefix indexing** — `_WEAPON_LOOKUP` now stores keys with `weapon_` prefix (`weapon_cz75a`, etc.) so internal game names resolve directly
+2. **Prefix stripping** — `_weapon_category` strips leading `weapon_` before lookup (e.g. `weapon_cz75a` → lookup `cz75a` → Pistols)
+3. **Substring fallback** — `_WEAPON_SUBSTR_FALLBACK` maps substring variants to categories (`"cz75 auto"`, `"cz75_auto"`, etc. all → Pistols). Covers deagle, glock, usp, awp, etc.
+4. **UI cleanup** — Unknown weapons silently skipped from render instead of grouped under confusing "Other" header
 
 ---
 
 ## [v174]
 
-### Fixed: Tab switching lag and window-drag "momentum"
+### Fixed and improved: UI responsiveness, filter reorganization, Both mode
 
-Two separate root causes:
+**What changed:**
+- Tab switching and window dragging no longer stutter
+- WALLBANG and BLIND FIRE filters now run from database (faster)
+- Both mode now shows correct POV at clip start
+- Switch delay slider shows total clip duration
 
-- **Window drag momentum**: `_remember_layout_state` (debounced 250 ms after every window move) was calling `_on_splitter_release()`, which calls `sashpos(0, x)`. Setting the sash position programmatically fires `<Configure>` on both panes → all `ScrollableFrame`s schedule a 400 ms `_apply_width` reflow → widgets relayout long after the window has stopped moving. Removed the `_on_splitter_release()` call from `_remember_layout_state`; sash snapping now only happens on actual sash-drag.
+**UI responsiveness:** Two separate lag fixes:
+- **Window drag momentum:** Removed `_on_splitter_release()` call from layout state save — sash snapping now only on actual drag (not after window moves)
+- **Tab switching:** Added `<<NotebookTabChanged>>` binding to immediately flush scroll-frame widths when tab becomes visible (instead of 400ms delay)
 
-- **Tab switching lag**: `ScrollableFrame` canvases inside a newly visible tab received `<Configure>` and scheduled `_apply_width` in 400 ms — content reflowed correctly, but 400 ms late. Added `<<NotebookTabChanged>>` binding that immediately flushes all pending scroll-frame widths and wrap-label sizes.
+**Filter reorganization:** WALLBANG and BLIND FIRE now run at database level (no demo parsing needed):
+- **🧱 WALLBANG** → `kills.penetrated_objects > 0` (category: dp2 → mods)
+- **😵 BLIND FIRE** → `kills.attacker_blinded` (category: dp2 → mods)
+- **🪂 AIRBORNE** has no DB equivalent, stays in dp2
+- Cleaner `_mod_sql_expr()` helper replaces dead special-case logic
 
-### Fixed: CZ75-Auto shown in "Other" weapon category
+**Both mode fixes:**
+- **Wrong POV bug:** `_build_cams_both` was using last-processed kill's killer at start instead of first active player. Now `initial_sid` from `_seq_anchor_sid` is the true starting camera, never placed in timeline. Only switch events go in timeline (victim switches + killer returns)
+- **Duration hint:** Added live **"total before: Xs"** label next to Switch delay slider showing sum of BEFORE + Switch delay
 
-Added `"cz75_auto"` (underscore variant) to `WEAPON_CATEGORIES["Pistols"]`. CSDM DB sometimes stores this weapon with an underscore instead of a dash.
-
-### Changed: WALLBANG and BLIND FIRE moved from dp2 to Mods (DB-backed)
-
-CSDM stores penetration and attacker-blind data in the kills table. These two filters can now run directly from the DB without parsing the demo file, matching how Smoke / No-scope / Victim Flashed already work.
-
-- **🧱 WALLBANG** → `kills.penetrated_objects > 0`  or  `kills.has_penetrated / kills.penetrated = TRUE`. Category changed from `dp2` → `mods`.
-- **😵 BLIND FIRE** → `kills.attacker_blinded / kills.is_attacker_blinded`. Category changed from `dp2` → `mods`.
-- **🪂 AIRBORNE** → no DB equivalent (`attackerinair` is not stored by CSDM). Stays in `dp2`.
-- `_dp2_required_sections` no longer adds the `"death"` section for wall_bang and blind_fire.
-- The SQL builder's dead `kill_mod_wall_bang` special-case (`if pen_col and not col`) has been removed and replaced with a clean `_mod_sql_expr()` helper that handles int vs bool columns correctly for both inclusion and exclusion clauses.
-
-### Fixed: Both mode — wrong player POV before victim switch
-
-Root cause: `_build_cams_both` appended `(seq["start_tick"], killer_sid)` to the timeline for every kill event in the sequence. Since the timeline was deduplicated by keeping the **last** entry per tick, the camera at `start_tick` ended up on the last-processed kill's killer, not the first active player — visible as a brief flash of a random player's POV at the start of multi-kill clips.
-
-Fix: `initial_sid` from `_seq_anchor_sid` is now the true starting camera and is never placed into the timeline. Only **switch events** go in the timeline: victim switches (`switch_tick → vsid`) and killer-return events (`prev_kill_tick + 1 → next_killer_sid`). First-write-wins per tick (dict, no overwrite).
-
-### Improved: Both mode — switch delay slider shows total clip duration
-
-Added a live **"total before: Xs"** hint label next to the Switch delay slider that updates whenever either the BEFORE or the Switch delay slider changes. Updated tooltip to clarify the three phases: killer phase = BEFORE, victim phase = Switch delay, total before kill = their sum.
+**Technical details:**
+Window drag momentum was caused by `_remember_layout_state` debounce triggering reflow; now only happens on actual sash-drag. Both mode timeline deduplication fixed by first-write-wins dict (no overwrite).
 
 ---
 
 ## [v173]
 
-### Fixed: Deathnotice player names now sourced from the demo file
+### Fixed: Deathnotice player names show correct names from demo time, not current DB
 
-Player names shown in CSDM deathnotices were previously looked up from the database (`players` table), which reflects the current/latest known name — not the name the player had at the time the demo was recorded.
+**What changed:** Player names in CSDM deathnotices now show the names they had when the demo was recorded, not their current/latest name from the database.
 
-- `_dp2_parse_demo` now calls `parser.parse_player_info()` as a new `"names"` cache section.
-- The resulting `{steamid: name}` map is stored as `demo_names` in the dp2 cache, keyed per demo.
-- `_dp2_required_sections` always includes `"names"` so every demo gets at least this minimal parse, even when no dp2 kill modifiers are active.
-- `_build_json` resolves player names via a `_name(psid)` helper: **demo cache first, DB fallback**. All `playerName` fields in `playerCameras` and `playersOptions` use this helper.
+**Technical details:**
+- `_dp2_parse_demo` now parses player info as `"names"` cache section
+- Names stored as `{steamid: name}` map (`demo_names`) in dp2 cache, per-demo
+- `_dp2_required_sections` includes "names" so every demo gets minimal parse
+- `_build_json` resolves names via `_name(psid)` helper: demo cache first, DB fallback. All `playerName` fields use this helper
 
 ---
 
 ## [v172]
 
-### Fixed: Ferrari Peek dp2_badge placement
+### Fixed and improved: Theme system, console logging, preview export, resource management
 
-`dp2_badge` was packed inside the expandable `_hv_inner` frame (visible only when "Enable" is checked). Moved to the main `_hv_row` frame so it appears inline with the label and checkboxes — consistent with every other dp2-category filter row.
+**What changed:**
+- Light mode (white theme) now has proper contrast and colors
+- Console timestamps stamp each line correctly
+- Preview results can be exported as HTML/TXT/JSON
+- dp2_threads setting now actually controls core usage
+- Ferrari Peek badge displays in correct position
+- Injection preview tool shows exactly what gets injected
 
-### Improved: Light mode (white theme)
+**Light mode overhaul:**
+- White preset softened (`#f8f8f8`, `#e4e4e4`) to reduce harsh contrast
+- New `_STATUS_COLOURS_LIGHT` dark-saturated palette for light backgrounds
+- `_build_theme` auto-selects light colors when bg preset has `_is_light: True`
+- Log tags reapply on theme change so dark↔white switching works correctly
 
-- **White preset softened**: `BG2` changed from `#ffffff` to `#f8f8f8`, `BG3` to `#e4e4e4` — reduces harsh pure-white contrast zones.
-- **Light-mode status colours**: Added `_STATUS_COLOURS_LIGHT` with dark-saturated variants (`GREEN #15803d`, `RED #b91c1c`, `YELLOW #b45309`, `BLUE #1d4ed8`) that provide adequate contrast on light backgrounds. `_build_theme` selects the light set when the bg preset has `_is_light: True`; existing dark-mode pastel colours are unchanged.
-- Log tags (`ok`, `err`, `warn`, `blue`, badges) reapply via `_reapply_ttk_styles` on theme change, so switching dark → white correctly updates all coloured text in the console.
+**Console improvements:**
+- Timestamps now per-line at write time (`[HH:MM:SS]` prefix in `_log`)
+- Removed erroneous live ticking clock from header
+- Toggle via **TS** button in log toolbar
 
-### Fixed: Console timestamps are per-line, not a live clock
+**Preview export (📤 Export ▾):**
+- **HTML** — standalone dark-themed file with per-clip table (date, demo, filters, tick, playdemo command)
+- **TXT** — columnar table + `cmd:` line per clip
+- **JSON** — structured array for scripting
+- **Filters column** shows actual matched filters per clip (not just active config)
 
-Timestamps now stamp each line at write time (`[HH:MM:SS]` prefix injected in `_log` / `_log_parts`). The live ticking clock that was erroneously added to the header has been removed. Toggle via the **TS** button in the log toolbar.
+**Resource management:**
+- Fixed dp2_threads not being respected — Rayon pool was using all cores regardless
+- Set `RAYON_NUM_THREADS`, `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS` to "1" at import time
+- Result: `dp2_threads = N` now means exactly N cores used
 
-### Added: INJECTION PREVIEW section (Tools tab)
+**Added: INJECTION PREVIEW (Tools tab)**
+- Collapsible section below PERFORMANCE
+- Shows exact args injected into CS2 for current config
+- HLAE mode: full `extraArgs` token broken one-per-line
+- CS mode: `launch_args` + each `console_cmds` entry
+- **⟳ Refresh** button for manual update; auto-sizes (4–12 lines)
 
-New collapsible section below PERFORMANCE in the Tools tab shows the exact args that will be injected into CS2 for the current config:
-- **HLAE mode**: shows the full `extraArgs` token string broken one-per-line.
-- **CS mode**: shows `launch_args` and each `console_cmds` entry.
-- Displays on load (`after(200, ...)`), plus a **⟳ Refresh** button for manual update.
-- Text widget auto-sizes (4–12 lines). Key labels in accent colour, values in text colour.
-
-### Added: Preview export — HTML / TXT / JSON
-
-The **📤 Export ▾** button in the log toolbar opens a format menu. After running a preview (F6):
-
-- **HTML** — standalone dark-themed file; per-clip table with date, demo, clip index, weapon, filters found, tick, `playdemo` command (click-to-select).
-- **TXT** — plain-text columnar table + `cmd:` line per clip.
-- **JSON** — structured array of clip objects (same fields), ready for scripting.
-
-All three formats source clip data from `_last_preview_data`. **Filters column shows the filters that actually matched each clip** (`_mf` set from event data), not just the active config filters.
-
-### Fixed: dp2_threads setting not respected (all CPU cores used)
-
-`demoparser2` is a Rust extension that uses Rayon internally. Rayon's global thread pool defaults to all available CPU cores regardless of Python's `ThreadPoolExecutor(max_workers=n)`.
-
-- Added `os.environ.setdefault("RAYON_NUM_THREADS", "1")` at import time (before demoparser2/numpy/pandas are first loaded).
-- Also sets `OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS` to `"1"` for the same reason.
-- `setdefault` is used so a user who deliberately sets those env vars before launching the app keeps their preference.
-- Result: `dp2_threads = N` now means N Python workers × 1 Rayon thread each = N cores used, matching the user's intention.
+**UI fixes:**
+- Ferrari Peek dp2_badge moved to main `_hv_row` frame (was hidden inside expandable)
 
 ---
 
@@ -387,231 +366,170 @@ Root cause: `_CHK_KW` and `_BTN_KW` are module-level dicts built at import time 
 
 ## [v171]
 
-### Improved: demoparsing performance
+### Improved: Demo parsing performance and TrueView fallback, UI reorganization
 
-- **Auto-scaled thread count:** `dp2_threads` default now uses `min(8, max(2, cpu_count))` instead of a hardcoded 2 — better out-of-the-box utilization on multi-core machines.
-- **Vectorized fire + hurt loops:** `for row in arr` loops in `_dp2_parse_demo` replaced with pandas `groupby` operations. Pandas/numpy ops release the GIL during computation, letting other threads run concurrently and reducing visible UI stutter while demoparsing in the background.
+**What changed:**
+- Demo parsing is faster with better thread utilization
+- TrueView failures now auto-retry instead of failing silently
+- Settings sections reorganized for better logical grouping
 
-### Fixed: TrueView fails silently on old demos
+**Demo parsing speedup:**
+- Auto-scaled thread count: `dp2_threads` default now `min(8, max(2, cpu_count))` instead of hardcoded 2
+- Better out-of-the-box utilization on multi-core machines
+- Vectorized fire/hurt loops: replaced `for row in arr` with pandas `groupby`
+- Pandas/numpy operations release GIL during computation, less UI stutter in background
 
-Old demos without TrueView support cause CSDM CLI to output `Raw files not found`. This was previously logged as a dim (non-error) line, so no error was flagged and no retry triggered — the recording appeared to succeed but launched CS2 in spectator mode on the wrong player.
+**TrueView fix:**
+- Old demos without TrueView cause CSDM CLI to output `Raw files not found`
+- Previously logged as dim (non-error) line → no retry → appeared successful but wrong POV
+- Now detected as error (logged red)
+- If TrueView was ON: auto-retries that demo with `trueView: false` injected, falls back cleanly
 
-- `Raw files not found` now detected as an error (logged red).
-- If TrueView was ON, the script auto-retries that specific demo once with `trueView: false` injected into the config JSON, falling back cleanly to spectator-camera mode.
-
-### Changed: UI section reorganization
-
-- **"RESOLUTION & FRAMERATE"** renamed to **"RESOLUTION, FRAMERATE & WINDOW"**.
-- **Window mode** (None / Fullscreen / Windowed / Borderless) and **Send to back on launch** moved from "CS2 EFFECTS" into the renamed section — display/launch settings belong with resolution, not with CS2 effect commands.
-- **Close CS2 after each demo** moved from "FINAL ASSEMBLY" into **"IN-GAME OPTIONS"** — it controls CS2 process behavior during recording, consistent with TrueView, death notices, and X-Ray.
+**UI reorganization:**
+- **"RESOLUTION & FRAMERATE"** → **"RESOLUTION, FRAMERATE & WINDOW"**
+- Window mode + Send to back on launch moved from "CS2 EFFECTS" (was wrong logical grouping)
+- **Close CS2 after demo** moved from "FINAL ASSEMBLY" to **"IN-GAME OPTIONS"** (controls process behavior, matches TrueView/death notices/X-Ray)
 
 ---
 
 ## [v170]
 
-### Fixed: resize and sash drag still laggy with 50 ms debounce
+### Fixed: Resize and drag interactions still laggy despite debounce
 
-50 ms is shorter than typical pauses within a drag, so reflows were still triggered mid-interaction. The previous debounce was replaced with a two-tier strategy:
+**What changed:** Two-tier resize strategy eliminates reflows mid-interaction while preserving OS-resize support.
 
-- **Mouse-driven resize (sash drag, in-app interactions):** a global `<ButtonRelease-1>` handler flushes all pending canvas width updates and wraplength updates exactly once when the mouse button is released — zero reflows during the drag itself.
-- **OS window-border resize (Tkinter never receives ButtonRelease for OS chrome):** 400 ms debounce fallback fires once after the user stops resizing.
+**Two-tier approach:**
+- **Mouse-driven (sash drag, in-app):** Global `<ButtonRelease-1>` handler flushes all pending canvas width + wraplength updates exactly once on release — zero reflows during drag
+- **OS window-border resize:** 400 ms debounce fallback (Tkinter doesn't receive ButtonRelease for OS chrome)
 
-`_WRAP_LABELS` registry added — all `_bind_wraplength`-registered labels are flushed on release alongside `ScrollableFrame` width updates.
+**Technical details:**
+50 ms debounce was too short — reflows still triggered mid-drag. `_WRAP_LABELS` registry added: all wraplength-registered labels flushed on release alongside `ScrollableFrame` width updates.
 
 ---
 
 ## [v169]
 
-### Fixed: window resize and sash drag are laggy
+### Fixed: Window resize and sash drag cause lag during interaction
 
-Every pixel of resize triggered a synchronous cascade:
+**What changed:** Debounced reflow cascade so UI stays responsive during window resizing and sash dragging.
 
+**Problem:** Every pixel of resize triggered synchronous cascade:
 ```
 canvas <Configure> → itemconfigure(inner, width)
-  → inner <Configure> → bbox("all") + scrollregion update
+  → inner <Configure> → bbox("all") + scrollregion
     → every desc_label <Configure> → wraplength update
 ```
 
-All three operations ran on every intermediate event during a drag.
-
 **Fixes:**
-- `ScrollableFrame` canvas `<Configure>` now debounces the inner-frame width sync to 50 ms (`after_cancel`/`after`). The entire cascade (inner reflow + all child Configure events) is suppressed during drag and fires once when interaction stops.
-- `scrollregion` update replaced `bbox("all")` with `(0, 0, e.width, e.height)` directly from the Configure event — O(1) instead of traversing all canvas items.
-- `desc_label` wraplength updates debounced to 50 ms via `_bind_wraplength` helper. The two inline codec-desc labels (`_vcodec_desc`, `_acodec_desc`) share the same helper — no more duplicated binding pattern.
+1. **ScrollableFrame debounce:** Canvas `<Configure>` now debounces inner-frame width sync to 50 ms. Entire cascade (reflow + child events) suppressed during drag, fires once when stops
+2. **Scrollregion optimization:** Replaced `bbox("all")` traversal with direct Configure event `(0, 0, e.width, e.height)` — O(1) instead of walking all items
+3. **Label wraplength:** Debounced to 50 ms via `_bind_wraplength` helper. Codec description labels (`_vcodec_desc`, `_acodec_desc`) share same helper — no duplicate binding
 
 ---
 
 ## [v168]
 
-### Fixed: scroll wheel still not working on non-Capture tabs
+### Fixed: Scroll wheel and sash dragging fighting geometry manager
 
-All `ScrollableFrame` canvases share the same screen coordinates inside `ttk.Notebook` (every tab occupies the same rectangle). The `contains_point` check was matching all of them, so `_SCROLL_FRAMES[0]` (Capture) always won. Fix: `winfo_viewable()` guard added — returns `True` only when the canvas AND all its ancestors are mapped, i.e. only for the currently visible tab.
+**What changed:**
+- Mouse wheel scroll now works on all tabs (not just Capture)
+- Sash dragging no longer fights window geometry manager
 
-### Fixed: pane sash fighting the geometry manager during drag
+**Scroll fix:** All `ScrollableFrame` canvases share same screen coords inside `ttk.Notebook`. `contains_point` check was matching all — `_SCROLL_FRAMES[0]` (Capture) always won. Added `winfo_viewable()` guard: returns True only when canvas AND all ancestors mapped (current tab only).
 
-`pack_propagate(False)` + `configure(width=N)` on the PanedWindow panes caused the frames to continuously fight `ttk.PanedWindow`'s geometry manager on every drag event. Removed both. Minimum size is now enforced correctly: `_on_splitter_release` snaps the sash back to the clamped position once the drag ends (`sashpos` re-applied after clamping), with no interference during the drag itself.
+**Sash fix:** `pack_propagate(False)` + `configure(width=N)` made frames fight `ttk.PanedWindow` geometry manager on every drag. Removed both. Minimum size now enforced correctly: `_on_splitter_release` snaps sash to clamped position after drag ends (sashpos reapplied), no interference during
 
 ---
 
 ## [v167]
 
-### Fixed: scroll only working in Capture tab
+### Fixed and improved: Scroll behavior, pane sizing, UI helpers
 
-Mouse wheel scrolling previously used per-`ScrollableFrame` `<Enter>`/`<Leave>` bindings combined with recursive `_bind_children`/`_unbind_children` calls on every child widget. This meant scroll only activated after the mouse had physically entered the canvas — which never happens when switching tabs by clicking a header.
+**What changed:**
+- Mouse wheel scroll works on all tabs from first render
+- Content fills tab width correctly on resize
+- Log pane no longer collapses, console pane collapsible
+- UI helper layer refactored to reduce duplicate code
 
-**Fix:** entire Enter/Leave machinery removed. A module-level `_SCROLL_FRAMES` registry now holds every live `ScrollableFrame`. A single `bind_all("<MouseWheel>", _global_wheel)` handler installed once in `_build_ui` finds the frame under the cursor and scrolls it. `Text`, `Listbox`, `Scale`, and `Treeview` widgets are excluded so their own native scroll behaviour is preserved. Works on every tab from the first render, with no per-widget rebinding.
+**Scroll fix:** Previous Enter/Leave + recursive _bind_children machinery only worked when mouse physically entered canvas (never happens clicking tab headers). Solution: removed Enter/Leave, added module-level `_SCROLL_FRAMES` registry + single global `bind_all("<MouseWheel>", _global_wheel)` handler. Finds frame under cursor and scrolls it. Text/Listbox/Scale/Treeview widgets excluded (preserve native scroll).
 
-### Fixed: inner content not filling tab width on window resize
+**Content width:** `ScrollableFrame` wasn't resizing inner frame to match canvas width. Added `<Configure>` binding calling `itemconfigure(win_id, width=e.width)`.
 
-`ScrollableFrame` was not resizing its inner frame to match the canvas width. A `<Configure>` binding on the canvas now calls `itemconfigure(win_id, width=e.width)` so content always fills the full available width.
+**Pane sizing:** `ttk.PanedWindow` had no minimum pane sizes — sash could hide notebook completely. Both panes now have `pack_propagate(False)` constraint preventing collapse.
 
-### Fixed: log console pane could overlap the notebook pane
-
-`ttk.PanedWindow` was added without minimum pane sizes. The sash could be dragged until the notebook was completely hidden. Both panes now carry an initial `width` constraint via `pack_propagate(False)` preventing either from being collapsed below a usable size.
-
-### Refactor: UI helper layer — `_sep`, `_chk_tip`, dynamic `desc_label`
-
-- `_sep(parent, pady, padx)` — replaces all 12 inline `tk.Frame(…, height=1, bg=BORDER).pack(fill="x", …)` calls.
-- `_chk_tip(parent, label, var, tip, …)` — replaces all `hchk + pack + add_tip` 3-liners.
-- `desc_label` — `wraplength=700` removed; a `<Configure>` binding sets `wraplength = max(200, widget_width - 10)` so description text wraps to the actual container width at any window size. `_vcodec_desc` and `_acodec_desc` receive the same treatment.
-- Hardcoded `width=8` removed from the ADVANCED FFMPEG PARAMS label.
-
----
-
-## [v166] — continued
-
-### Fixed: match type filter misses competitive/wingman on newer CSDM versions
-
-CSDM has stored competitive and wingman matches under two different `game_mode_str` values depending on its version: the full internal names (`scrimcomp5v5`, `scrimcomp2v2`) and the shorter aliases (`competitive`, `wingman`). A database built with one CSDM version and queried by another would silently skip those game types.
-
-**Fix:** `MATCH_TYPE_DEFS` entries now carry a `db_values: list` instead of a single `db_value: str`. `_MATCH_TYPE_KEY_TO_DB` maps each cfg key to the full list. The SQL builder flattens these lists into the `IN (…)` clause, so both spellings are matched in a single query. The in-DB visibility check and tooltip also use the multi-value list.
-
-Aliases added:
-
-| cfg key | DB values now matched |
-|---|---|
-| `match_type_competitive` | `scrimcomp5v5`, `competitive` |
-| `match_type_wingman` | `scrimcomp2v2`, `wingman` |
-
----
-
-### Refactor: Clean Code pass — DRY, dead code removal, structural simplification
-
-Behaviour-preserving cleanup across the full file (~180 lines removed):
-
-**DRY / unified helpers**
-- `_load_json` / `_save_json` — 6 near-identical JSON persistence functions collapsed into 2 generic helpers; `load_presets`, `save_presets`, `load_saved_players`, `save_saved_players`, `load_asm_names`, `save_asm_names`, `load_config`, `save_config` all reduced to one-liners.
-- `_make_highlight_toggle` — shared trace/update closure extracted from `hchk` and `hradio`, which were duplicating ~20 lines of identical widget-highlight logic.
-- `_cfg_num` — generic numeric config reader underlying `_cfg_int` and `_cfg_float`; both kept as thin wrappers for call-site compatibility.
-- `_page_count()` — helper extracted in `PlayerSearchWidget`; replaced 4 repeated `max(1, (len + ps - 1) // ps)` expressions in `_page_next`, `_page_last`, `_page_jump`, and `_render_page`.
-- `_validate_run_inputs()` — player/event guard extracted from `_run` and `_dry_run`.
-- `_apply_theme_globals` — replaced 13 manual `global X; X = _THEME["X"]` assignments with a loop over `_THEME_GLOBAL_NAMES`.
-
-**Dead code removed**
-- `_engage_trois_tap`, `_disengage_trois_tap` — no-op `pass` methods; call site also cleaned.
-- `_on_tag_selected` — never called.
-- `_refresh_tag_combo` — `pass` method + 3 call sites.
-- `_on_trois_tap_toggle`, `_on_one_tap_toggle` — no-op `pass` methods; removed from `cmd_map` in `_build_filter_row`.
-- Full HS-lock chain: `_hs_only_is_required` (always returned `False`) → `_refresh_hs_lock_state` (always called `_unlock_hs`) → `_install_hs_lock_watchers` (installed traces that always no-oped) → `_lock_hs_to_only` (unreachable) → `_unlock_hs` — entire chain removed along with all call sites.
-
-**Eliminated 11 `_apply_*_to_events` one-liner wrappers**
-`_apply_spray_transfer_to_events`, `_apply_high_velocity_to_events`, `_apply_flick_to_events`, `_apply_sauveur_to_events`, `_apply_wall_bang_dp2_to_events`, `_apply_airborne_dp2_to_events`, `_apply_attacker_blind_dp2_to_events`, `_apply_collateral_dp2_to_events`, `_apply_trois_shot_to_events`, `_apply_no_trois_shot_to_events`, `_apply_one_tap_to_events` — all were identical `_apply_filter_to_events(…)` delegates. The preview path (`_apply_dp2_filters_to_events`) now builds inline lambdas from the registry data instead of dispatching through named methods.
+**UI helpers (DRY):**
+- `_sep(parent, pady, padx)` — replaces 12 inline Frame separator calls
+- `_chk_tip(parent, label, var, tip, …)` — replaces `hchk + pack + add_tip` 3-liners
+- Dynamic `desc_label` with `<Configure>` binding sets `wraplength = max(200, widget_width - 10)` (was hardcoded 700)
 
 ---
 
 ## [v166]
 
-### Fixed: crash — `hchk`/`hradio` traces firing on destroyed widgets
+### Fixed and improved: Match type filtering compatibility, major code cleanup
 
-`_refresh_match_type_ui` destroys and recreates its checkbox children on every DB connect. The `var.trace_add("write", _update)` closures registered by each `hchk` call survived widget destruction. The next time any `BooleanVar` changed (theme change via `_retrigger_toggle_vars`, or any other write), the stale `_update` fired, called `.config()` on the destroyed widget, and raised:
+**What changed:**
+- Match type filter now handles both old and new CSDM database formats
+- ~180 lines of dead code and duplicate logic removed
+- 6 JSON persistence functions replaced with 2 generic helpers
+- 11 identical filter wrapper methods eliminated
 
-```
-_tkinter.TclError: invalid command name ".!panedwindow…!checkbutton-1"
-```
+**Match type fix:** CSDM stores competitive/wingman under different names depending on version (`scrimcomp5v5` vs `competitive`). Databases built with different CSDM versions would silently skip those types. Now: `MATCH_TYPE_DEFS` carries `db_values: list` (not single string). SQL builder flattens into `IN (…)` clause matching both spellings. Tooltip and visibility checks also updated.
 
-**Fix:** added a module-level `_safe_trace_remove(var, mode, tid)` helper. Both `hchk` and `hradio` now:
-1. Store the trace ID returned by `trace_add`.
-2. Guard `_update` with `winfo_exists()` — if the widget is already gone, return immediately.
-3. Bind `<Destroy>` on the widget to call `_safe_trace_remove` automatically.
+**Code cleanup — DRY:**
+- `_load_json` / `_save_json` — 6 persistence functions → 2 generic helpers (load_presets, save_presets, etc. now one-liners)
+- `_make_highlight_toggle` — shared trace closure extracted from duplicate hchk/hradio logic (~20 lines saved)
+- `_cfg_num` — generic numeric reader (cfg_int/cfg_float are thin wrappers)
+- `_page_count()` — helper replacing 4 repeated `max(1, (len + ps - 1) // ps)` expressions
+- `_validate_run_inputs()` — guard extracted from _run and _dry_run
+- `_apply_theme_globals` — replaced 13 manual `global X = _THEME[X]` with loop
 
-Self-cleaning regardless of how many times the parent frame is rebuilt.
+**Dead code removed:**
+- `_engage_trois_tap`, `_disengage_trois_tap` — no-op methods
+- `_on_tag_selected` — never called
+- `_refresh_tag_combo` — pass method + 3 call sites
+- `_on_trois_tap_toggle`, `_on_one_tap_toggle` — no-op pass methods
+- Full HS-lock chain: `_hs_only_is_required` → `_refresh_hs_lock_state` → `_install_hs_lock_watchers` → `_lock_hs_to_only` → `_unlock_hs` (entire unused chain)
+- 11 `_apply_*_to_events` one-liner wrappers (all identical delegates; preview path now builds inline lambdas)
 
 ---
 
-### Changed: "Close CS2 after demo" moved to FINAL ASSEMBLY
+### Fixed and improved: Widget trace crashes, settings organization, physics timing
 
-Previously under RECORDING SYSTEM (wrong — that section covers codec/mode selection). Moved to the top of FINAL ASSEMBLY, separated from the assemble/delete checkboxes by a divider. Correct semantics: closing CS2 is a batch-flow concern, not a recording-system setting.
+**What changed:**
+- Fixed crash when theme changes after DB reconnect
+- Close CS2 moved to correct settings section
+- Corpses no longer fall in fast-motion during recording
 
----
+**Widget trace crash:** `_refresh_match_type_ui` destroys/recreates checkbox children on every DB connect. But `var.trace_add("write", _update)` closures survived destruction. On next BooleanVar change (theme change, etc.), stale `_update` tried `.config()` on destroyed widget → TclError crash. Fix: `_safe_trace_remove(var, mode, tid)` helper + winfo_exists() guard + `<Destroy>` binding. Self-cleaning regardless of rebuild frequency.
 
-### Fixed: accelerated corpses during demo recording
+**Settings reorganization:** "Close CS2 after demo" was under RECORDING SYSTEM (wrong — that covers codec/mode). Moved to top of FINAL ASSEMBLY with divider. Correct semantics: closing CS2 is batch-flow concern, not recording-system setting.
 
-CS2 demo playback can inherit a residual `host_timescale` from a previous session, causing physics (ragdolls) to simulate faster than real time even when game speed is set to 100 %. Symptom: corpses fall unnaturally fast in recorded clips.
-
-**Fix:** `demo_timescale 1` is now the first command emitted by `_common_cs2_injection`, applied in both HLAE mode (via `extraArgs`) and CS mode (via `autoexec + runtime cfg`). Explicitly resets demo playback speed to 1× before any other physics commands fire.
-
-The "Ragdoll physics" checkbox tooltip now explains the issue and notes that unchecking (`cl_ragdoll_physics_enable 0`) freezes corpses entirely as an alternative.
+**Physics timing:** CS2 inherits residual `host_timescale` from previous session, causing ragdolls to simulate faster. Symptom: corpses fall unnaturally fast. Fix: `demo_timescale 1` now first command in `_common_cs2_injection` (both HLAE and CS mode), resets playback speed to 1× before any physics commands. Tooltip updated with workaround: unchecking `cl_ragdoll_physics_enable` freezes corpses instead.
 
 ---
 
 ## [v164]
 
-### Fixed: Clutch — false positives in Wingman (and any sub-5v5 mode)
+### Fixed and added: Clutch detection in Wingman, match type filtering, cleanup robustness
 
-The clutch detection built its initial alive-set exclusively from players who appeared as killers or victims in the kill log. In Wingman (2v2), a teammate who hadn't killed or been killed yet was absent from that set — so the code saw the player's team as already alone before anyone died, triggering phantom clutch windows on every round.
+**What changed:**
+- Clutch detection no longer triggers false positives in Wingman
+- New match type filter lets you filter by game mode
+- Empty folders left behind after clip assembly are now cleaned up properly
+- "Tools" tab renamed to "Settings"
 
-**Fix:** `_fetch_all_kills_for_demos` now runs a second query against the `players` table:
+**Clutch fix:** Clutch detection built alive-set from kill log only (killer/victim). In Wingman (2v2), a teammate who hadn't killed/died yet was absent → code thought team was alone → false clutch on every round. Fix: `_fetch_all_kills_for_demos` runs second query against `players` table to get per-team roster counts. `_apply_clutch_filter` injects synthetic ghost players (`__ghost_<team>_<i>__`) for unaccounted slots. Best-effort (no crash if players table lacks columns).
 
-```sql
-SELECT match_checksum, team_name, COUNT(DISTINCT steam_id)
-FROM players
-WHERE match_checksum IN (...)
-GROUP BY match_checksum, team_name
-```
+**Match type filter:** New **MATCH TYPES** section in Capture & Timing (hidden by default, appears after DB connects). Filter by: 🏆 Premier, 🎯 Competitive, 🤝 Wingman, 🎮 Casual, 💀 Deathmatch, 🎓 Training, 🔫 Arms Race, 💣 Demolition, 🤖 Co-op, ⚡ Skirmish, ↩ Retakes. Master toggle (off = no SQL overhead). Only types in your DB shown (no phantom checkboxes).
 
-`_apply_clutch_filter` uses those per-team counts to inject synthetic ghost players into `alive_set` for each slot that isn't yet accounted for by the kill rows. Ghost SIDs are namespaced (`__ghost_<team>_<i>__`) and never collide with real or tracked players. If the `players` table lacks team/side columns, or the roster query fails, behaviour is identical to before — the fix is best-effort with no crash path.
+**Folder cleanup:** Two bugs fixed:
+1. **Wrong root guard** — compared paths against legacy `output_dir` instead of `output_dir_clips`
+2. **No upward traversal** — only checked immediate parent, left empty intermediate folders
 
----
+Solution: `_try_remove_dir(d)` recursive upward walker stops at root or non-empty directory. `visited` set prevents double-visits.
 
-### Added: Match type filter (MATCH TYPES section in Capture & Timing)
-
-Filter demos by CS2 match type. The section is **hidden by default** and only appears after the DB connects; only types actually found in your database are shown (no phantom checkboxes for modes you've never played).
-
-**13 known `game_mode_str` values mapped to UI labels:**
-
-| DB value | Label |
-|---|---|
-| `premier` | 🏆 Premier |
-| `scrimcomp5v5` | 🎯 Competitive |
-| `scrimcomp2v2` | 🤝 Wingman |
-| `casual` | 🎮 Casual |
-| `deathmatch` | 💀 Deathmatch |
-| `training` / `new_user_training` | 🎓 Training / New User |
-| `armsrace` / `gungameprogressive` | 🔫 Arms Race |
-| `gungametrbomb` | 💣 Demolition |
-| `cooperative` | 🤖 Co-op |
-| `skirmish` | ⚡ Skirmish |
-| `retake` | ↩ Retakes |
-
-**"Filter by type" master toggle** — when off, no SQL clause is added (zero overhead). When on, a single `m."game_mode_str" IN (...)` clause is injected into both the kills and rounds queries. Type checkboxes grey out when the toggle is off. All keys persist in config.
-
-If the column doesn't exist in the schema (older CSDM database), the entire section stays hidden with no warning.
-
----
-
-### Fixed: Delete source clips after assembly — residual folders not removed
-
-Two bugs in the cleanup path:
-
-1. **Wrong root guard.** The code compared deleted-folder paths against `cfg["output_dir"]` — the legacy mirror key — instead of `cfg["output_dir_clips"]`, the actual clips root. The guard never matched, so `shutil.rmtree` was either blocked on the wrong path or running unconstrained.
-
-2. **No upward traversal.** Only the immediate parent of each deleted clip was checked. Nested layouts (`<root>/<demo>/<session>/`) left empty intermediate folders behind.
-
-**Fix:** Replaced the flat loop with `_try_remove_dir(d)`, a recursive upward walker. After removing a folder, it attempts the parent, stopping at `output_dir_clips` (resolved with `relative_to` guard) or any non-empty directory. A `visited` set prevents double-visits. The root is never touched.
-
----
-
-### Changed: "Tools" tab renamed to "Settings"
+**UI:** "Tools" tab renamed to "Settings"
 
 ---
 
@@ -623,30 +541,24 @@ Two bugs in the cleanup path:
 
 ## [v162]
 
-### Fixed: Stop / Kill buttons not lighting up during run
+### Fixed and improved: UI button visibility, demo picker, player names, Workshop DL
 
-`_run()` set both buttons to `state="normal"` but left `fg=MUTED`, so they remained visually greyed out even while active. Both now receive `fg=RED` on activation and are correctly reset to `fg=MUTED` by `_reset_btns()`.
+**What changed:**
+- Stop/Kill buttons now visibly light up during recording
+- Map column shows up in demo picker correctly
+- Death notices show correct player names (not old aliases)
+- Auto Workshop DL loads correct map version
+- Encoder field removed (always FFmpeg anyway)
 
-### Fixed: Map column empty in demo picker
+**Button visibility:** `_run()` was setting `state="normal"` but leaving `fg=MUTED` → buttons greyed out even while active. Now both get `fg=RED` on activation, reset by `_reset_btns()`.
 
-`_map_col` was detected inside the kills query block but evaluated *after* `map_sel` had already been constructed — so `map_sel` was always `""` on the first query run and the map column was never included in the SELECT. Detection moved to before `_build_dsql` / `map_sel`, ensuring the column is fetched from the very first query.
+**Map column bug:** `_map_col` detected inside kills query block but evaluated *after* `map_sel` constructed → always `""` on first query → map column never fetched. Detection moved to before `_build_dsql`, ensuring column included from first query.
 
-### Fixed: Death notices showing a player's old username
+**Player names:** `_player_names` used `GROUP BY p.name, p.steam_id ORDER BY p.name` which surfaced arbitrary historical name when player had multiple entries. Changed to `DISTINCT ON (p.steam_id) … ORDER BY steam_id, last_seen DESC NULLS LAST` — now only most recent name per SID.
 
-`_player_names` was built from `GROUP BY p.name, p.steam_id ORDER BY p.name`, which surfaces an arbitrary historical name when a player has multiple entries. Changed to `DISTINCT ON (p.steam_id) … ORDER BY p.steam_id, last_seen DESC NULLS LAST` so only the most recent name per SID is kept.
+**Workshop DL fix:** Was using `+cl_downloadfilter all` which downloads current published version from CDN (may be different map entirely). Now uses `+sv_pure 0 +sv_lan 1`: sv_pure 0 disables file validation (loads local version), sv_lan 1 blocks external verification. Requires old map already cached locally. Tooltip updated.
 
-### Removed: Encoder field from Video tab
-
-The Encoder selector (always "FFmpeg", no alternatives) has been removed from the `RECORDING SYSTEM` section. The `encoder` key is still written to the CSDM JSON for compatibility. The section now shows only the System radio buttons (HLAE / CS).
-
-### Fixed: Auto Workshop DL loading wrong map version
-
-`+cl_downloadfilter all` was the previous injection. This tells CS2 to download Workshop content from the CDN — but it pulls the **current published version** of the Workshop item, which may be a completely different map. The injection is replaced with `+sv_pure 0 +sv_lan 1`:
-
-- `sv_pure 0` — disables file validation so CS2 loads whatever map version is installed locally without checking against any CDN.
-- `sv_lan 1` — prevents CS2 from reaching external services for content verification.
-
-The old map version must already be cached/installed on the machine. The checkbox tooltip and the "Additional HLAE args" hint are updated to reflect this.
+**UI cleanup:** Encoder selector removed from RECORDING SYSTEM (was always "FFmpeg", no alternatives). `encoder` key still written to JSON for compatibility; only System (HLAE/CS) radio buttons shown.
 
 ---
 
