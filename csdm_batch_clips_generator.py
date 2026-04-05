@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v186"
+APP_VERSION = "v187"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -1155,6 +1155,75 @@ class ColorPickerDialog(tk.Toplevel):
 
     def _ok(self):
         self.result = self._color; self.destroy()
+
+class TagImportMissingDialog(tk.Toplevel):
+    """Lists tags that exist in the import file but are absent from the current DB.
+    User can choose which ones to create (pre-checked by default) before import proceeds.
+
+    result:
+      None        → user cancelled (abort import)
+      set of str  → tag names to create (empty set = create none, continue import)
+    """
+    def __init__(self, parent, missing_names, tag_defs):
+        super().__init__(parent)
+        self.result = None
+        self.title("Missing tags — import")
+        self.configure(bg=BG2)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        mlabel(self,
+               f"{len(missing_names)} tag(s) not found in this database:").pack(
+            anchor="w", padx=12, pady=(12, 4))
+
+        sf = tk.Frame(self, bg=BG2)
+        sf.pack(fill="x", padx=12, pady=(0, 4))
+
+        self._checks = {}
+        for name in sorted(missing_names):
+            color = (tag_defs.get(name) or {}).get("color") or "#f97316"
+            var = tk.BooleanVar(value=True)
+            self._checks[name] = var
+            row = tk.Frame(sf, bg=BG2)
+            row.pack(fill="x", pady=2)
+            tk.Checkbutton(row, variable=var, bg=BG2, fg=TEXT,
+                           activebackground=BG2, activeforeground=TEXT,
+                           selectcolor=BG3).pack(side="left")
+            tk.Label(row, bg=color, width=2, height=1,
+                     relief="flat").pack(side="left", padx=(4, 0))
+            tk.Label(row, text=name, font=FONT_SM, bg=BG2,
+                     fg=TEXT).pack(side="left", padx=(6, 0))
+            tk.Label(row, text=color, font=FONT_DESC, bg=BG2,
+                     fg=MUTED).pack(side="left", padx=(4, 0))
+
+        _sep(self, pady=6, padx=12)
+
+        br = tk.Frame(self, bg=BG2)
+        br.pack(fill="x", padx=12, pady=(0, 12))
+        tk.Button(br, text="Create selected", font=FONT_SM, bg=GREEN, fg="#000000",
+                  relief="flat", bd=0, cursor="hand2", activebackground="#6ee7b7",
+                  command=self._ok).pack(side="left", ipady=4, ipadx=8)
+        tk.Button(br, text="Skip all", font=FONT_SM, bg=BG3, fg=MUTED,
+                  relief="flat", bd=0, cursor="hand2",
+                  command=self._skip).pack(side="left", padx=(8, 0), ipady=4, ipadx=8)
+        tk.Button(br, text="Cancel import", font=FONT_SM, bg=RED, fg="white",
+                  relief="flat", bd=0, cursor="hand2", activebackground="#fca5a5",
+                  command=self.destroy).pack(side="right", ipady=4, ipadx=8)
+
+        self.update_idletasks()
+        self.geometry(
+            f"+{parent.winfo_rootx() + parent.winfo_width() // 2 - self.winfo_reqwidth() // 2}"
+            f"+{parent.winfo_rooty() + 80}")
+        self.wait_window()
+
+    def _ok(self):
+        self.result = {n for n, v in self._checks.items() if v.get()}
+        self.destroy()
+
+    def _skip(self):
+        self.result = set()
+        self.destroy()
 
 # ═══════════════════════════════════════════════════════
 #  Widgets
@@ -6721,6 +6790,27 @@ class App(tk.Tk):
                   relief="flat", bd=0, cursor="hand2", activebackground="#fca5a5",
                   command=self._tag_remove_selected).pack(side="left", padx=(6, 0), ipady=4, ipadx=6)
 
+        row3 = tk.Frame(sec2, bg=BG2)
+        row3.pack(fill="x", pady=(6, 0))
+        mlabel(row3, "Transfer:").pack(side="left")
+        _exp_btn = tk.Button(row3, text="📤 Export", font=FONT_SM, bg=BG3, fg=TEXT,
+                             relief="flat", bd=0, cursor="hand2", activebackground=BORDER,
+                             command=self._tags_export)
+        _exp_btn.pack(side="left", padx=(8, 0), ipady=4, ipadx=8)
+        add_tip(_exp_btn,
+                "Export tag assignments to a JSON file.\n"
+                "If tags are selected, only those tags are exported. "
+                "Otherwise all tag assignments are exported.\n"
+                "The file can be imported into any other CSDM database that contains the same demos.")
+        _imp_btn = tk.Button(row3, text="📥 Import", font=FONT_SM, bg=BG3, fg=TEXT,
+                             relief="flat", bd=0, cursor="hand2", activebackground=BORDER,
+                             command=self._tags_import)
+        _imp_btn.pack(side="left", padx=(6, 0), ipady=4, ipadx=8)
+        add_tip(_imp_btn,
+                "Import tag assignments from a JSON export file.\n"
+                "Demos are matched by checksum — only demos present in this DB are tagged.\n"
+                "Missing tags can be created automatically with their original name and colour.")
+
         # List of found demos
         lf = tk.Frame(sec2, bg=BG2)
         lf.pack(fill="x", pady=(6, 0))
@@ -7166,6 +7256,245 @@ class App(tk.Tk):
             self.after(0, finish)
 
         threading.Thread(target=task, daemon=True).start()
+
+    # ── Tag import / export ────────────────────────────────────────────────
+
+    def _tags_export(self):
+        """Export tag assignments to a JSON file (all, or active-tag-filtered)."""
+        ts = self._tags_schema
+        if not ts.get("junction_table"):
+            messagebox.showerror("Export tags", "Tags schema not detected — connect to DB first.")
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self, defaultextension=".json",
+            filetypes=[("JSON", "*.json"), ("All files", "*.*")],
+            title="Export tags")
+        if not path:
+            return
+        threading.Thread(target=self._tags_export_worker, args=(path,), daemon=True).start()
+
+    def _tags_export_worker(self, path):
+        ts        = self._tags_schema
+        jt        = ts["junction_table"]
+        jt_tag    = ts["jt_tag_col"]
+        jt_match  = ts["jt_match_col"]
+        id_col    = ts["id_col"]
+        name_col  = ts["name_col"]
+        color_col = ts.get("color_col", "")
+        mkm = self._find_col("matches", ["checksum", "id", "match_id"])
+        dc  = self._find_col("matches", [
+            "demo_path", "demo_file_path", "demo_filepath", "file_path", "path"])
+
+        # If tags are selected, limit export to those tag IDs
+        active_ids = list(self._tags_active) if self._tags_active else None
+
+        try:
+            conn = self._pg_fresh()
+            with conn.cursor() as cur:
+                # Fetch tag definitions
+                cols_sel = f'"{id_col}","{name_col}"' + (f',"{color_col}"' if color_col else "")
+                cur.execute(f'SELECT {cols_sel} FROM tags ORDER BY "{name_col}"')
+                tag_rows = cur.fetchall()
+                if active_ids:
+                    tag_rows = [r for r in tag_rows if r[0] in set(active_ids)]
+                tag_map = {
+                    r[0]: {"name": r[1], "color": (r[2] if len(r) > 2 and color_col else "") or ""}
+                    for r in tag_rows
+                }
+                exported_ids = set(tag_map)
+
+                # Fetch assignments
+                ph_sql    = (f' WHERE jt."{jt_tag}" IN ({",".join(["%s"]*len(active_ids))})'
+                             if active_ids else "")
+                ph_params = tuple(active_ids) if active_ids else ()
+                if dc and mkm:
+                    cur.execute(
+                        f'SELECT jt."{jt_match}", jt."{jt_tag}", m."{dc}"'
+                        f' FROM "{jt}" AS jt'
+                        f' LEFT JOIN matches AS m ON m."{mkm}"=jt."{jt_match}"'
+                        f'{ph_sql}', ph_params)
+                else:
+                    cur.execute(
+                        f'SELECT jt."{jt_match}", jt."{jt_tag}"'
+                        f' FROM "{jt}" AS jt{ph_sql}', ph_params)
+                rows = cur.fetchall()
+            conn.close()
+        except Exception as e:
+            self.after(0, lambda err=e: messagebox.showerror("Export tags", f"Query error:\n{err}"))
+            return
+
+        by_chk = {}
+        for row in rows:
+            chk      = str(row[0])
+            tag_id   = row[1]
+            demo_nm  = os.path.basename(str(row[2])) if len(row) > 2 and row[2] else ""
+            if tag_id not in exported_ids:
+                continue
+            if chk not in by_chk:
+                by_chk[chk] = {"checksum": chk, "demo_name": demo_nm, "tags": []}
+            tag_name = tag_map[tag_id]["name"]
+            if tag_name not in by_chk[chk]["tags"]:
+                by_chk[chk]["tags"].append(tag_name)
+
+        out = {
+            "version": 1,
+            "exported_at": datetime.now().isoformat(timespec="seconds"),
+            "tags": list(tag_map.values()),
+            "assignments": list(by_chk.values()),
+        }
+        try:
+            Path(path).write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.after(0, lambda: self._alog(
+                f"  ✓ Tags exported: {len(tag_map)} tag(s), {len(by_chk)} demo(s) → {path}", "ok"))
+        except Exception as e:
+            self.after(0, lambda err=e: messagebox.showerror("Export tags", f"Write error:\n{err}"))
+
+    def _tags_import(self):
+        """Import tag assignments from a JSON export file."""
+        ts = self._tags_schema
+        if not ts.get("junction_table"):
+            messagebox.showerror("Import tags", "Tags schema not detected — connect to DB first.")
+            return
+        path = filedialog.askopenfilename(
+            parent=self,
+            filetypes=[("JSON", "*.json"), ("All files", "*.*")],
+            title="Import tags")
+        if not path:
+            return
+        try:
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except Exception as e:
+            messagebox.showerror("Import tags", f"Could not read file:\n{e}")
+            return
+        if not isinstance(data, dict) or "assignments" not in data:
+            messagebox.showerror("Import tags", "Invalid tags export file.")
+            return
+        threading.Thread(target=self._tags_import_worker, args=(data,), daemon=True).start()
+
+    def _tags_import_worker(self, data):
+        # Collect all tag names referenced in assignments
+        all_names    = {t for a in data.get("assignments", []) for t in a.get("tags", [])}
+        exported_defs = {t["name"]: t for t in data.get("tags", []) if t.get("name")}
+        existing_names = {tn for _, tn, _ in self._tags_list}
+        missing = [n for n in all_names if n not in existing_names]
+
+        if missing:
+            done_ev   = threading.Event()
+            result_box = [None]
+
+            def show_dialog():
+                dlg = TagImportMissingDialog(self, missing, exported_defs)
+                result_box[0] = dlg.result
+                done_ev.set()
+
+            self.after(0, show_dialog)
+            done_ev.wait()
+            to_create = result_box[0]
+            if to_create is None:   # user cancelled
+                return
+            for name in to_create:
+                color = (exported_defs.get(name) or {}).get("color") or "#f97316"
+                self._create_tag_programmatic(name, color)
+
+        # Refresh display (newly created tags)
+        self.after(0, self._refresh_tags_list_display)
+
+        mkm = self._find_col("matches", ["checksum", "id", "match_id"])
+        if not mkm:
+            self.after(0, lambda: messagebox.showerror(
+                "Import tags", "Cannot find checksum column in matches table."))
+            return
+
+        ok_n = skip_n = fail_n = 0
+        for asgn in data.get("assignments", []):
+            chk = str(asgn.get("checksum", "")).strip()
+            if not chk or not self._checksum_in_db(chk, mkm):
+                skip_n += 1
+                continue
+            for tag_name in asgn.get("tags", []):
+                tag_id = next((tid for tid, tn, _ in self._tags_list if tn == tag_name), None)
+                if tag_id is None:
+                    fail_n += 1
+                    continue
+                ok, _ = self._tag_by_checksum(chk, tag_id)
+                if ok:
+                    ok_n += 1
+                else:
+                    fail_n += 1
+
+        def finish():
+            parts = [f"{ok_n} link(s) applied"]
+            if skip_n:
+                parts.append(f"{skip_n} demo(s) not in DB")
+            if fail_n:
+                parts.append(f"{fail_n} failed")
+            tag = "ok" if not fail_n else "warn"
+            sym = "✓" if not fail_n else "⚠"
+            self._alog(f"  {sym} Import: {', '.join(parts)}", tag)
+            self._tag_search_status.config(
+                text=f"✓ {ok_n} imported" if not fail_n else f"⚠ {ok_n} ok / {fail_n} failed",
+                fg=GREEN if not fail_n else YELLOW)
+        self.after(0, finish)
+
+    def _create_tag_programmatic(self, name, color):
+        """Create a tag in DB without interactive dialogs. Returns (ok, tag_id_or_err)."""
+        ts = self._tags_schema
+        if not ts.get("name_col"):
+            return False, "Schema not detected"
+        try:
+            conn = self._pg_fresh()
+            with conn.cursor() as cur:
+                new_id = _generate_id_for_type(ts.get("id_col_type", "bigint"))
+                cols   = f'"{ts["id_col"]}","{ts["name_col"]}"'
+                vals   = [new_id, name]
+                if ts.get("color_col"):
+                    cols += f',"{ts["color_col"]}"'
+                    vals.append(color or "#f97316")
+                cur.execute(
+                    f'INSERT INTO tags ({cols}) VALUES ({",".join(["%s"]*len(vals))})', vals)
+                conn.commit()
+            conn.close()
+            self._tags_list.append((new_id, name, color or ""))
+            return True, new_id
+        except Exception as e:
+            return False, str(e)
+
+    def _tag_by_checksum(self, checksum, tag_id):
+        """Apply a tag using a checksum directly (no demo_path → checksum lookup)."""
+        ts = self._tags_schema
+        jt       = ts.get("junction_table")
+        jt_tag   = ts.get("jt_tag_col")
+        jt_match = ts.get("jt_match_col")
+        if not jt or not jt_tag or not jt_match:
+            return False, "Junction table not found"
+        try:
+            conn = self._pg_fresh()
+            with conn.cursor() as cur:
+                cur.execute(
+                    f'SELECT 1 FROM "{jt}" WHERE "{jt_match}"=%s AND "{jt_tag}"=%s LIMIT 1',
+                    (checksum, tag_id))
+                if not cur.fetchone():
+                    cur.execute(
+                        f'INSERT INTO "{jt}" ("{jt_match}","{jt_tag}") VALUES (%s,%s)',
+                        (checksum, tag_id))
+                conn.commit()
+            conn.close()
+            return True, ""
+        except Exception as e:
+            return False, str(e)
+
+    def _checksum_in_db(self, checksum, mkm_col):
+        """Return True if the given checksum exists in the matches table."""
+        try:
+            conn = self._pg_fresh()
+            with conn.cursor() as cur:
+                cur.execute(
+                    f'SELECT 1 FROM matches WHERE "{mkm_col}"=%s LIMIT 1', (checksum,))
+                exists = cur.fetchone() is not None
+            conn.close()
+            return exists
+        except Exception:
+            return False
 
     def _delete_tag_ui(self, tag_id, tag_name):
         if not messagebox.askyesno("Delete tag", f"Delete '{tag_name}' and all its links?"):

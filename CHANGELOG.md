@@ -9,6 +9,26 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v187]
+
+### Added: Tag import / export
+
+**📤 Export** and **📥 Import** buttons in the Tags → Operations section.
+
+**Export:**
+- Queries the junction table and writes a portable JSON file containing tag definitions (name + colour) and all assignments (checksum → tag names).
+- If tags are currently selected in the UI, only those tags are exported. Otherwise all assignments are exported.
+- Each assignment also stores the demo basename for human reference, but the checksum is the authoritative match key.
+
+**Import:**
+- Reads a JSON export file produced by this tool.
+- Demos are matched by checksum — only demos present in the target database are tagged.
+- Missing tags (tags in the file but not in the DB) are detected before import runs. A dialog lists them with their original name and colour; the user can choose which ones to create (all pre-checked), skip them all, or cancel the import entirely.
+- After any tag creation, assignments are applied via direct checksum → tag_id inserts (idempotent: already-tagged demos are silently skipped).
+- Final status shown in the log and the tag status label: links applied / demos not found / failures.
+
+---
+
 ## [v186]
 
 ### Cleaned up: Dead code removal and redundancy elimination
