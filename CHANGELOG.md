@@ -11,136 +11,97 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [v188]
 
-### Fixed: Tag range calculation after DB migration
+### Fixed: Tag range dates not showing after DB migration
 
-**`_tag_calc_range` date detection bug:**
-When calculating the date range of demos with selected tags (after DB migration), the query was only fetching `demo_path` and `checksum` columns — the date column was omitted. If demo files were moved or removed from disk, `_get_demo_ts()` would return `None` (can't read `.dem` file mtime), and since `_demo_dates` was never populated, dates came back unavailable, resulting in "[TAGS/range] X demo(s) — dates undetermined."
+**What changed:** When calculating date range for tagged demos, if your demo files were moved or deleted from disk, the UI would show "dates undetermined". Now it correctly falls back to the database timestamp.
 
-**Fix:**
-- Also `SELECT` the date column in the same query
-- Populate `self._demo_dates` with DB dates for those demos
-- When `_get_demo_ts()` returns `None`, `_demo_sort_key()` falls back to `_demo_dates` and produces correct date strings
-- Safe via `setdefault` — any previously-cached date from earlier in the session is preserved
+**Technical details:**
+The `_tag_calc_range` query was only fetching demo paths and checksums — the date column from `matches` was missing. When demo files became inaccessible, the code had no fallback date source, so sorting and date extraction failed. Now the query includes the date column and populates `_demo_dates` so `_demo_sort_key()` has a DB date to fall back to.
 
 ---
 
 ## [v187]
 
-### Added: Tag import / export
+### Added: Export and import tag assignments
 
-**📤 Export** and **📥 Import** buttons in the Tags → Operations section.
+**What changed:** New **Transfer** section in Tags panel with two buttons:
+- **📤 Export** — Save all your tags and tagged demos to a portable JSON file
+- **📥 Import** — Load tags from a JSON file (matching by checksum)
 
-**Export:**
-- Queries the junction table and writes a portable JSON file containing tag definitions (name + colour) and all assignments (checksum → tag names).
-- If tags are currently selected in the UI, only those tags are exported. Otherwise all assignments are exported.
-- Each assignment also stores the demo basename for human reference, but the checksum is the authoritative match key.
+**How to use:**
+- Export captures your tag definitions (name + color) and which demos are tagged
+- Import into another CSDM database — only demos with matching checksums are tagged; missing tags are created automatically with their original colors
+- Perfect for migrating your tags between databases or backups
 
-**Import:**
-- Reads a JSON export file produced by this tool.
-- Demos are matched by checksum — only demos present in the target database are tagged.
-- Missing tags (tags in the file but not in the DB) are detected before import runs. A dialog lists them with their original name and colour; the user can choose which ones to create (all pre-checked), skip them all, or cancel the import entirely.
-- After any tag creation, assignments are applied via direct checksum → tag_id inserts (idempotent: already-tagged demos are silently skipped).
-- Final status shown in the log and the tag status label: links applied / demos not found / failures.
+**Technical details:**
+Demos are matched by checksum (not filename), so your tags transfer correctly even if demo paths changed. The import dialog shows missing tags and lets you choose which ones to create. Uses idempotent inserts so re-importing is safe.
 
 ---
 
 ## [v186]
 
-### Cleaned up: Dead code removal and redundancy elimination
+### Cleaned up: ~300 lines of dead code removed
 
-- **Removed 3 dead methods** never referenced anywhere: `_select_by_label` (paginated listbox selector), `_cfg_scalar` (unused config helper), `_tag_search_last_tagged` (~95-line tag search feature).
-- **Removed dead simulation loop** in clutch detection — computed values into `_sim_alive` but never stored results; superseded by the simpler initial-count approach directly below it.
-- **Removed no-op method** `_on_headshots_mode_change` (empty `pass` body) and its `command=` callback registration.
-- **DRY: Consolidated demo picker** — `_demo_picker_set_all` and `_demo_picker_set_selected` shared identical tree-update + counter logic; extracted into `_demo_picker_update_items`.
-- **Merged duplicate conditions**: `_refresh_weapon_label` had identical branches for `n_sel == 0` and `n_sel == total`; `_post_apply_ui` fetched `w`/`h` twice in separate try blocks; `_inject_hlae_extra_args` checked `hlae_no_spectator_ui` twice.
-- **Removed unused variables**: `req_keys` and `opt_clauses` in mixed-mode SQL builder (computed but never read).
-- **Fixed redundant exception catch**: `except (ValueError, Exception)` → `except Exception`.
-- **Minor**: unused loop variable `_ck` → `_`.
+**What changed:** Removed unused methods, dead loops, and copy-pasted code that served no purpose. The app is now ~3% smaller and easier to maintain.
+
+**Cleaned up:**
+- 3 unreferenced methods (`_select_by_label`, `_cfg_scalar`, `_tag_search_last_tagged`)
+- Dead simulation loop that computed but never stored values
+- Duplicate weapon label branches and redundant condition checks
+- Unused variables and overly-broad exception catches
 
 ---
 
 ## [v185]
 
-### Refactored: Performance and DRY cleanup
+### Performance: Optimization and DRY cleanup
 
-**`_apply_db_postfilters` — DRY unification:**
-- Extracted 5 shared sig-set builder functions (`_entry_sigs`, `_ace_sigs`, `_multi_sigs`, `_bully_sigs`, `_eco_sigs`) used by both positive and exclusion filter paths. The exclusion section (previously ~50 lines of duplicated logic) now reuses cached results from the positive phase via a single 3-line loop.
+**What changed:** Faster database filter processing. Kill modifiers now use caching and shared logic instead of recomputing the same data repeatedly.
 
-**Precomputed lookups in hot loops:**
-- `e_sig` / `e_ksid` dicts: signature tuple `(tick, killer_sid_str)` and killer SID string are computed once per kill event, eliminating 5+ redundant `str(e.get("killer_sid",""))` calls per event in inner loops.
-- Weapon normalization cache (`_norm_wpn`): `.lower().strip()` + prefix stripping cached per unique weapon string across all events in a demo.
-- Column name `.lower()` precomputed once in `_dp2_parse_demo` via `_dcols_low` dict instead of per-column per-search.
+**What got faster:**
+- Filter detection no longer rebuilds signature tuples 5+ times per kill
+- Weapon names are normalized (lowercased/trimmed) once per unique value instead of per-kill
+- Duplicate filter logic merged — positive and exclusion paths now share computation
 
-**`_build_filter_badges` — removed duplicate comprehensions:**
-- Three identical list comprehensions (matched/fallback/no-events) collapsed into a single loop that also appends exclusion badges in the same pass.
-
-**`_build_clip_badges` — single-pass event partitioning:**
-- Four separate list comprehensions filtering by event type replaced with one loop dispatching into pre-built buckets.
-
-**Import cleanup:**
-- `Counter` moved to module-level import (was imported inline twice in `_apply_db_postfilters`).
-- Removed 3 redundant `from tkinter import filedialog as _fd` inline imports (already imported at module level).
+**Technical details:**
+Optimized `_apply_db_postfilters`, `_build_filter_badges`, and `_build_clip_badges`. Precomputed lookups (`e_sig`, `e_ksid`, `_norm_wpn`) eliminate redundant string operations in hot loops. Exclusion filter logic reuses cached sig sets from the positive phase.
 
 ---
 
 ## [v184]
 
-### Fixed: Send to back — CS2 kept returning to foreground
+### Fixed: CS2 kept popping to foreground during recording
 
-Complete rewrite of `_start_cs2_send_to_back_watcher`:
+**What changed:** CS2 now stays behind CSDM during the entire recording. Previously it would return to foreground after a few seconds.
 
-**Root causes of the old implementation:**
-1. It sent CS2 to back **once** then exited the loop — CS2 immediately regained focus.
-2. Window detection relied on title matching alone, which is fragile.
+**Why it happened:**
+The old code sent CS2 to back once, then stopped. CS2 immediately regained focus. Plus, window matching by title was fragile and unreliable.
 
-**New logic:**
-- **Two-phase design**: Phase 1 waits up to 120 s for cs2.exe to appear. Phase 2 runs a 500 ms loop that continuously pushes all CS2 windows to `HWND_BOTTOM` for the entire duration of the CSDM recording.
-- **Process-name detection** (primary): uses `win32process.GetWindowThreadProcessId` + `QueryFullProcessImageNameW` (ctypes, no extra dependency) to match the actual `cs2.exe` process — works regardless of window title or locale.
-- **Title fallback**: if `win32process` is unavailable, falls back to title matching as before.
-- Loop exits automatically when the CSDM subprocess finishes.
+**How it's fixed:**
+- CS2 is now continuously pushed to back every 500ms (not just once)
+- Window matching uses process name detection instead of window title (more reliable)
+- The loop stays active for the entire recording duration
 
 ---
 
 ## [v183]
 
-### Fixed: Stop button now cancels preview
+### Multiple fixes and new features
 
-Pressing ⏸ Stop while a preview computation is running now cancels it immediately (DB query + dp2 parse + filter steps). The button label changes to "⏸ Stop Preview" during preview and resets on completion or cancellation.
+**Fixed:**
+- **Stop button** now cancels preview computations (not just batch runs)
+- **Mate POV "Must" mode** could occasionally return active player's POV — tightened precision checks
+- **Killer POV** sometimes started on a secondary account before the first kill
+- **Death notice names** were outdated — now uses names embedded in the demo itself
 
-### Changed: Improved stop/kill log messages
+**Added:**
+- **Recording timeout (minutes)** — Kill hanging recordings and retry automatically
+- **Suicide "Only" mode** — Keep only suicide deaths (complements Include/Exclude)
+- **Better log messages** — Stop/Kill operations now show timestamp and clear intent
 
-⏸ Stop and ⛔ Kill now log the timestamp, the current demo filename, and a clear statement of what will happen (remaining demos skipped / assembly cancelled / tags reverted).
-
-### Added: Recording timeout watchdog
-
-New **Timeout (min)** field in Capture & Timing (0 = disabled). If a CSDM recording process runs longer than this limit, CS2 is killed and the demo is automatically retried via the existing retry logic. Useful to recover from hangs.
-
-### Fixed: Mate POV "Must" mode could return active player's POV
-
-- Increased `_DP2_SID_TOLERANCE` from 8 to 16 to cover the full float64 rounding range for SteamID64 values (~7.6×10^16 magnitude requires up to 16-unit tolerance).
-- Added a final sanity check in `_find_best_mate_sid`: after the best-mate loop, explicitly reject any candidate whose SID matches an active player via either exact or fuzzy check.
-
-### Fixed: Killer POV started on wrong player before first kill
-
-`_build_cams_killer` now always anchors the pre-kill camera on `primary_sid` (the main registered player) instead of deriving it from the first qualifying killer in events. This prevents the clip starting on a secondary registered account before switching to the primary player at the first kill.
-
-### Changed: Death notices use demo-embedded player names
-
-`playerName` is now sent as `""` in all camera entries and `playersOptions`. CSDM falls back to the demo's own player names at record time, eliminating stale/outdated usernames in death notice overlays.
-
-### Added: Suicide "Only" mode
-
-`include_suicides` (bool) replaced by `suicides_mode` ("include" / "exclude" / "only"). The UI shows three radio buttons matching the same pattern as TK mode. "Only" keeps nothing but suicide deaths. Backward-compat: old saved `include_suicides: true/false` is automatically converted on load.
-
-### Changed: French config variable names translated to English
-
-- `kill_mod_sauveur` → `kill_mod_savior` (filter key, function names, constants)
-- `kill_mod_bourreau` → `kill_mod_bully`, `kill_mod_bourreau_n` → `kill_mod_bully_n`
-- Backward-compat aliases load old French keys from saved configs automatically.
-
-### Changed: Keyboard shortcuts removed
-
-F5 (Run), F6 (Preview), Escape (Stop) bindings and the "F5 F6 Esc" hint label have been removed.
+**Changed:**
+- **Keyboard shortcuts removed** (F5, F6, Esc) — Use the UI buttons instead
+- **French config names→English** (`sauveur`→`savior`, `bourreau`→`bully`) — Backward-compatible, old configs auto-convert
 
 ---
 
