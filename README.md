@@ -43,13 +43,14 @@ Open the **Tools** tab → connect to PostgreSQL with the same credentials as CS
 
 ## Workflow
 
-```
-Capture tab  →  PLAYER + EVENTS + KILL FILTERS  →  F6 Preview  →  F5 Run
-```
+1. **Capture tab** → Set active player(s), event type, date range, weapons, kill filters
+2. **Preview button** → Reviews clip count, duration, filter summary, and per-demo breakdown with content badges (uncheck demos to exclude)
+3. **Run button** → Starts batch recording via CSDM
 
-- **Preview** shows clip count, total duration, a structured filter summary, and a per-demo breakdown with content badges — uncheck any demo to exclude it
+**Features:**
 - **Manual mode** lets you pick any demo from the full database regardless of date range
 - **Auto-tag** tags processed demos in CSDM when the batch completes. Tags are **rolled back automatically** if the batch is stopped or killed mid-run
+- **Stop button** now cancels in-progress preview computations and gracefully halts batch runs
 
 ---
 
@@ -90,15 +91,25 @@ Each demo line shows a **content badge** (what weapon/event type the clip contai
 
 ---
 
-## Headshot filter
+## Event filters
 
-An independent `🎯 Headshots` tri-state radio alongside Suicides and TK — not part of kill-mod logic:
+Independent tri-state radios alongside kill modifiers — not part of kill-mod logic:
+
+**🎯 Headshots**
 
 | Mode | Behaviour |
 |---|---|
 | **All** | No headshot filtering (default) |
 | **Only** | Keep headshot kills only |
 | **Exclude** | Keep non-headshot kills only |
+
+**💀 Suicides**
+
+| Mode | Behaviour |
+|---|---|
+| **Include** | Include suicide deaths (world/fall damage/etc) (default) |
+| **Exclude** | Remove all suicide deaths from clips |
+| **Only** | Keep only suicide deaths |
 
 ---
 
@@ -227,6 +238,8 @@ Two systems available: **HLAE** (recommended) and **CS** (native). The HLAE-spec
 
 > CS2 effects use standard CS2 console commands injected through `hlaeOptions.extraArgs` (HLAE) or a managed runtime cfg `csdm_batch_runtime.cfg` (CS). If the CS2 cfg path cannot be auto-detected, set `cs2_cfg_dir` in `csdm_config.json`.
 
+**Timeout watchdog:** Configure recording timeout in the **Timing** section. If a recording exceeds the timeout (0 = disabled), CS2 is killed and the clip is automatically retried. The retry logic uses existing backoff and attempt limits.
+
 ---
 
 ## UI Theme
@@ -241,14 +254,12 @@ A **UI THEME** section in the Tools tab lets you change the entire interface col
 
 ---
 
-## Shortcuts
+## Keyboard shortcuts
 
 | Key | Action |
 |---|---|
-| `F5` | Run batch |
-| `F6` | Preview |
-| `Esc` | Stop after current demo |
 | `Ctrl+B` | Toggle clip badges ON/OFF |
+| `Ctrl+F` | Search/Filter demo list |
 
 ---
 
@@ -262,9 +273,8 @@ A **UI THEME** section in the Tools tab lets you change the entire interface col
 
 <div align="center">
 
-*Built with Claude. My code knowledge is equal to the void space separating our planet from the sun.*  
-*Do as you wish with it.*
+**Built with [Claude Code](https://claude.com/claude-code)**
 
-*Assisted by GPT-5.3 Codex alongside Claude.*
+*Open source. Do as you wish with it.*
 
 </div>
