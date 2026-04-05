@@ -9,6 +9,106 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v186]
+
+### Cleaned up: Dead code removal and redundancy elimination
+
+- **Removed 3 dead methods** never referenced anywhere: `_select_by_label` (paginated listbox selector), `_cfg_scalar` (unused config helper), `_tag_search_last_tagged` (~95-line tag search feature).
+- **Removed dead simulation loop** in clutch detection — computed values into `_sim_alive` but never stored results; superseded by the simpler initial-count approach directly below it.
+- **Removed no-op method** `_on_headshots_mode_change` (empty `pass` body) and its `command=` callback registration.
+- **DRY: Consolidated demo picker** — `_demo_picker_set_all` and `_demo_picker_set_selected` shared identical tree-update + counter logic; extracted into `_demo_picker_update_items`.
+- **Merged duplicate conditions**: `_refresh_weapon_label` had identical branches for `n_sel == 0` and `n_sel == total`; `_post_apply_ui` fetched `w`/`h` twice in separate try blocks; `_inject_hlae_extra_args` checked `hlae_no_spectator_ui` twice.
+- **Removed unused variables**: `req_keys` and `opt_clauses` in mixed-mode SQL builder (computed but never read).
+- **Fixed redundant exception catch**: `except (ValueError, Exception)` → `except Exception`.
+- **Minor**: unused loop variable `_ck` → `_`.
+
+---
+
+## [v185]
+
+### Refactored: Performance and DRY cleanup
+
+**`_apply_db_postfilters` — DRY unification:**
+- Extracted 5 shared sig-set builder functions (`_entry_sigs`, `_ace_sigs`, `_multi_sigs`, `_bully_sigs`, `_eco_sigs`) used by both positive and exclusion filter paths. The exclusion section (previously ~50 lines of duplicated logic) now reuses cached results from the positive phase via a single 3-line loop.
+
+**Precomputed lookups in hot loops:**
+- `e_sig` / `e_ksid` dicts: signature tuple `(tick, killer_sid_str)` and killer SID string are computed once per kill event, eliminating 5+ redundant `str(e.get("killer_sid",""))` calls per event in inner loops.
+- Weapon normalization cache (`_norm_wpn`): `.lower().strip()` + prefix stripping cached per unique weapon string across all events in a demo.
+- Column name `.lower()` precomputed once in `_dp2_parse_demo` via `_dcols_low` dict instead of per-column per-search.
+
+**`_build_filter_badges` — removed duplicate comprehensions:**
+- Three identical list comprehensions (matched/fallback/no-events) collapsed into a single loop that also appends exclusion badges in the same pass.
+
+**`_build_clip_badges` — single-pass event partitioning:**
+- Four separate list comprehensions filtering by event type replaced with one loop dispatching into pre-built buckets.
+
+**Import cleanup:**
+- `Counter` moved to module-level import (was imported inline twice in `_apply_db_postfilters`).
+- Removed 3 redundant `from tkinter import filedialog as _fd` inline imports (already imported at module level).
+
+---
+
+## [v184]
+
+### Fixed: Send to back — CS2 kept returning to foreground
+
+Complete rewrite of `_start_cs2_send_to_back_watcher`:
+
+**Root causes of the old implementation:**
+1. It sent CS2 to back **once** then exited the loop — CS2 immediately regained focus.
+2. Window detection relied on title matching alone, which is fragile.
+
+**New logic:**
+- **Two-phase design**: Phase 1 waits up to 120 s for cs2.exe to appear. Phase 2 runs a 500 ms loop that continuously pushes all CS2 windows to `HWND_BOTTOM` for the entire duration of the CSDM recording.
+- **Process-name detection** (primary): uses `win32process.GetWindowThreadProcessId` + `QueryFullProcessImageNameW` (ctypes, no extra dependency) to match the actual `cs2.exe` process — works regardless of window title or locale.
+- **Title fallback**: if `win32process` is unavailable, falls back to title matching as before.
+- Loop exits automatically when the CSDM subprocess finishes.
+
+---
+
+## [v183]
+
+### Fixed: Stop button now cancels preview
+
+Pressing ⏸ Stop while a preview computation is running now cancels it immediately (DB query + dp2 parse + filter steps). The button label changes to "⏸ Stop Preview" during preview and resets on completion or cancellation.
+
+### Changed: Improved stop/kill log messages
+
+⏸ Stop and ⛔ Kill now log the timestamp, the current demo filename, and a clear statement of what will happen (remaining demos skipped / assembly cancelled / tags reverted).
+
+### Added: Recording timeout watchdog
+
+New **Timeout (min)** field in Capture & Timing (0 = disabled). If a CSDM recording process runs longer than this limit, CS2 is killed and the demo is automatically retried via the existing retry logic. Useful to recover from hangs.
+
+### Fixed: Mate POV "Must" mode could return active player's POV
+
+- Increased `_DP2_SID_TOLERANCE` from 8 to 16 to cover the full float64 rounding range for SteamID64 values (~7.6×10^16 magnitude requires up to 16-unit tolerance).
+- Added a final sanity check in `_find_best_mate_sid`: after the best-mate loop, explicitly reject any candidate whose SID matches an active player via either exact or fuzzy check.
+
+### Fixed: Killer POV started on wrong player before first kill
+
+`_build_cams_killer` now always anchors the pre-kill camera on `primary_sid` (the main registered player) instead of deriving it from the first qualifying killer in events. This prevents the clip starting on a secondary registered account before switching to the primary player at the first kill.
+
+### Changed: Death notices use demo-embedded player names
+
+`playerName` is now sent as `""` in all camera entries and `playersOptions`. CSDM falls back to the demo's own player names at record time, eliminating stale/outdated usernames in death notice overlays.
+
+### Added: Suicide "Only" mode
+
+`include_suicides` (bool) replaced by `suicides_mode` ("include" / "exclude" / "only"). The UI shows three radio buttons matching the same pattern as TK mode. "Only" keeps nothing but suicide deaths. Backward-compat: old saved `include_suicides: true/false` is automatically converted on load.
+
+### Changed: French config variable names translated to English
+
+- `kill_mod_sauveur` → `kill_mod_savior` (filter key, function names, constants)
+- `kill_mod_bourreau` → `kill_mod_bully`, `kill_mod_bourreau_n` → `kill_mod_bully_n`
+- Backward-compat aliases load old French keys from saved configs automatically.
+
+### Changed: Keyboard shortcuts removed
+
+F5 (Run), F6 (Preview), Escape (Stop) bindings and the "F5 F6 Esc" hint label have been removed.
+
+---
+
 ## [v182]
 
 ### Fixed: Mate POV log output contradiction

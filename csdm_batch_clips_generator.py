@@ -7,7 +7,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
 import subprocess, threading, json, os, tempfile, time, shutil, re, uuid, random, shlex
 import bisect, concurrent.futures, math
 from functools import lru_cache
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 import calendar as cal_mod
 from datetime import datetime, timedelta, date
 from pathlib import Path
@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v182"
+APP_VERSION = "v186"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -331,10 +331,10 @@ KILL_FILTER_REGISTRY: _List[FilterDef] = [
         dp2_filter="_flick_filter",             dp2_apply="_apply_flick_to_events",
         dp2_log="↩ FLICK",      dp2_result="flick",       dp2_skip="0 FLICK",
         extra_config={"kill_mod_flick_deg": 50}),
-    FilterDef("kill_mod_sauveur",        "🛡 SAVIOR:",        "🛡 SAVIOR",     "dp2",
+    FilterDef("kill_mod_savior",        "🛡 SAVIOR:",        "🛡 SAVIOR",     "dp2",
         ("Kill an enemy who was actively damaging a teammate in the ~2s prior.\n"
          "Captures last-second rescues."),
-        dp2_filter="_sauveur_filter",           dp2_apply="_apply_sauveur_to_events",
+        dp2_filter="_savior_filter",           dp2_apply="_apply_savior_to_events",
         dp2_log="🛡 SAVIOR",    dp2_result="savior",      dp2_skip="0 SAVIOR"),
     # ── DB post-filters ──────────────────────────────────────────────────
     FilterDef("kill_mod_entry_frag",     "🚀 ENTRY FRAG:",    "🚀 ENTRY",      "db",
@@ -344,10 +344,10 @@ KILL_FILTER_REGISTRY: _List[FilterDef] = [
     FilterDef("kill_mod_multi_kill",     "⚡ MULTI-KILL:",    "⚡ MULTI",       "db",
         "N or more kills in one round within the time window.",
         extra_config={"kill_mod_multi_kill_n": 3, "kill_mod_multi_kill_s": 12}),
-    FilterDef("kill_mod_bourreau",       "💀 BULLY:",         "💀 BULLY",       "db",
+    FilterDef("kill_mod_bully",       "💀 BULLY:",         "💀 BULLY",       "db",
         ("Kill the same opponent for the Nth time in the match.\n"
          "e.g. From kill #3 = captured from the 3rd time you kill the same player."),
-        extra_config={"kill_mod_bourreau_n": 3}),
+        extra_config={"kill_mod_bully_n": 3}),
     FilterDef("kill_mod_eco_frag",       "💰 ECO FRAG:",      "💰 ECO",         "db",
         ("Pistol kill against a full-buy opponent (rifle / sniper / LMG).\n"
          "Falls back to all pistol kills if victim_weapon column is missing.")),
@@ -704,6 +704,7 @@ DEFAULT_CONFIG = {
     "concatenate_sequences": False, "true_view": True,
     "tag_on_export": "", "tag_enabled": False,
     "retry_count": 2, "retry_delay": 15, "delay_between_demos": 3,
+    "recording_timeout": 0,   # minutes; 0 = disabled (kill CS2 + retry if exceeded)
     # Final assembly of all clips after batch
     "assemble_after": False,      # concatenate all clips after batch
     "delete_after_assemble": False,  # delete source clips after assembly
@@ -718,7 +719,7 @@ DEFAULT_CONFIG = {
     # "all" = include all kills  |  "only" = headshots only  |  "exclude" = non-headshots only
     "headshots_mode": "all",
     "teamkills_mode": "include",
-    "include_suicides": True,   # include suicides (weapon world/suicide/world_entity)
+    "suicides_mode": "include",  # "include" | "exclude" | "only"
     # Kill modifiers — auto-populated from KILL_FILTER_REGISTRY
     # Logic mode keys kept for backward compat
     "kill_mod_logic_mods": "mixed",
@@ -780,7 +781,7 @@ PRESET_KEYS = {
     "players":     ["steam_id", "player_name"],
     "date":        ["date_from", "date_to"],
     "filters":     ["events", "weapons", "perspective", "victim_pre_s",
-                    "headshots_mode", "include_suicides", "teamkills_mode",
+                    "headshots_mode", "suicides_mode", "teamkills_mode",
                     "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
                     *_FILTER_PRESET_PLAYER_KEYS,
                     "clip_order", "show_xray",
@@ -802,10 +803,10 @@ PRESET_KEYS = {
                     "phys_sv_gravity", "phys_blood", "phys_dynamic_lighting"],
     # ── Timing group ───────────────────────────────────────────────────────────
     "timing":      ["before", "after", "close_game_after",
-                    "retry_count", "retry_delay", "delay_between_demos"],
+                    "retry_count", "retry_delay", "delay_between_demos", "recording_timeout"],
     # ── Backward-compat aliases (old format → new granular keys) ───────────────
     "player":      ["steam_id", "player_name", "events", "weapons", "date_from", "date_to",
-                    "perspective", "victim_pre_s", "headshots_mode", "include_suicides",
+                    "perspective", "victim_pre_s", "headshots_mode", "suicides_mode",
                     "teamkills_mode", "kill_mod_logic_mods", "kill_mod_logic_dp2",
                     "kill_mod_logic_db", *_FILTER_PRESET_PLAYER_KEYS, "clip_order",
                     "show_xray", "clutch_enabled", "clutch_wins_only", "clutch_mode",
@@ -891,6 +892,18 @@ def load_config():
     # Backward compat: old cs2_minimize → cs2_send_to_back
     if "cs2_minimize" in saved and "cs2_send_to_back" not in saved:
         cfg["cs2_send_to_back"] = bool(saved["cs2_minimize"])
+    # Backward compat: include_suicides bool → suicides_mode string
+    if "include_suicides" in saved and "suicides_mode" not in saved:
+        cfg["suicides_mode"] = "include" if saved["include_suicides"] else "exclude"
+    # Backward compat: French kill-mod names → English
+    for _fr, _en in [("kill_mod_sauveur", "kill_mod_savior"),
+                     ("kill_mod_bourreau", "kill_mod_bully"),
+                     ("kill_mod_bourreau_n", "kill_mod_bully_n")]:
+        if _fr in saved and _en not in saved:
+            cfg[_en] = saved[_fr]
+        for _sfx in ("_req", "_exclude"):
+            if f"{_fr}{_sfx}" in saved and f"{_en}{_sfx}" not in saved:
+                cfg[f"{_en}{_sfx}"] = saved[f"{_fr}{_sfx}"]
     return cfg
 
 def save_config(cfg):
@@ -1620,7 +1633,7 @@ class PlayerSearchWidget(tk.Frame):
             target = int(self._pg_entry_var.get().strip()) - 1
             self._page = max(0, min(target, self._page_count() - 1))
             self._render_page()
-        except (ValueError, Exception):
+        except Exception:
             self._render_page()
 
     def _on_lb_select(self, *_):
@@ -1636,22 +1649,6 @@ class PlayerSearchWidget(tk.Frame):
         self._lb_sel_lbl.config(
             text=f"Selected: {name}  ({sid})  ← ★ to register",
             fg=YELLOW)
-
-    def _select_by_label(self, label):
-        """Select an entry by label, jumping to the correct page if needed."""
-        for abs_idx, entry in enumerate(self._filtered):
-            if entry[0] == label:
-                # Jump to the page containing this entry
-                target_page = abs_idx // self._PAGE_SIZE
-                if target_page != self._page:
-                    self._page = target_page
-                    self._render_page()
-                row_idx = abs_idx % self._PAGE_SIZE
-                self._lb.selection_clear(0, "end")
-                self._lb.selection_set(row_idx)
-                self._lb.see(row_idx)
-                self._lb_label, self._lb_sid, self._lb_name = entry[0], entry[1], entry[2]
-                break
 
     def get_steam_ids(self):
         return list(self._active_sids)
@@ -2101,14 +2098,14 @@ class App(tk.Tk):
                      "tag_on_export", "perspective", "hlae_extra_args", "clip_order",
                      "cs2_window_mode",
                      "output_dir_clips", "output_dir_concat", "output_dir_assembled",
-                     "assemble_output", "video_preset", "teamkills_mode", "phys_ragdoll_scale",
+                     "assemble_output", "video_preset", "teamkills_mode", "suicides_mode", "phys_ragdoll_scale",
                      "cs2_cfg_dir",
                      "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
                      "headshots_mode",
                      "theme_bg", "theme_accent",
                      "clutch_mode"]
         int_keys = ["before", "after", "tickrate", "width", "height", "framerate", "crf", "audio_bitrate",
-                     "death_notices_duration", "retry_count", "retry_delay", "delay_between_demos",
+                     "death_notices_duration", "retry_count", "retry_delay", "delay_between_demos", "recording_timeout",
                      "hlae_fov", "hlae_slow_motion",
                      "phys_ragdoll_gravity", "phys_sv_gravity",
                      "ui_window_w", "ui_window_h", "ui_split_pct",
@@ -2122,7 +2119,7 @@ class App(tk.Tk):
                       "concatenate_sequences", "subfolder_per_demo", "true_view", "tag_enabled",
                       "hlae_afx_stream", "hlae_no_spectator_ui",
                       "hlae_fix_scope_fov", "hlae_workshop_download",
-                      "include_suicides", "show_xray",
+                      "show_xray",
                       # Filter bool keys auto-derived from KILL_FILTER_REGISTRY
                       *_FILTER_BOOL_KEYS,
                       # Filter sub-option bools from extra_config (e.g. kill_mod_hv_one_shot)
@@ -2176,6 +2173,9 @@ class App(tk.Tk):
         for w in self.cfg.get("weapons", []):
             self.sel_weapons[w] = tk.BooleanVar(value=True)
         self._running = False
+        self._current_demo = ""
+        self._previewing = False
+        self._preview_cancel = threading.Event()
         self._stop_after_current = False
         self._kill_triggered = False
         self._tagged_this_batch = []   # [(demo_path, tag_name)] — for rollback on kill
@@ -2315,6 +2315,11 @@ class App(tk.Tk):
                 if val and "cs2_send_to_back" not in cfg:
                     if "cs2_send_to_back" in self.v:
                         self.v["cs2_send_to_back"].set(True)
+                continue
+            # Backward compat: old include_suicides bool → suicides_mode string
+            if k == "include_suicides":
+                if "suicides_mode" not in cfg and "suicides_mode" in self.v:
+                    self.v["suicides_mode"].set("include" if val else "exclude")
                 continue
             if k in self.v:
                 if k == "encoder" and val not in ENCODER_OPTIONS:
@@ -2736,9 +2741,7 @@ class App(tk.Tk):
     def _refresh_weapon_label(self):
         total = getattr(self, "_total_weapons", len(self.sel_weapons))
         n_sel = sum(1 for v in self.sel_weapons.values() if v.get())
-        if n_sel == 0:
-            self._wg_lbl.config(text=f"weapons  (all / {total})", fg=MUTED)
-        elif n_sel == total:
+        if n_sel == 0 or n_sel == total:
             self._wg_lbl.config(text=f"weapons  (all / {total})", fg=MUTED)
         else:
             self._wg_lbl.config(text=f"weapons  ({n_sel} / {total} selected)", fg=ORANGE)
@@ -3240,7 +3243,7 @@ class App(tk.Tk):
             bg=BG3, fg=MUTED, relief="flat", cursor="hand2", bd=0,
             state="disabled", highlightthickness=0,
             activebackground=BORDER, activeforeground=RED,
-            command=self._stop_graceful)
+            command=self._handle_stop)
         self.stop_btn.pack(side="left", ipady=5, ipadx=8)
 
         self.kill_btn = tk.Button(
@@ -3251,9 +3254,6 @@ class App(tk.Tk):
             command=self._kill_now)
         self.kill_btn.pack(side="left", padx=(4, 0), ipady=5, ipadx=8)
 
-        # Keyboard hint
-        tk.Label(ctrl, text="F5  F6  Esc", font=FONT_DESC,
-                 bg=BG2, fg=DESC_COLOR).pack(side="left", padx=(10, 0))
 
         self.progress_lbl = tk.Label(ctrl, text="", font=FONT_SM, bg=BG2, fg=MUTED)
         self.progress_lbl.pack(side="right")
@@ -3270,9 +3270,6 @@ class App(tk.Tk):
         log_frame.grid(row=1, column=0, sticky="nsew")
         self._build_log_panel(log_frame)
 
-        self.bind("<F5>",     lambda e: self._run())
-        self.bind("<F6>",     lambda e: self._dry_run())
-        self.bind("<Escape>", lambda e: self._stop_graceful() if self._running else None)
         self.bind("<Control-b>", self._toggle_log_badges)
         self.bind("<Control-f>", lambda e: self._log_search_open())
 
@@ -3929,6 +3926,11 @@ class App(tk.Tk):
                             "Helps CS2 fully release resources before the next launch.\n"
                             "Recommended: 3–5.")
         sentry(rg, self.v["delay_between_demos"], width=3).pack(side="left", padx=(4, 0), ipady=4)
+        _to_lbl = mlabel(rg, "  Timeout (min):")
+        _to_lbl.pack(side="left", padx=(8, 0))
+        add_tip(_to_lbl, "Kill CS2 and retry if a demo recording takes longer than this many minutes.\n"
+                         "0 = disabled. A good value is 15–30 min depending on clip count per demo.")
+        sentry(rg, self.v["recording_timeout"], width=4).pack(side="left", padx=(4, 0), ipady=4)
         _ord_lbl = mlabel(rg, "  Order:")
         _ord_lbl.pack(side="left", padx=(16, 0))
         add_tip(_ord_lbl, "Chronological: demos processed oldest-to-newest.\n"
@@ -3943,9 +3945,17 @@ class App(tk.Tk):
         # ── SUICIDES / TK / HS ───────────────────────────────────────────────
         tk_row = tk.Frame(sec, bg=BG2)
         tk_row.pack(fill="x")
-        _sui_cb = hchk(tk_row, "Suicides", self.v["include_suicides"])
-        _sui_cb.pack(side="left")
-        add_tip(_sui_cb, "Include world / fall / suicide deaths in clips.")
+        _sui_lbl = mlabel(tk_row, "Suicides:")
+        _sui_lbl.pack(side="left")
+        add_tip(_sui_lbl, "Include / Exclude / Only for world / fall / suicide deaths.")
+        for _lbl, _val, _tip in [
+            ("Include", "include", "Include suicide deaths in clips."),
+            ("Exclude", "exclude", "Remove all suicide deaths from clips."),
+            ("Only",    "only",    "Keep only suicide deaths (world / fall / etc)."),
+        ]:
+            _rb = hradio(tk_row, _lbl, self.v["suicides_mode"], _val)
+            _rb.pack(side="left", padx=(4, 0))
+            add_tip(_rb, _tip)
         mlabel(tk_row, "   TK:").pack(side="left", padx=(8, 0))
         for lbl, val, tip in [
             ("Include", "include", "All kills, including teamkills"),
@@ -3967,8 +3977,7 @@ class App(tk.Tk):
                 "Exclude = keep non-headshot kills only.\n"
                 "⚠ HS is auto-forced only when active filter logic guarantees HS-only output.")
         for lbl, val in [("All", "all"), ("Only", "only"), ("Exclude", "exclude")]:
-            _rb = hradio(hs_row, lbl, self.v["headshots_mode"], val,
-                         command=self._on_headshots_mode_change)
+            _rb = hradio(hs_row, lbl, self.v["headshots_mode"], val)
             _rb.pack(side="left", padx=(8 if val == "all" else 4, 0))
         # Store the radio buttons container so ONE TAP / TROIS TAP can disable it
         self._hs_row = hs_row
@@ -4088,10 +4097,10 @@ class App(tk.Tk):
                 sentry(_mk_row, self.v["kill_mod_multi_kill_s"], width=3).pack(
                     side="left", padx=(4, 0), ipady=4)
                 mlabel(_mk_row, "s").pack(side="left", padx=(2, 0))
-            elif _fdef.key == "kill_mod_bourreau":
+            elif _fdef.key == "kill_mod_bully":
                 _bo_row = self._build_filter_row(sec, _fdef, self._must_widgets["db"])
                 mlabel(_bo_row, "  From kill #:").pack(side="left", padx=(8, 0))
-                scombo(_bo_row, self.v["kill_mod_bourreau_n"], [2, 3, 4, 5], 3).pack(
+                scombo(_bo_row, self.v["kill_mod_bully_n"], [2, 3, 4, 5], 3).pack(
                     side="left", padx=(4, 0))
                 add_tip(_bo_row.winfo_children()[-1],
                         "2 = from 2nd kill of same victim, 3 = from 3rd, etc.")
@@ -4389,13 +4398,13 @@ class App(tk.Tk):
             return "break"
         # Let native selection happen — don't return "break" so Tk handles highlight
 
-    def _demo_picker_set_all(self, value):
-        for dp in list(self._demo_picker_state.keys()):
-            self._demo_picker_state[dp] = value
-            iid = dp
+    def _demo_picker_update_items(self, iids, value):
+        """Update picker state and tree display for given item IDs."""
+        sym = "✓" if value else "✕"
+        tag = "ok" if value else "off"
+        for iid in iids:
+            self._demo_picker_state[iid] = value
             try:
-                sym = "✓" if value else "✕"
-                tag = "ok" if value else "off"
                 old_vals = self._demo_tree.item(iid, "values")
                 self._demo_tree.item(iid, values=(sym, old_vals[1], old_vals[2], old_vals[3] if len(old_vals) > 3 else ""), tags=(tag,))
             except Exception:
@@ -4409,24 +4418,12 @@ class App(tk.Tk):
         except Exception:
             pass
 
+    def _demo_picker_set_all(self, value):
+        self._demo_picker_update_items(list(self._demo_picker_state.keys()), value)
+
     def _demo_picker_set_selected(self, value: bool):
         """Set the check state of all currently highlighted (native-selected) rows."""
-        sel = self._demo_tree.selection()
-        for iid in sel:
-            dp = iid
-            self._demo_picker_state[dp] = value
-            sym = "✓" if value else "✕"
-            tag = "ok" if value else "off"
-            old_vals = self._demo_tree.item(iid, "values")
-            self._demo_tree.item(iid, values=(sym, old_vals[1], old_vals[2], old_vals[3] if len(old_vals) > 3 else ""), tags=(tag,))
-        n_on  = sum(1 for v in self._demo_picker_state.values() if v)
-        n_tot = len(self._demo_picker_state)
-        try:
-            self._picker_count_lbl.config(
-                text=f"{n_on}/{n_tot} selected",
-                fg=ORANGE if n_on < n_tot else MUTED)
-        except Exception:
-            pass
+        self._demo_picker_update_items(self._demo_tree.selection(), value)
 
     def _on_picker_mode_change(self, *_):
         """Switch between range-only and manual (all demos) mode."""
@@ -5131,10 +5128,6 @@ class App(tk.Tk):
             if self.v["kill_mod_trois_tap"].get():
                 self.v["kill_mod_trois_tap"].set(False)
 
-    def _on_headshots_mode_change(self, *_):
-        """Called when the user manually changes the HS radio — no-op if locked."""
-        pass  # The radio var updates itself; lock is enforced by widget state
-
 
     def _on_logic_mode_change(self, category: str, *_):
         """Ensure ★ Must toggles are visible (fixed required+optional logic)."""
@@ -5235,17 +5228,6 @@ class App(tk.Tk):
                     v.set(False)
 
         self._log_flash("  ✓ All kill/situation filters unselected.", "ok")
-
-    @staticmethod
-    def _cfg_scalar(cfg, key, default=None):
-        v = cfg.get(key, default)
-        if hasattr(v, "get") and callable(v.get):
-            try:
-                return v.get()
-            except Exception:
-                return default
-        return v
-
 
     def _wire_enable_must(self, enable_var: tk.BooleanVar, req_var: tk.BooleanVar):
         """Couple an Enable checkbox with its ★ Must checkbox.
@@ -5497,16 +5479,18 @@ class App(tk.Tk):
                         if f"user_{name}" in dcols:
                             return f"user_{name}"
                         return None
+                    # Precompute lowered column names (avoid repeated .lower() per column)
+                    _dcols_low = {c: c.lower() for c in dcols}
                     col_atk = _dc("attacker_steamid") or next(
-                        (c for c in dcols if "attacker" in c.lower() and "steam" in c.lower()), None)
-                    col_yaw = next((c for c in dcols if "yaw" in c.lower()), None)
-                    col_pitch = next((c for c in dcols if "pitch" in c.lower()), None)
+                        (c for c, cl in _dcols_low.items() if "attacker" in cl and "steam" in cl), None)
+                    col_yaw = next((c for c, cl in _dcols_low.items() if "yaw" in cl), None)
+                    col_pitch = next((c for c, cl in _dcols_low.items() if "pitch" in cl), None)
                     flag_cols = {
-                        "noscope": next((c for c in dcols if "noscope" in c.lower()), None),
-                        "thrusmoke": next((c for c in dcols if "thrusmoke" in c.lower()), None),
-                        "attackerblind": next((c for c in dcols if "attackerblind" in c.lower()), None),
-                        "penetrated": next((c for c in dcols if "penetrated" in c.lower()), None),
-                        "attackerinair": next((c for c in dcols if "attackerinair" in c.lower()), None),
+                        "noscope": next((c for c, cl in _dcols_low.items() if "noscope" in cl), None),
+                        "thrusmoke": next((c for c, cl in _dcols_low.items() if "thrusmoke" in cl), None),
+                        "attackerblind": next((c for c, cl in _dcols_low.items() if "attackerblind" in cl), None),
+                        "penetrated": next((c for c, cl in _dcols_low.items() if "penetrated" in cl), None),
+                        "attackerinair": next((c for c, cl in _dcols_low.items() if "attackerinair" in cl), None),
                     }
                     if col_atk:
                         fetch_cols = ["tick", col_atk]
@@ -5981,10 +5965,10 @@ class App(tk.Tk):
                 filtered.append(evt)
         return filtered
 
-    def _sauveur_filter(self, demo_path, events, cfg):
+    def _savior_filter(self, demo_path, events, cfg):
         """Keep kills where the player killed an enemy who was hurting a teammate.
 
-        A 'sauveur' kill: within SAUVEUR_WINDOW ticks before the kill, the
+        A 'savior' kill: within SAVIOR_WINDOW ticks before the kill, the
         victim (the player's target) was attacking one of the tracked player SIDs.
         Requires hurt_index from player_hurt parse.
 
@@ -6002,7 +5986,7 @@ class App(tk.Tk):
         if not hurt_index:
             return self._non_kill_only(events)
 
-        SAUVEUR_WINDOW = 128  # ~2s — the enemy was shooting at a teammate recently
+        SAVIOR_WINDOW = 128  # ~2s — the enemy was shooting at a teammate recently
 
         # Build set of tracked player SIDs — only events where they were the hurt victim count
         sids_set = {str(e.get("killer_sid","")) for e in events if e.get("type") == "kill"}
@@ -6029,7 +6013,7 @@ class App(tk.Tk):
             if not ticks:
                 continue
             # Binary-search for any tick in (kill_tick - WINDOW, kill_tick]
-            lo = kill_tick - SAUVEUR_WINDOW
+            lo = kill_tick - SAVIOR_WINDOW
             pos = bisect.bisect_left(ticks, lo)
             if pos < len(ticks) and ticks[pos] <= kill_tick:
                 filtered.append(evt)
@@ -6049,9 +6033,10 @@ class App(tk.Tk):
     _MATE_POV_MIN_VISIBLE   = 2             # body points in FOV required ("≥50% visible")
     _MATE_POV_MAX_DIST      = 5000          # ignore mates further than this (Hammer units)
     # demoparser2 stores SteamIDs with the lower 3 bits zeroed (CS2 entity handle
-    # encoding).  The true SteamID64 differs by at most 7.  We use tolerance=8 so
-    # a simple abs-diff lookup resolves dp2 keys ↔ DB SteamIDs without a full table.
-    _DP2_SID_TOLERANCE      = 8
+    # encoding).  float64 precision loss on 17-digit SteamID64 values can produce
+    # a rounding error of up to 16 units at the magnitudes involved (~7.6×10^16).
+    # Tolerance=16 covers all real-world cases with margin.
+    _DP2_SID_TOLERANCE      = 16
 
     def _parse_mate_positions(self, demo_path, kill_ticks):
         """Lazily parse player positions + view-angles at the given ticks and cache them.
@@ -6206,8 +6191,8 @@ class App(tk.Tk):
         """Return True if dp2_sid is within ±_DP2_SID_TOLERANCE of any SID in db_sids_set.
 
         db_sids_set contains true SteamID64 strings (from the CSDM DB).
-        dp2_sid is a demoparser2 key (lower 3 bits zeroed).  Direct set-lookup would
-        always fail, so we compare numerically.
+        dp2_sid may have minor numeric drift from float64 precision loss (up to 16 units
+        for typical SteamID64 magnitudes).  We compare numerically within tolerance.
         """
         try:
             dp2_int = int(dp2_sid)
@@ -6302,6 +6287,12 @@ class App(tk.Tk):
             if score < best_score:
                 best_score = score
                 best_sid   = sid
+
+        # Sanity check: never return an active player as the mate
+        if best_sid and (best_sid in sids_active or self._fuzzy_sid_in_set(best_sid, sids_active)):
+            self._alog(
+                f"  ⚠ Mate POV: best_sid {best_sid} matched an active player — rejected.", "dim")
+            best_sid = None
 
         return best_sid, victim_dp2_sid
 
@@ -7112,101 +7103,6 @@ class App(tk.Tk):
             self.v["date_to"].set("")
             self._alog(f"[TAGS/range] After range: date_from → {after}, date_to cleared", "ok")
 
-    def _tag_search_last_tagged(self):
-        """Same intersection as By config (config ∩ DB tags),
-        finds the most recent demo and applies date_from to the next day."""
-        active_ids = list(self._tags_active)
-        active_names = self._get_active_tag_names()
-        if not active_ids:
-            self._alog("Tags 📅: select at least one tag.", "err")
-            return
-        if not self.player_search.get_steam_ids():
-            self._alog("Tags 📅: select at least one player account in Capture.", "err")
-            return
-
-        ts = self._tags_schema
-        jt       = ts.get("junction_table")
-        jt_tag   = ts.get("jt_tag_col")
-        jt_match = ts.get("jt_match_col")
-        mkm_col  = self._find_col("matches", ["checksum", "id", "match_id"])
-        if not jt or not jt_tag or not jt_match or not mkm_col:
-            self._alog("Tags 📅: insufficient DB schema.", "err")
-            return
-
-        cfg = self._build_run_cfg()
-
-        def task():
-            # 1. Checksums tagged in DB
-            try:
-                conn = self._pg_fresh()
-                with conn.cursor() as cur:
-                    ph = ",".join(["%s"] * len(active_ids))
-                    cur.execute(
-                        f'SELECT DISTINCT "{jt_match}" FROM "{jt}" WHERE "{jt_tag}" IN ({ph})',
-                        active_ids)
-                    tagged_checksums = {r[0] for r in cur.fetchall()}
-                conn.close()
-            except Exception as e:
-                self.after(0, lambda err=e: self._alog(f"Tags 📅 DB error: {err}", "err"))
-                return
-
-            # 2. Demos matching config
-            try:
-                evts = self._query_events(cfg)
-            except Exception as e:
-                self.after(0, lambda err=e: self._alog(f"Tags 📅 config error: {err}", "err"))
-                return
-
-            # 3. Intersection: config demos ∩ tagged
-            matched = []
-            for dp in evts:
-                chk = self._demo_checksums.get(dp) or self._get_demo_checksum(dp)
-                if chk and chk in tagged_checksums:
-                    matched.append(dp)
-
-            if not matched:
-                _names_str = ", ".join(active_names)
-                self.after(0, lambda: (
-                    self._alog(f"[TAGS/📅] No tagged demo in current config \"{_names_str}\".", "warn"),
-                    self._tag_search_status.config(text="No tagged demos.", fg=YELLOW)))
-                return
-
-            # 4. Find the most recent
-            matched_sorted = sorted(matched, key=self._demo_sort_key)
-            last_demo = matched_sorted[-1]
-            last_ts = self._get_demo_ts(last_demo)
-            if last_ts is None:
-                sk = self._demo_sort_key(last_demo)
-                last_ts = sk[1] if sk[0] == 0 else None
-
-            suggest_date = None
-            if last_ts:
-                try:
-                    suggest_date = (datetime.fromtimestamp(last_ts) + timedelta(days=1)).strftime("%d-%m-%Y")
-                except Exception:
-                    pass
-
-            def show(matched=matched_sorted, last_demo=last_demo, suggest_date=suggest_date):
-                _names_str = ", ".join(active_names)
-                _last_date = self._format_demo_date(last_demo)
-                if suggest_date:
-                    self.v["date_from"].set(suggest_date)
-                    self._alog(
-                        f"[TAGS/📅] {len(matched)} demo(s) tagged in config"
-                        f" — latest: {_last_date} — date_from → {suggest_date}",
-                        "ok")
-                    self._tag_search_status.config(
-                        text=f"✓ {len(matched)} demo(s) — date_from → {suggest_date}", fg=GREEN)
-                else:
-                    self._alog(
-                        f"[TAGS/📅] {len(matched)} demo(s) — most recent date undetermined.",
-                        "warn")
-                    self._tag_search_status.config(text=f"✓ {len(matched)} demo(s)", fg=YELLOW)
-
-            self.after(0, show)
-
-        threading.Thread(target=task, daemon=True).start()
-
     def _tag_apply_selected(self):
         names = self._get_active_tag_names()
         if not names:
@@ -7776,17 +7672,10 @@ class App(tk.Tk):
 
     def _post_apply_ui(self):
         """Sync derived widgets after _apply_config (resolution, slow-motion…)."""
-        # Resolution combo: reflect current width × height
         try:
             w = self.v["width"].get()
             h = self.v["height"].get()
             self.v["resolution"].set(f"{w}x{h}")
-        except Exception:
-            pass
-        # v60 structured selectors: infer definition + ratio from width/height
-        try:
-            w = self.v["width"].get()
-            h = self.v["height"].get()
             # Definition
             def_lbl = next((lbl for lbl, dh in DEFINITIONS if dh == h), None)
             # Ratio
@@ -8332,23 +8221,18 @@ class App(tk.Tk):
         Falls back to all active filters from cfg when no event has _mf.
         Excluded filters are shown with a 🚫 prefix in muted colour.
         """
-        badges = []
+        # Collect matched filter keys from event _mf sets (if available)
+        matched: set = set()
         if events is not None:
-            matched: set = set()
             for e in events:
                 if e.get("type") == "kill":
                     matched |= (e.get("_mf") or set())
-            if matched:
-                badges = [(f" [{lbl}]", "badge_filter")
-                          for k, lbl, _cat in self._FILTER_BADGE_DEFS if k in matched]
-            else:
-                badges = [(f" [{lbl}]", "badge_filter")
-                          for k, lbl, _cat in self._FILTER_BADGE_DEFS if cfg.get(k)]
-        else:
-            badges = [(f" [{lbl}]", "badge_filter")
-                      for k, lbl, _cat in self._FILTER_BADGE_DEFS if cfg.get(k)]
-        # Append excluded-filter labels (informational, dim colour)
+
+        # Build badges — from matched keys if any, else from active cfg flags
+        badges = []
         for k, lbl, _cat in self._FILTER_BADGE_DEFS:
+            if (matched and k in matched) or (not matched and cfg.get(k)):
+                badges.append((f" [{lbl}]", "badge_filter"))
             if cfg.get(f"{k}_exclude", False):
                 badges.append((f" [🚫{lbl}]", "badge_warn"))
         return badges
@@ -8387,10 +8271,14 @@ class App(tk.Tk):
         Filter badges: one per active kill filter (emojis only, blue).
         """
         badges = []
-        kill_events    = [e for e in events if e.get("type") == "kill"]
-        death_events   = [e for e in events if e.get("type") == "death"]
-        round_events   = [e for e in events if e.get("type") == "round"]
-        clutch_events  = [e for e in events if e.get("type") == "clutch_round"]
+        # Single-pass partitioning by event type
+        kill_events, death_events, round_events, clutch_events = [], [], [], []
+        _type_buckets = {"kill": kill_events, "death": death_events,
+                         "round": round_events, "clutch_round": clutch_events}
+        for e in events:
+            bucket = _type_buckets.get(e.get("type"))
+            if bucket is not None:
+                bucket.append(e)
 
         def _wpn_str(event_list):
             """Return a compact weapon string for a list of events."""
@@ -8642,9 +8530,13 @@ class App(tk.Tk):
                 SUICIDE_WEAPONS = ("world", "suicide", "world_entity", "trigger_hurt",
                                    "fall", "env_fire", "planted_c4")
                 suicidesql = ""
-                if not cfg.get("include_suicides", True) and wc:
+                _sm = cfg.get("suicides_mode", "include")
+                if _sm != "include" and wc:
                     ph = ",".join(["%s"] * len(SUICIDE_WEAPONS))
-                    suicidesql = f' AND k."{wc}" NOT IN ({ph})'
+                    if _sm == "exclude":
+                        suicidesql = f' AND k."{wc}" NOT IN ({ph})'
+                    elif _sm == "only":
+                        suicidesql = f' AND k."{wc}" IN ({ph})'
 
                 _MOD_COLS = KILL_FILTER_SQL_COLS  # derived from KILL_FILTER_REGISTRY
                 active_mods   = [k for k in _MOD_COLS if cfg.get(k, False)]
@@ -8723,8 +8615,6 @@ class App(tk.Tk):
                                     if col:
                                         _key_clause.append((mod_key, mod_clauses[_mi]))
                                         _mi += 1
-                                req_keys = [k for k, _ in _key_clause if cfg.get(f"{k}_req", False)]
-                                opt_clauses = [c for k, c in _key_clause if not cfg.get(f"{k}_req", False)]
                                 req_clauses = [c for k, c in _key_clause if cfg.get(f"{k}_req", False)]
                                 if req_clauses:
                                     modsql = " AND (" + " AND ".join(req_clauses) + ")"
@@ -8989,18 +8879,18 @@ class App(tk.Tk):
         do_entry   = cfg.get("kill_mod_entry_frag", False)
         do_ace     = cfg.get("kill_mod_ace", False)
         do_multi   = cfg.get("kill_mod_multi_kill", False)
-        do_bour    = cfg.get("kill_mod_bourreau", False)
+        do_bul   = cfg.get("kill_mod_bully", False)
         do_eco     = cfg.get("kill_mod_eco_frag", False)
 
         # Exclude flags — these remove matching kills regardless of positive logic
         excl_entry = cfg.get("kill_mod_entry_frag_exclude", False)
         excl_ace   = cfg.get("kill_mod_ace_exclude",        False)
         excl_multi = cfg.get("kill_mod_multi_kill_exclude", False)
-        excl_bour  = cfg.get("kill_mod_bourreau_exclude",   False)
+        excl_bul  = cfg.get("kill_mod_bully_exclude",   False)
         excl_eco   = cfg.get("kill_mod_eco_frag_exclude",   False)
 
-        active_flags = [do_entry, do_ace, do_multi, do_bour, do_eco]
-        excl_flags   = [excl_entry, excl_ace, excl_multi, excl_bour, excl_eco]
+        active_flags = [do_entry, do_ace, do_multi, do_bul, do_eco]
+        excl_flags   = [excl_entry, excl_ace, excl_multi, excl_bul, excl_eco]
         if not any(active_flags) and not any(excl_flags):
             return results
 
@@ -9009,7 +8899,7 @@ class App(tk.Tk):
 
         multi_n = max(2, int(cfg.get("kill_mod_multi_kill_n", 3)))
         multi_s = max(1, int(cfg.get("kill_mod_multi_kill_s", 12)))
-        bour_n  = max(2, int(cfg.get("kill_mod_bourreau_n", 3)))
+        bul_n  = max(2, int(cfg.get("kill_mod_bully_n", 3)))
 
         # Pistols (lowercase suffixes) for Eco-Frag detection
         PISTOLS = {
@@ -9042,6 +8932,17 @@ class App(tk.Tk):
             "m249","negev",
         }
 
+        # Weapon normalization cache (avoids repeated .lower().strip() in hot loops)
+        _wpn_cache: dict = {}
+        def _norm_wpn(w: str) -> str:
+            r = _wpn_cache.get(w)
+            if r is None:
+                r = w.lower().strip()
+                if r.startswith("weapon_"):
+                    r = r[7:]
+                _wpn_cache[w] = r
+            return r
+
         sids_set = set(str(s) for s in sids)
         filtered = {}
 
@@ -9069,6 +8970,16 @@ class App(tk.Tk):
             player_kills = [e for e in kill_events
                             if str(e.get("killer_sid", "")) in sids_set]
 
+            # Precompute per-event killer_sid and signature tuple (avoids
+            # rebuilding str(e.get("killer_sid","")) 5+ times per event)
+            e_ksid: dict = {}  # id(e) → str(killer_sid)
+            e_sig:  dict = {}  # id(e) → (tick, killer_sid_str)
+            for e in kill_events:
+                ks = str(e.get("killer_sid", ""))
+                eid = id(e)
+                e_ksid[eid] = ks
+                e_sig[eid]  = (e["tick"], ks)
+
             round_groups: dict = {}
             for e in player_kills:
                 rk = _round_key(e)
@@ -9080,96 +8991,94 @@ class App(tk.Tk):
                 rk = _round_key(e)
                 all_kills_by_round.setdefault(rk, []).append(e)
 
-            # Each active modifier collects its own sig set, paired with its cfg_key.
-            # OR mode  → union  all sets.
-            # AND mode → intersect all sets (a kill must appear in every set).
-            per_mod_sigs: list = []  # list of (cfg_key, set_of_sigs)
-
-            # ── Entry Frag ────────────────────────────────────────────────
-            if do_entry:
-                _sigs: set = set()
+            # ── Shared sig-set builders (DRY: used for both positive & exclusion) ─
+            def _entry_sigs():
+                s = set()
                 for rk, r_kills in all_kills_by_round.items():
                     first_tick = min(e["tick"] for e in r_kills)
                     for e in r_kills:
-                        if e["tick"] == first_tick and str(e.get("killer_sid","")) in sids_set:
-                            _sigs.add((e["tick"], str(e.get("killer_sid",""))))
-                per_mod_sigs.append(("kill_mod_entry_frag", _sigs))
+                        if e["tick"] == first_tick and e_ksid[id(e)] in sids_set:
+                            s.add(e_sig[id(e)])
+                return s
 
-            # ── Ace ────────────────────────────────────────────────────────
-            if do_ace:
-                _sigs = set()
+            def _ace_sigs():
+                s = set()
                 for rk, r_kills in round_groups.items():
-                    victims = {str(e.get("victim_sid","")) for e in r_kills}
-                    if len(victims) >= 5:
+                    if len({str(e.get("victim_sid","")) for e in r_kills}) >= 5:
                         for e in r_kills:
-                            _sigs.add((e["tick"], str(e.get("killer_sid",""))))
-                per_mod_sigs.append(("kill_mod_ace", _sigs))
+                            s.add(e_sig[id(e)])
+                return s
 
-            # ── Multi-Kill (Triple / Quadra) ───────────────────────────────
-            if do_multi:
-                max_ticks = multi_s * 64
-                try:
-                    max_ticks = multi_s * int(cfg.get("tickrate", 64))
-                except Exception:
-                    pass
-                _sigs = set()
+            _max_ticks = multi_s * int(cfg.get("tickrate", 64))
+            def _multi_sigs():
+                s = set()
                 for rk, r_kills in round_groups.items():
                     if len(r_kills) < multi_n:
                         continue
                     r_sorted = sorted(r_kills, key=lambda e: e["tick"])
-                    span = r_sorted[-1]["tick"] - r_sorted[0]["tick"]
-                    if span <= max_ticks:
+                    if r_sorted[-1]["tick"] - r_sorted[0]["tick"] <= _max_ticks:
                         for e in r_kills:
-                            _sigs.add((e["tick"], str(e.get("killer_sid",""))))
-                per_mod_sigs.append(("kill_mod_multi_kill", _sigs))
+                            s.add(e_sig[id(e)])
+                return s
 
-            # ── BULLY ──────────────────────────────────────────────────────
-            if do_bour:
-                from collections import Counter
-                pair_count: Counter = Counter()
+            def _bully_sigs():
+                pair_count = Counter()
                 for e in kill_events:
-                    ks = str(e.get("killer_sid",""))
-                    vs = str(e.get("victim_sid",""))
-                    if ks in sids_set and vs:
-                        pair_count[(ks, vs)] += 1
-                pair_seen: Counter = Counter()
-                _sigs = set()
+                    ks = e_ksid[id(e)]
+                    if ks in sids_set:
+                        vs = str(e.get("victim_sid",""))
+                        if vs:
+                            pair_count[(ks, vs)] += 1
+                pair_seen = Counter()
+                s = set()
                 for e in sorted(kill_events, key=lambda e: e["tick"]):
-                    ks = str(e.get("killer_sid",""))
-                    vs = str(e.get("victim_sid",""))
+                    ks = e_ksid[id(e)]
                     if ks not in sids_set:
                         continue
+                    vs = str(e.get("victim_sid",""))
                     pair_seen[(ks, vs)] += 1
-                    if pair_count[(ks, vs)] >= bour_n and pair_seen[(ks, vs)] >= bour_n:
-                        _sigs.add((e["tick"], ks))
-                per_mod_sigs.append(("kill_mod_bourreau", _sigs))
+                    if pair_count[(ks, vs)] >= bul_n and pair_seen[(ks, vs)] >= bul_n:
+                        s.add((e["tick"], ks))
+                return s
 
-            # ── Eco-Frag ───────────────────────────────────────────────────
-            if do_eco:
-                _sigs = set()
+            def _eco_sigs():
+                s = set()
                 for e in player_kills:
-                    kw = (e.get("weapon") or "").lower().strip()
-                    if kw.startswith("weapon_"):
-                        kw = kw[7:]
+                    kw = _norm_wpn(e.get("weapon") or "")
                     if kw not in PISTOLS:
                         continue
-                    vw = (e.get("victim_weapon") or "").lower().strip()
-                    if vw.startswith("weapon_"):
-                        vw = vw[7:]
-                    if not vw:
-                        _sigs.add((e["tick"], str(e.get("killer_sid",""))))
-                        continue
-                    if vw in FULL_BUY:
-                        _sigs.add((e["tick"], str(e.get("killer_sid",""))))
-                per_mod_sigs.append(("kill_mod_eco_frag", _sigs))
+                    vw = _norm_wpn(e.get("victim_weapon") or "")
+                    if not vw or vw in FULL_BUY:
+                        s.add(e_sig[id(e)])
+                return s
+
+            _FILTER_BUILDERS = [
+                ("kill_mod_entry_frag",  do_entry,  excl_entry, _entry_sigs),
+                ("kill_mod_ace",         do_ace,    excl_ace,   _ace_sigs),
+                ("kill_mod_multi_kill",  do_multi,  excl_multi, _multi_sigs),
+                ("kill_mod_bully",       do_bul,    excl_bul,   _bully_sigs),
+                ("kill_mod_eco_frag",    do_eco,    excl_eco,   _eco_sigs),
+            ]
+
+            # ── Positive modifier sigs ─────────────────────────────────────
+            # Cache results so exclusion phase can reuse them
+            _sig_cache: dict = {}
+            per_mod_sigs: list = []
+            for cfg_key, pos_flag, _exc, builder in _FILTER_BUILDERS:
+                if pos_flag:
+                    sigs = builder()
+                    _sig_cache[cfg_key] = sigs
+                    per_mod_sigs.append((cfg_key, sigs))
 
             # ── Combine per-modifier sets ──────────────────────────────────
             if not per_mod_sigs and not any(excl_flags):
                 continue
 
+            _all_kill_sigs = {e_sig[id(e)] for e in kill_events}
+
             if not per_mod_sigs:
                 # Exclusion-only: start with all kill sigs, exclusions will strip below
-                keep_sigs = {(e["tick"], str(e.get("killer_sid",""))) for e in kill_events}
+                keep_sigs = set(_all_kill_sigs)
             else:
                 logic_mode = cfg.get("kill_mod_logic_db", "any")
                 if logic_mode == "mixed":
@@ -9183,7 +9092,7 @@ class App(tk.Tk):
                     if req_sigs is not None:
                         keep_sigs = req_sigs
                     else:
-                        keep_sigs = {(e["tick"], str(e.get("killer_sid",""))) for e in kill_events}
+                        keep_sigs = set(_all_kill_sigs)
                 elif logic_and and len(per_mod_sigs) > 1:
                     sig_sets = [s for _, s in per_mod_sigs]
                     keep_sigs = sig_sets[0].intersection(*sig_sets[1:])
@@ -9192,55 +9101,12 @@ class App(tk.Tk):
                     for _, s in per_mod_sigs:
                         keep_sigs |= s
 
-            # ── Build exclusion sigs (always stripped, regardless of positive logic) ──
+            # ── Build exclusion sigs (reuse builders, always stripped) ──────
             exclude_sigs: set = set()
-
-            if excl_entry:
-                for rk, r_kills in all_kills_by_round.items():
-                    first_tick = min(e["tick"] for e in r_kills)
-                    for e in r_kills:
-                        if e["tick"] == first_tick and str(e.get("killer_sid","")) in sids_set:
-                            exclude_sigs.add((e["tick"], str(e.get("killer_sid",""))))
-
-            if excl_ace:
-                for rk, r_kills in round_groups.items():
-                    victims = {str(e.get("victim_sid","")) for e in r_kills}
-                    if len(victims) >= 5:
-                        for e in r_kills:
-                            exclude_sigs.add((e["tick"], str(e.get("killer_sid",""))))
-
-            if excl_multi:
-                max_ticks_excl = multi_s * int(cfg.get("tickrate", 64))
-                for rk, r_kills in round_groups.items():
-                    if len(r_kills) < multi_n:
-                        continue
-                    r_sorted = sorted(r_kills, key=lambda e: e["tick"])
-                    if r_sorted[-1]["tick"] - r_sorted[0]["tick"] <= max_ticks_excl:
-                        for e in r_kills:
-                            exclude_sigs.add((e["tick"], str(e.get("killer_sid",""))))
-
-            if excl_bour:
-                from collections import Counter as _Counter
-                pair_count_ex: _Counter = _Counter()
-                for e in kill_events:
-                    ks = str(e.get("killer_sid","")); vs = str(e.get("victim_sid",""))
-                    if ks in sids_set and vs:
-                        pair_count_ex[(ks, vs)] += 1
-                pair_seen_ex: _Counter = _Counter()
-                for e in sorted(kill_events, key=lambda e: e["tick"]):
-                    ks = str(e.get("killer_sid","")); vs = str(e.get("victim_sid",""))
-                    if ks not in sids_set: continue
-                    pair_seen_ex[(ks, vs)] += 1
-                    if pair_count_ex[(ks, vs)] >= bour_n and pair_seen_ex[(ks, vs)] >= bour_n:
-                        exclude_sigs.add((e["tick"], ks))
-
-            if excl_eco:
-                for e in player_kills:
-                    kw = (e.get("weapon") or "").lower().strip().lstrip("weapon_")
-                    if kw not in PISTOLS: continue
-                    vw = (e.get("victim_weapon") or "").lower().strip().lstrip("weapon_")
-                    if not vw or vw in FULL_BUY:
-                        exclude_sigs.add((e["tick"], str(e.get("killer_sid",""))))
+            for cfg_key, _pos, exc_flag, builder in _FILTER_BUILDERS:
+                if exc_flag:
+                    # Reuse cached result if positive already computed it
+                    exclude_sigs |= _sig_cache.get(cfg_key) or builder()
 
             # Remove excluded kills from keep_sigs
             if exclude_sigs:
@@ -9255,7 +9121,7 @@ class App(tk.Tk):
 
             kept_kills = []
             for e in kill_events:
-                sig = (e["tick"], str(e.get("killer_sid","")))
+                sig = e_sig[id(e)]
                 if sig in keep_sigs:
                     matched = sig_to_keys.get(sig, set())
                     if matched:
@@ -9534,18 +9400,8 @@ class App(tk.Tk):
                                 ghost_sid = f"__ghost_{matched_label}_{i}__"
                                 alive_set[ghost_sid] = matched_label
                 else:
-                    # Heuristic fallback: find the maximum observed alive count per team
-                    # by simulating the kill walk once (read-only), then add ghost players
-                    # to fill up to that max if the initial set is smaller.
+                    # Heuristic fallback: count initial team sizes from alive_set
                     _max_per_team: dict = {}
-                    _sim_alive = dict(alive_set)
-                    for k in r_kills:
-                        _sim_alive.pop(k["victim_sid"], None)
-                        for _lbl in set(_sim_alive.values()):
-                            n = sum(1 for v in _sim_alive.values() if v == _lbl)
-                            # Track max — BEFORE the kill just processed, which is the
-                            # previous iteration count. We record the initial count.
-                    # Instead: count initial team sizes from alive_set before any kills
                     for label in set(alive_set.values()):
                         if not label:
                             continue
@@ -9989,7 +9845,7 @@ class App(tk.Tk):
         tokens = []
         tokens.extend(shared.get("launch_args", []))
         tokens.extend(f"+{c}" for c in shared.get("console_cmds", []))
-        if self._cfg_bool(cfg, "hlae_no_spectator_ui", True):
+        if hlae_options.get("hideSpectatorUi"):
             tokens.append("+cl_draw_only_deathnotices 1")
         if self._cfg_bool(cfg, "hlae_fix_scope_fov", True):
             tokens.append("+mirv_fov handleZoom enabled 1")
@@ -10055,10 +9911,12 @@ class App(tk.Tk):
             return primary_sid
 
         def _build_cams_killer(seq):
-            """Killer mode: camera anchored on first relevant active player, switches to active killer events."""
+            """Killer mode: camera starts on primary player, switches to the active killer at each event."""
             sorted_evts = sorted(seq["events"], key=lambda e: e["tick"])
             cam_ticks = build_camera_ticks(seq, tickrate)
-            anchor_sid = _seq_anchor_sid(seq)
+            # Always anchor on the primary player to avoid starting on a random registered account.
+            # Fall back to _seq_anchor_sid only if primary_sid is not among active players.
+            anchor_sid = primary_sid if primary_sid in sids_active else _seq_anchor_sid(seq)
             cams = []
             for t in cam_ticks:
                 target = anchor_sid
@@ -10068,7 +9926,7 @@ class App(tk.Tk):
                         if ks in sids_active:
                             target = ks
                 cams.append({"tick": t, "playerSteamId": target,
-                             "playerName": _name(target)})
+                             "playerName": ""})
             return cams
 
         def _build_cams_victim(seq):
@@ -10099,7 +9957,7 @@ class App(tk.Tk):
 
             # A single camera point at start_tick is enough — CSDM holds the target
             return [{"tick": seq["start_tick"], "playerSteamId": target_sid,
-                     "playerName": _name(target_sid)}]
+                     "playerName": ""}]
 
         def _build_cams_both(seq):
             """Both mode: camera on the killer from the start of the sequence,
@@ -10113,7 +9971,7 @@ class App(tk.Tk):
             )
             if not sorted_evts:
                 return [{"tick": seq["start_tick"], "playerSteamId": primary_sid,
-                         "playerName": _name(primary_sid)}]
+                         "playerName": ""}]
 
             # initial_sid = first relevant active player — used as camera default
             # for any tick before the first timeline entry.  Do NOT put this into
@@ -10168,7 +10026,7 @@ class App(tk.Tk):
                     else:
                         break
                 cams.append({"tick": t, "playerSteamId": target,
-                             "playerName": _name(target)})
+                             "playerName": ""})
             return cams
 
         seqs = []
@@ -10220,7 +10078,7 @@ class App(tk.Tk):
                     show = True
                     hi   = is_cam_target or is_our
 
-                players_opts.append({"steamId": psid, "playerName": pname,
+                players_opts.append({"steamId": psid, "playerName": "",
                                      "showKill": show, "highlightKill": hi,
                                      "isVoiceEnabled": True})
 
@@ -10306,69 +10164,155 @@ class App(tk.Tk):
     ALL_ERR = RETRYABLE + FATAL + ["error:", "Error:"]
 
     def _start_cs2_send_to_back_watcher(self):
-        """Start a thread that waits for the CS2 window and sends it behind all other windows.
+        """Start a thread that keeps CS2 behind all other windows for the entire recording.
 
-        Uses SetWindowPos(HWND_BOTTOM) which places the window at the bottom of the
-        Z-order without minimizing — CS2 keeps running normally, the desktop simply
-        stays on top. No taskbar icon state change, no pause, no interruption.
+        Strategy:
+          1. Wait up to 120 s for cs2.exe to appear.
+          2. Once found, push every CS2 window to HWND_BOTTOM every 500 ms until the
+             CSDM subprocess exits.
+
+        Window discovery — two layers (first match wins):
+          • Process name: enumerate all visible top-level windows; keep those whose
+            owning process executable contains "cs2" — works regardless of window title.
+          • Title fallback: if win32process is unavailable, match window title against
+            known CS2 strings.
+
+        SetWindowPos(HWND_BOTTOM) places the window at the bottom of the Z-order
+        without minimizing. CS2 keeps running normally; the desktop stays on top.
         Requires pywin32; returns silently without it.
         """
+        _ref_proc = self._proc   # snapshot before thread starts
+
         def _watch():
             try:
                 import win32gui
                 import win32con
+                import win32process as _w32p
+                _have_w32p = True
             except ImportError:
-                self._alog("  ℹ cs2_send_to_back: pywin32 not installed — option ignored.", "dim")
-                return
+                try:
+                    import win32gui
+                    import win32con
+                    _have_w32p = False
+                except ImportError:
+                    self._alog("  ℹ cs2_send_to_back: pywin32 not installed — option ignored.", "dim")
+                    return
 
-            CS2_TITLES = ("Counter-Strike 2", "cs2", "CS2")
-            deadline = time.time() + 60  # 60s timeout
+            # ── Helper: get executable path for a window (needs win32process) ──
+            def _exe_of(hwnd):
+                if not _have_w32p:
+                    return ""
+                try:
+                    _, pid = _w32p.GetWindowThreadProcessId(hwnd)
+                    # QueryFullProcessImageNameW via ctypes — no extra dependency
+                    import ctypes, ctypes.wintypes
+                    PROCESS_QUERY_LIMITED = 0x1000
+                    h = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED, False, pid)
+                    if not h:
+                        return ""
+                    buf  = ctypes.create_unicode_buffer(512)
+                    size = ctypes.wintypes.DWORD(512)
+                    ctypes.windll.kernel32.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(size))
+                    ctypes.windll.kernel32.CloseHandle(h)
+                    return buf.value.lower()
+                except Exception:
+                    return ""
+
+            _CS2_TITLES = ("counter-strike 2", "cs2")
+
+            def _is_cs2(hwnd):
+                if not win32gui.IsWindowVisible(hwnd):
+                    return False
+                # Primary: process-name check
+                exe = _exe_of(hwnd)
+                if exe:
+                    return "cs2" in exe.replace("\\", "/").split("/")[-1]
+                # Fallback: window title
+                title = win32gui.GetWindowText(hwnd).lower()
+                return any(k in title for k in _CS2_TITLES)
 
             def _find_cs2():
                 found = []
-                def _cb(hwnd, _):
-                    if not win32gui.IsWindowVisible(hwnd):
-                        return
-                    t = win32gui.GetWindowText(hwnd)
-                    if any(k.lower() in t.lower() for k in CS2_TITLES):
-                        found.append(hwnd)
-                win32gui.EnumWindows(_cb, None)
+                try:
+                    win32gui.EnumWindows(lambda h, _: found.append(h) if _is_cs2(h) else None, None)
+                except Exception:
+                    pass
                 return found
 
-            first_seen = None
-            while time.time() < deadline and self._running:
-                hwnds = _find_cs2()
+            def _push_to_back(hwnds):
                 for hwnd in hwnds:
                     try:
-                        # HWND_BOTTOM (1): place at bottom of Z-order — behind all others.
-                        # SWP_NOMOVE | SWP_NOSIZE: don't touch position or size.
-                        # SWP_NOACTIVATE: don't give it focus.
                         win32gui.SetWindowPos(
                             hwnd,
                             win32con.HWND_BOTTOM,
                             0, 0, 0, 0,
                             win32con.SWP_NOMOVE | win32con.SWP_NOSIZE | win32con.SWP_NOACTIVATE
                         )
-                        if first_seen is None:
-                            self._alog("  🔙 CS2 sent to back.", "dim")
-                            first_seen = time.time()
                     except Exception:
                         pass
-                if first_seen:
+
+            # ── Phase 1: wait for CS2 to appear (up to 120 s) ──────────────────
+            deadline = time.time() + 120
+            hwnds = []
+            while time.time() < deadline:
+                if _ref_proc and _ref_proc.poll() is not None:
+                    return  # CSDM already finished
+                hwnds = _find_cs2()
+                if hwnds:
+                    self._alog("  🔙 CS2 found — keeping behind other windows.", "dim")
                     break
-                time.sleep(0.1)
+                time.sleep(0.5)
+
+            if not hwnds:
+                self._alog("  ⚠ cs2_send_to_back: CS2 window not found within 120 s.", "warn")
+                return
+
+            # ── Phase 2: keep pushing to back every 500 ms while CSDM runs ────
+            while True:
+                if _ref_proc and _ref_proc.poll() is not None:
+                    break
+                current = _find_cs2()
+                if current:
+                    _push_to_back(current)
+                time.sleep(0.5)
 
         threading.Thread(target=_watch, daemon=True).start()
 
-    def _exec(self, cmd):
+    def _exec(self, cmd, timeout_s=0):
         errs, has_err, retryable = [], False, False
         self._last_raw_not_found = False
+        _timed_out = [False]
+        _done_event = threading.Event()
         try:
             self._proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           text=True, encoding="utf-8", errors="replace", bufsize=1)
             # Start CS2 send-to-back watcher if the option is enabled
             if getattr(self, "v", {}) and self.v.get("cs2_send_to_back") and self.v["cs2_send_to_back"].get():
                 self._start_cs2_send_to_back_watcher()
+
+            # Timeout watchdog — kills CS2 + CSDM if recording takes too long
+            if timeout_s > 0:
+                def _watchdog():
+                    if _done_event.wait(timeout=timeout_s):
+                        return  # finished normally
+                    _timed_out[0] = True
+                    self._alog(
+                        f"  ⏱ Recording timeout ({int(timeout_s // 60)}m) — killing CS2 and retrying…",
+                        "warn")
+                    try:
+                        if self._proc and self._proc.poll() is None:
+                            self._proc.kill()
+                    except Exception:
+                        pass
+                    try:
+                        subprocess.Popen(
+                            ["taskkill", "/F", "/IM", "cs2.exe"],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            creationflags=0x08000000)
+                    except Exception:
+                        pass
+                threading.Thread(target=_watchdog, daemon=True).start()
+
             for line in iter(self._proc.stdout.readline, ""):
                 line = line.rstrip("\n\r")
                 if not line:
@@ -10388,9 +10332,13 @@ class App(tk.Tk):
                     self._alog(f"  > {line}", "dim")
             self._proc.stdout.close()
             rc = self._proc.wait()
-            return (rc == 0) and not has_err, rc, errs, retryable
         except Exception as e:
+            _done_event.set()
             return False, -1, [str(e)], False
+        finally:
+            _done_event.set()
+        # A timeout is always retryable
+        return (rc == 0) and not has_err, rc, errs, retryable or _timed_out[0]
 
     def _validate_run_inputs(self):
         """Check common preconditions for run/preview. Returns False if invalid."""
@@ -10420,12 +10368,31 @@ class App(tk.Tk):
         self._summary_lbl.config(text="  Querying DB…", fg=YELLOW)
         threading.Thread(target=self._worker, args=(cfg,), daemon=True).start()
 
+    def _handle_stop(self):
+        """Dispatch stop to the right handler based on current state."""
+        if self._previewing:
+            self._stop_preview()
+        elif self._running:
+            self._stop_graceful()
+
+    def _stop_preview(self):
+        """Cancel a running preview computation."""
+        self._preview_cancel.set()
+        self._previewing = False
+        self._alog("\n⏸ Preview cancelled.", "warn")
+        self.stop_btn.config(state="disabled", text="⏸ Stop")
+
     def _stop_graceful(self):
         """Stop after current demo: kill the running CSDM process immediately,
         mark current demo as failed, then do not start the next one."""
         self._stop_after_current = True
         self._running = False
-        self._alog("\n⏸ Graceful stop — aborting current demo.", "warn")
+        _demo = self._current_demo or "current demo"
+        self._alog(
+            f"\n⏸ STOP — {datetime.now().strftime('%H:%M:%S')}\n"
+            f"  Killing CSDM for: {_demo}\n"
+            f"  Remaining demos will be skipped.",
+            "warn")
         self.stop_btn.config(state="disabled")
         if self._proc:
             try:
@@ -10439,7 +10406,14 @@ class App(tk.Tk):
         self._kill_triggered = True
         self._running = False
         self._stop_after_current = True
-        self._alog("\n⛔ KILL — aborting and killing CS2.", "err")
+        _demo = self._current_demo or "current demo"
+        self._alog(
+            f"\n⛔ KILL — {datetime.now().strftime('%H:%M:%S')}\n"
+            f"  Hard-killing CSDM process and cs2.exe.\n"
+            f"  Aborted on: {_demo}\n"
+            f"  Assembly and remaining demos cancelled.\n"
+            f"  Any tags applied this batch will be reverted.",
+            "err")
         if self._proc:
             try:
                 self._proc.kill()
@@ -10561,7 +10535,7 @@ class App(tk.Tk):
             sections.add("fire")
         if any(cfg.get(k) or cfg.get(f"{k}_exclude") for k in death_keys):
             sections.add("death")
-        if cfg.get("kill_mod_sauveur") or cfg.get("kill_mod_sauveur_exclude"):
+        if cfg.get("kill_mod_savior") or cfg.get("kill_mod_savior_exclude"):
             sections.add("hurt")
         # Collect in-demo player names only when dp2 is already running for something else.
         # When no filter needs dp2, DB names serve as fallback — no extra parse triggered.
@@ -10578,6 +10552,9 @@ class App(tk.Tk):
         self._log(f"  🔍 PREVIEW  —  {datetime.now().strftime('%H:%M:%S')}", "info")
         self._log(f"{'─' * 60}", "dim")
         self._summary_lbl.config(text="  Computing…", fg=YELLOW)
+        self._previewing = True
+        self._preview_cancel.clear()
+        self.stop_btn.config(state="normal", text="⏸ Stop Preview")
 
         def task():
             t0_total = time.time()
@@ -10585,10 +10562,14 @@ class App(tk.Tk):
                 t0 = time.time()
                 evts = self._query_events(cfg)
                 t_query = time.time() - t0
+                if self._preview_cancel.is_set():
+                    return
                 # ── Signature-based DP2 pre-parse (cache preserved if same demo set) ──
                 t0 = time.time()
                 self._preparse_dp2(cfg, list(evts.keys()))
                 t_preparse = time.time() - t0
+                if self._preview_cancel.is_set():
+                    return
                 # Apply demoparser2 modifiers before preview.
                 t0 = time.time()
                 evts = self._apply_dp2_filters_to_events(evts, cfg)
@@ -10606,6 +10587,9 @@ class App(tk.Tk):
             except Exception as e:
                 import traceback
                 self._alog(f"Preview error: {e}\n{traceback.format_exc()}", "err")
+            finally:
+                self._previewing = False
+                self.after(0, lambda: self.stop_btn.config(state="disabled", text="⏸ Stop"))
 
         threading.Thread(target=task, daemon=True).start()
 
@@ -10670,7 +10654,9 @@ class App(tk.Tk):
         _misc = []
         if _tkm == "exclude":  _misc.append("🚫 TK")
         elif _tkm == "only":   _misc.append("⚔ TK only")
-        if not cfg.get("include_suicides", True): _misc.append("🚫 suicides")
+        _sm = cfg.get("suicides_mode", "include")
+        if _sm == "exclude":  _misc.append("🚫 suicides")
+        elif _sm == "only":   _misc.append("💀 suicides only")
         _hsm = cfg.get("headshots_mode", "all")
         if _hsm == "only":    _misc.append("🎯 HS only")
         elif _hsm == "exclude": _misc.append("🎯 no HS")
@@ -10762,14 +10748,13 @@ class App(tk.Tk):
         if not self._last_preview_data:
             self._log_flash("  ⚠ Run a preview first (F6).", "warn")
             return
-        from tkinter import filedialog as _fd
         import html as _html
 
         d        = self._last_preview_data
         nb_clips = d["nb_clips"]
         total_sec= d["total_sec"]
 
-        path = _fd.asksaveasfilename(
+        path = filedialog.asksaveasfilename(
             parent=self,
             defaultextension=".html",
             filetypes=[("HTML", "*.html"), ("All files", "*.*")],
@@ -10873,8 +10858,8 @@ class App(tk.Tk):
         if not self._last_preview_data:
             self._log_flash("  ⚠ Run a preview first (F6).", "warn")
             return
-        from tkinter import filedialog as _fd
-        path = _fd.asksaveasfilename(
+
+        path = filedialog.asksaveasfilename(
             parent=self, defaultextension=".txt",
             filetypes=[("Text", "*.txt"), ("All files", "*.*")],
             title="Export preview as TXT", initialfile="csdm_preview.txt",
@@ -10925,9 +10910,9 @@ class App(tk.Tk):
         if not self._last_preview_data:
             self._log_flash("  ⚠ Run a preview first (F6).", "warn")
             return
-        from tkinter import filedialog as _fd
+
         import json as _json
-        path = _fd.asksaveasfilename(
+        path = filedialog.asksaveasfilename(
             parent=self, defaultextension=".json",
             filetypes=[("JSON", "*.json"), ("All files", "*.*")],
             title="Export preview as JSON", initialfile="csdm_preview.json",
@@ -11429,7 +11414,7 @@ class App(tk.Tk):
                         sig = (e["tick"], str(e.get("killer_sid", "")))
                         ex = sig_to_mf.get(sig)
                         sig_to_mf[sig] = (ex | matched_mods) if ex else set(matched_mods)
-                for _ck, r in per:
+                for _, r in per:
                     for e in r.get(dp, []):
                         if e.get("type") == "kill":
                             sig = (e["tick"], str(e.get("killer_sid", "")))
@@ -11549,8 +11534,11 @@ class App(tk.Tk):
             self._alog("🎯 Headshots only", "info")
         elif _hsm == "exclude":
             self._alog("🎯 Headshots excluded", "info")
-        if not cfg.get("include_suicides", True):
+        _sm = cfg.get("suicides_mode", "include")
+        if _sm == "exclude":
             self._alog("🚫 Suicides excluded", "info")
+        elif _sm == "only":
+            self._alog("💀 Suicides only", "info")
         _tkm = cfg.get("teamkills_mode", "include")
         if _tkm == "exclude":
             self._alog("🚫 Teamkills excluded", "info")
@@ -11767,6 +11755,7 @@ class App(tk.Tk):
                 continue
             dn = Path(dp).name
             ad = os.path.abspath(dp)
+            self._current_demo = dn
             date_str = self._format_demo_date(dp)
             self.after(0, lambda lbl=f"{i}/{len(demo_list)}":
                        self.progress_lbl.config(text=lbl))
@@ -11806,10 +11795,9 @@ class App(tk.Tk):
                          if si - 1 < len(cj.get("sequences", [])) else [])
                 _cam0 = _cams[0] if _cams else {}
                 _sid0 = _cam0.get("playerSteamId", "")
-                _name0 = _cam0.get("playerName", "")
                 self._alog(
                     f"  seq {si}/{len(seqs)}  tick {seq['start_tick']}→{seq['end_tick']}"
-                    f"  ({dur_s:.1f}s)  cam:{_name0 or '?'}({_sid0 or '-'})", "dim")
+                    f"  ({dur_s:.1f}s)  cam:{_sid0 or '-'}", "dim")
             self._alog(
                 f"  RecSys: {cfg.get('recsys','HLAE')} | "
                 f"TrueView: {'ON' if cfg.get('true_view') else 'OFF'} | "
@@ -11843,6 +11831,7 @@ class App(tk.Tk):
             self._alog(f"  CMD: {' '.join(cmd)}", "dim")
 
             mx = 1 + cfg.get("retry_count", 2)
+            _rec_timeout_s = max(0, int(cfg.get("recording_timeout", 0))) * 60
             att = 0
             d_ok = False
             d_err = ""
@@ -11861,7 +11850,7 @@ class App(tk.Tk):
                         time.sleep(1)
                     if not self._running:
                         break
-                success, rc, errs, retryable = self._exec(cmd)
+                success, rc, errs, retryable = self._exec(cmd, timeout_s=_rec_timeout_s)
                 if success:
                     d_ok = True
                     break
