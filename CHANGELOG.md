@@ -9,6 +9,25 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v190]
+
+### Fixed: Window drag no longer sluggish
+
+**What changed:** Window movement is instant again. Removed the async log pump that was introduced to keep the window responsive during preview — it was causing more problems than it solved by injecting recurring timer callbacks into the event loop.
+
+**Technical details:**
+Removed `_log_pump`, `_drain_log_buffer_once`, `_log_buf`/`_log_buf_lock`, and the 50ms recurring `after()` timer. `_alog` and `_alog_parts` now post directly via `after(0, ...)` per message — the original, simpler approach. The pump was added to batch log writes during heavy preview output, but the recurring timer fired on the main thread even when idle, interfering with Windows' modal drag loop. Window freezing during active preview is normal Tkinter behavior and doesn't need workarounds.
+
+---
+
+## [v189]
+
+### Fixed: Window movement lag (partial — superseded by v190)
+
+Attempted adaptive log pump: 50ms when buffer non-empty, 250ms when idle. Still left a recurring timer running, which didn't fully resolve the drag issue.
+
+---
+
 ## [v188]
 
 ### Fixed: Tag range dates not showing after DB migration

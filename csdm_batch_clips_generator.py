@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v176"""
+"""CSDM Batch Clips Generator v190"""
 
 
 import tkinter as tk
@@ -7,7 +7,7 @@ from tkinter import ttk, filedialog, messagebox, simpledialog, colorchooser
 import subprocess, threading, json, os, tempfile, time, shutil, re, uuid, random, shlex
 import bisect, concurrent.futures, math
 from functools import lru_cache
-from collections import Counter, defaultdict, deque
+from collections import Counter, defaultdict
 import calendar as cal_mod
 from datetime import datetime, timedelta, date
 from pathlib import Path
@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v188"
+APP_VERSION = "v190"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -2271,15 +2271,9 @@ class App(tk.Tk):
         self._log_warn_count = 0
         self._outer_paned = None
         self._layout_cfg_job = None
-        # Async log buffer — background threads append here; main thread drains
-        # in a single batch every _LOG_PUMP_MS ms instead of one after(0) per line.
-        # Buffer items: (msg, tag, ts_str) or ("__parts__", parts, ts_str)
-        self._log_buf: deque = deque()
-        self._log_buf_lock = threading.Lock()
 
         self.v["hlae_slow_motion"].trace_add("write", self._on_game_speed_var)
         self._build_ui()
-        self.after(50, self._log_pump)   # start the async log drain pump
 
         # PlayerSearchWidget enables all accounts by default; override
         # with the exact saved list if it exists.
@@ -8344,18 +8338,12 @@ class App(tk.Tk):
         self.log.configure(state="disabled")
 
     def _alog(self, msg, tag=""):
-        """Thread-safe async log. Appends to buffer; main thread drains every _LOG_PUMP_MS ms."""
-        ts = time.strftime("%H:%M:%S")
-        with self._log_buf_lock:
-            self._log_buf.append((msg, tag, ts))
+        """Thread-safe async log — schedules a direct _log call on the main thread."""
+        self.after(0, lambda m=msg, t=tag: self._log(m, t))
 
     def _alog_parts(self, parts):
         """Thread-safe async log for multi-part lines (badge rows)."""
-        ts = time.strftime("%H:%M:%S")
-        with self._log_buf_lock:
-            self._log_buf.append(("__parts__", parts, ts))
-
-    _LOG_PUMP_MS = 50   # drain interval in milliseconds — 50ms ≈ 20 flushes/sec
+        self.after(0, lambda p=parts: self._log_parts(p))
 
     _LOG_MAX_LINES = 8000   # trim oldest lines when the Text widget exceeds this
 
@@ -8382,59 +8370,6 @@ class App(tk.Tk):
                 break
             oldest = self._dp2_cache_order.pop(0)
             self._dp2_cache.pop(oldest, None)
-
-    def _drain_log_buffer_once(self):
-        if not self._log_buf:
-            return
-        with self._log_buf_lock:
-            pending = list(self._log_buf)
-            self._log_buf.clear()
-        try:
-            self.log.configure(state="normal")
-            autoscroll = self._log_autoscroll.get()
-            show_ts = self._log_timestamps.get()
-            counts_dirty = False
-            for item in pending:
-                if item[0] == "__parts__":
-                    _, parts, ts = item
-                    if show_ts:
-                        self.log.insert("end", f"[{ts}] ", "ts")
-                    for txt, tag in parts:
-                        self.log.insert("end", txt, tag or "")
-                    self.log.insert("end", "\n")
-                else:
-                    msg, tag, ts = item
-                    if show_ts and msg.strip():
-                        self.log.insert("end", f"[{ts}] ", "ts")
-                    self.log.insert("end", msg + "\n", tag)
-                    if tag == "err":
-                        self._log_err_count += 1
-                        counts_dirty = True
-                    elif tag == "warn":
-                        self._log_warn_count += 1
-                        counts_dirty = True
-            # Trim oldest lines if the widget is growing too large
-            line_count = int(self.log.index("end-1c").split(".")[0])
-            if line_count > self._LOG_MAX_LINES:
-                trim_to = line_count - self._LOG_MAX_LINES
-                self.log.delete("1.0", f"{trim_to + 1}.0")
-            if autoscroll:
-                self.log.see("end")
-            self.log.configure(state="disabled")
-            if counts_dirty:
-                self._update_log_counts()
-        except Exception:
-            pass
-
-    def _log_pump(self):
-        """Drain the async log buffer in a single Text widget operation.
-
-        Called every _LOG_PUMP_MS ms on the main thread via self.after().
-        Batches all pending messages into one configure/insert/see/configure
-        cycle — N messages = 1 redraw instead of N redraws.
-        """
-        self._drain_log_buffer_once()
-        self.after(self._LOG_PUMP_MS, self._log_pump)
 
     def _clear_log(self):
         self.log.configure(state="normal")
@@ -10936,7 +10871,6 @@ class App(tk.Tk):
             self._log(f"Preview display error: {e}\n{traceback.format_exc()}", "err")
 
     def _show_preview_impl(self, evts, cfg, timings=None):
-        self._drain_log_buffer_once()
         if not evts:
             self._log("No events.", "warn")
             self._summary_lbl.config(text="  No clips found.", fg=MUTED)
