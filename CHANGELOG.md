@@ -9,6 +9,44 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v193]
+
+### Fixed: Category boxes (Sec cards) overlap the console on small windows
+
+**What changed:** The left panel's section cards now properly collapse when the window is made small — the console can no longer push them off-screen or cause overlap.
+
+**Why it happened:** `tk.Canvas` without an explicit `height` defaults to ~264px on Windows. Every `ScrollableFrame` hosts a Canvas as its scroll viewport, so each scrollable tab inherited that 264px minimum geometry request. When the window was made short, the layout system had to satisfy that minimum, which could cause the log area to overlap or clip the category sections above it.
+
+**Technical details:**
+Added `height=1` to the Canvas inside `ScrollableFrame.__init__`. This collapses its geometry request to 1px so the layout is entirely governed by available space and pack weights rather than the widget's natural size floor. Scrolling still works normally — `height=1` only removes the artificial minimum; the canvas expands to fill its container via `pack(fill="both", expand=True)`.
+
+---
+
+## [v192]
+
+### Fixed: Console too tall hides the Run/Preview/Stop buttons (superseded by v193)
+
+Attempted fix via `height=1` on `tk.Text`. Correctly identified the geometry-request pattern but targeted the wrong widget — the root cause was the `ScrollableFrame` Canvas default height.
+
+---
+
+## [v191]
+
+### Improved: Code quality pass — naming, error handling, docstrings, config migration
+
+**What changed:** A batch of housekeeping improvements based on a full code review. Nothing user-visible — this is all about making the codebase cleaner and easier to maintain.
+
+**Changes:**
+- `_alog` / `_alog_parts` renamed to `_async_log` / `_async_log_parts` — the "a" prefix was ambiguous; "async" is unambiguous
+- Bare `except Exception: pass` replaced with `except tk.TclError: pass` in all widget-lifecycle contexts (theme changes, tooltip destroy, focus checks, wraplength updates); file I/O handlers narrowed to `except (OSError, ValueError)` and `except OSError`; page-jump input narrowed to `except ValueError`
+- Docstrings added to `desc_label`, `sentry`, `scombo`, `mlabel`, `hchk` — all were missing return-type documentation
+- Config migrations extracted from `load_config` into a dedicated `_migrate_config(saved, cfg)` function with version comments per migration block — future renames/type changes have a clear home
+
+**Technical details:**
+`_migrate_config` is a pure function (no side effects) called once during load. Existing migration logic is unchanged — it was just lifted out and annotated. Each block now has a comment indicating which version introduced the breaking change, making it easier to decide when old migrations can eventually be dropped. Hot-loop `cfg.get()` audit confirmed `_apply_db_postfilters` already caches all config reads before its inner loops.
+
+---
+
 ## [v190]
 
 ### Fixed: Window drag no longer sluggish
