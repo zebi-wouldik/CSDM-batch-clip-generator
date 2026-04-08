@@ -9,6 +9,20 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v194]
+
+### Fixed: POV killer selects wrong/random player
+
+**Root causes (two separate bugs):**
+
+1. **`_build_cams_victim` / `_build_cams_both` — dp2 SID mismatch:** The victim/both camera builders were using `_victim_dp2_sid` (a SteamID with the lower 3 bits zeroed due to CS2 entity-handle encoding from `parse_ticks`). CSDM's CS2 path looks up `playerSteamId` with strict equality against `players.steam_id` in its database — the entity-handle-encoded SID never matched, so `spec_player` was never called and CS2 showed a random player. Fixed by using the DB SteamID (`victim_sid`) directly.
+
+2. **`_build_cams_killer` — overcomplicated tick iteration:** The previous implementation generated one camera entry per "camera tick" (start, pre-kill, post-kill) and started the camera on `anchor_sid` (the primary registered player) rather than the actual killer. If the primary player wasn't the killer, the camera would be pointed at the wrong person before each kill. Also, unnecessary complexity from stacking multiple prior fixes. Replaced with a clean, minimal implementation: one entry at `seq["start_tick"]` pointing to the first killer, plus one entry per subsequent killer change — directly mirroring what CSDM generates internally for highlights.
+
+**Also removed:** The `_victim_dp2_sid` stamp from `_mate_pov_filter` (dead code — it was never a valid SteamID for CSDM).
+
+---
+
 ## [v193]
 
 ### Fixed: Category boxes (Sec cards) overlap the console on small windows

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v193"""
+"""CSDM Batch Clips Generator v194"""
 
 
 import tkinter as tk
@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v193"
+APP_VERSION = "v194"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -6411,11 +6411,6 @@ class App(tk.Tk):
             mate_sid, victim_dp2_sid = self._find_best_mate_sid(
                 demo_path, victim_sid, kill_tick, sids_active)
 
-            # Always stamp the resolved dp2 victim SID so camera builders can use
-            # the correct ID (CSDM needs the dp2 SID, not the DB SID, to find the player).
-            if victim_dp2_sid:
-                evt["_victim_dp2_sid"] = victim_dp2_sid
-
             if mate_sid:
                 evt["_mate_pov_sid"] = mate_sid
                 found += 1
@@ -10201,22 +10196,27 @@ class App(tk.Tk):
             return primary_sid
 
         def _build_cams_killer(seq):
-            """Killer mode: camera starts on primary player, switches to the active killer at each event."""
-            sorted_evts = sorted(seq["events"], key=lambda e: e["tick"])
-            cam_ticks = build_camera_ticks(seq, tickrate)
-            # Always anchor on the primary player to avoid starting on a random registered account.
-            # Fall back to _seq_anchor_sid only if primary_sid is not among active players.
-            anchor_sid = primary_sid if primary_sid in sids_active else _seq_anchor_sid(seq)
-            cams = []
-            for t in cam_ticks:
-                target = anchor_sid
-                for e in sorted_evts:
-                    if e["tick"] <= t:
-                        ks = e.get("killer_sid")
-                        if ks in sids_active:
-                            target = ks
-                cams.append({"tick": t, "playerSteamId": target,
-                             "playerName": ""})
+            """Killer mode: follow each active killer. One entry per killer change."""
+            kill_evts = sorted(
+                [e for e in seq["events"] if e.get("killer_sid") in sids_active],
+                key=lambda e: e["tick"]
+            )
+            if not kill_evts:
+                anchor = primary_sid if primary_sid in sids_active else _seq_anchor_sid(seq)
+                return [{"tick": seq["start_tick"], "playerSteamId": anchor,
+                         "playerName": ""}]
+            # Start at sequence start pointing to the first killer
+            first_ks = kill_evts[0]["killer_sid"]
+            cams = [{"tick": seq["start_tick"], "playerSteamId": first_ks,
+                     "playerName": ""}]
+            # Add a switch entry each time the killer changes
+            prev_ks = first_ks
+            for ev in kill_evts[1:]:
+                ks = ev["killer_sid"]
+                if ks != prev_ks:
+                    cams.append({"tick": ev["tick"], "playerSteamId": ks,
+                                 "playerName": ""})
+                    prev_ks = ks
             return cams
 
         def _build_cams_victim(seq):
@@ -10239,11 +10239,8 @@ class App(tk.Tk):
                     target_sid = first_ev["victim_sid"]
                 elif first_ev.get("victim_sid"):
                     # Our player kills: follow victim (or their best-angle teammate).
-                    # Use dp2 victim SID for camera — CSDM needs the demo-internal SID,
-                    # not the DB SteamID64 (they differ by up to 7 due to entity handle encoding).
                     mate_sid   = first_ev.get("_mate_pov_sid") if cfg.get("kill_mod_mate_pov") else None
-                    victim_cam = first_ev.get("_victim_dp2_sid") or first_ev["victim_sid"]
-                    target_sid = mate_sid or victim_cam
+                    target_sid = mate_sid or first_ev["victim_sid"]
 
             # A single camera point at start_tick is enough — CSDM holds the target
             return [{"tick": seq["start_tick"], "playerSteamId": target_sid,
@@ -10285,10 +10282,8 @@ class App(tk.Tk):
 
                 ksid = ev.get("killer_sid") or primary_sid
                 # In mate_pov mode, switch to the best-angle teammate instead of victim.
-                # Use dp2 victim SID for fallback — CSDM needs the demo-internal SID
-                # (differs from DB SteamID64 by up to 7 due to entity handle encoding).
                 mate_sid   = ev.get("_mate_pov_sid") if cfg.get("kill_mod_mate_pov") else None
-                victim_cam = ev.get("_victim_dp2_sid") or ev.get("victim_sid") or primary_sid
+                victim_cam = ev.get("victim_sid") or primary_sid
                 vsid = mate_sid or victim_cam
 
                 # If there was a previous kill, return to this kill's killer right
