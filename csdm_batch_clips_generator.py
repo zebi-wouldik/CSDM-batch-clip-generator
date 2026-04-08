@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CSDM Batch Clips Generator v194"""
+"""CSDM Batch Clips Generator v197"""
 
 
 import tkinter as tk
@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v194"
+APP_VERSION = "v195"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -183,6 +183,10 @@ UI_ROW_PAD    = 4    # standard vertical gap between rows inside a section
 UI_BTN_IPADX  = 8    # standard horizontal inner padding for action buttons
 UI_BTN_IPADY  = 4    # standard vertical inner padding for action buttons
 UI_ENTRY_IPAD = 6    # inner padding for text Entry fields
+# Minimum pixel widths for the two PanedWindow panes.  The sash is clamped to
+# these limits on release so neither panel can ever be completely squeezed away.
+UI_PANE_LEFT_MIN  = 380   # categories / notebook panel
+UI_PANE_RIGHT_MIN = 200   # console / log panel
 
 # Shared kwargs for flat checkbox/radio widgets
 _CHK_KW = dict(font=FONT_SM, bg=BG2, fg=MUTED, activebackground=BG2,
@@ -1793,7 +1797,7 @@ class ScrollableFrame(tk.Frame):
         self._pending_width = event.width
         # Reschedule: 400 ms fallback for OS-level window resize where no
         # ButtonRelease reaches Tkinter. Sash drags are flushed immediately
-        # via _flush_scroll_widths() bound to <ButtonRelease-1> in _build_ui.
+        # via _on_release() bound to <ButtonRelease-1> in _build_ui.
         if self._width_job:
             self.after_cancel(self._width_job)
         self._width_job = self.after(400, self._apply_width)
@@ -1836,6 +1840,73 @@ class ScrollableFrame(tk.Frame):
                    cy <= y_root < cy + self._c.winfo_height()
         except tk.TclError:
             return False
+
+class WrapRow(tk.Frame):
+    """Horizontal list of widgets that wraps into new rows based on available width.
+
+    Children must be created with this WrapRow as their parent.
+    Do NOT call .pack() / .grid() on the children — just call row.add(widget)
+    and WrapRow positions them via place() in a wrapping layout.
+
+    Usage:
+        row = WrapRow(parent, bg=BG2)
+        row.pack(fill="x", pady=(4, 0))
+        btn = tk.Button(row, text="...", ...)
+        row.add(btn)
+
+    WrapRow sets its own height automatically and registers with _WRAP_ROWS so
+    the global flush in _on_release also triggers a relayout.
+    """
+
+    def __init__(self, parent, gap_x=6, gap_y=4, **kw):
+        kw.setdefault("bg", BG2)
+        super().__init__(parent, **kw)
+        self.pack_propagate(False)   # height is managed manually via configure()
+        self._gap_x  = gap_x
+        self._gap_y  = gap_y
+        self._items  = []            # ordered child widgets
+        self._job    = None
+        self.bind("<Configure>", self._schedule)
+        self.bind("<Destroy>",   self._on_destroy)
+        _WRAP_ROWS.append(self)
+
+    def add(self, widget):
+        """Register widget for wrapping layout. Returns widget for chaining."""
+        self._items.append(widget)
+        self._schedule()
+        return widget
+
+    def _schedule(self, _event=None):
+        if self._job:
+            self.after_cancel(self._job)
+        self._job = self.after(16, self._relayout)
+
+    def _relayout(self, *_):
+        self._job = None
+        avail = self.winfo_width()
+        if avail < 10:
+            return
+        x, y, row_h = 0, 0, 0
+        for w in self._items:
+            w.update_idletasks()
+            rw = w.winfo_reqwidth()
+            rh = w.winfo_reqheight()
+            if x + rw > avail and x > 0:
+                x = 0
+                y += row_h + self._gap_y
+                row_h = 0
+            w.place(x=x, y=y, height=rh)
+            x  += rw + self._gap_x
+            row_h = max(row_h, rh)
+        total = (y + row_h) if self._items else 1
+        self.configure(height=total)
+
+    def _on_destroy(self, _e=None):
+        try:
+            _WRAP_ROWS.remove(self)
+        except ValueError:
+            pass
+
 
 class Sec(tk.Frame):
     """Collapsible section card — drop-in replacement for the old LabelFrame Sec.
@@ -2044,6 +2115,7 @@ def hradio(parent, text, var, value, **kw):
     return rb
 
 _WRAP_LABELS: list = []   # all labels registered via _bind_wraplength
+_WRAP_ROWS:  list = []   # all live WrapRow instances
 
 def _bind_wraplength(lbl):
     """Debounced <Configure> binding that keeps a label's wraplength = widget width.
@@ -3181,19 +3253,26 @@ class App(tk.Tk):
         # Flush all deferred layout on mouse release — covers sash drag and any
         # in-app resize. OS window-border resize falls back to the 400 ms
         # debounce (Tkinter never receives those ButtonRelease events).
-        # Guard: only do work when at least one scroll frame has a pending resize,
-        # so ordinary button/checkbox clicks are free of layout overhead.
+        # 50 ms delay lets the PanedWindow geometry manager finish propagating
+        # its new sash position as <Configure> events on all Canvas children
+        # (setting _pending_width) before we call _apply_width.
         def _on_release(e):
-            if not any(sf._pending_width is not None for sf in _SCROLL_FRAMES):
-                return
-            for sf in _SCROLL_FRAMES:
-                sf._apply_width()
-            for apply_fn, lbl in list(_WRAP_LABELS):
-                try:
-                    if lbl.winfo_exists():
-                        apply_fn()
-                except Exception:
-                    pass
+            def _flush():
+                for sf in _SCROLL_FRAMES:
+                    sf._apply_width()
+                for apply_fn, lbl in list(_WRAP_LABELS):
+                    try:
+                        if lbl.winfo_exists():
+                            apply_fn()
+                    except Exception:
+                        pass
+                for wr in list(_WRAP_ROWS):
+                    try:
+                        if wr.winfo_exists():
+                            wr._relayout()
+                    except Exception:
+                        pass
+            self.after(50, _flush)
         self.bind_all("<ButtonRelease-1>", _on_release)
 
         # ── Top header bar ────────────────────────────────────────────────────
@@ -3287,6 +3366,12 @@ class App(tk.Tk):
                         apply_fn()
                 except Exception:
                     pass
+            for wr in list(_WRAP_ROWS):
+                try:
+                    if wr.winfo_exists():
+                        wr._relayout()
+                except Exception:
+                    pass
         nb.bind("<<NotebookTabChanged>>", _on_tab_changed)
 
         right_frame = tk.Frame(outer, bg=BG)
@@ -3369,7 +3454,9 @@ class App(tk.Tk):
                         self.v["ui_window_h"].get(),
                         self.v["ui_split_pct"].get(),
                     )[2]
-                    outer.sashpos(0, int(w * (pct / 100.0)))
+                    pos = int(w * (pct / 100.0))
+                    pos = max(UI_PANE_LEFT_MIN, min(w - UI_PANE_RIGHT_MIN, pos))
+                    outer.sashpos(0, pos)
                 except Exception:
                     pass
         self.bind("<Map>", _set_sash)
@@ -3667,7 +3754,8 @@ class App(tk.Tk):
         sec = Sec(p, "DEMO SELECTION")
         sec.pack(fill="x")
 
-        # ── Date range row ────────────────────────────────────────────────────
+        # ── Date range rows ───────────────────────────────────────────────────
+        # Row 1: From / To entries with calendar pickers
         dr1 = tk.Frame(sec, bg=BG2)
         dr1.pack(fill="x")
         mlabel(dr1, "From:").pack(side="left")
@@ -3690,12 +3778,15 @@ class App(tk.Tk):
                   activebackground=BORDER, activeforeground=ORANGE)
         _btn_to.configure(command=lambda b=_btn_to: self._open_cal(self.v["date_to"], b))
         _btn_to.pack(side="left", padx=(2, 0), ipady=4, ipadx=4)
-        tk.Button(dr1, text="Today", font=FONT_DESC, bg=BG3, fg=GREEN,
+        # Row 2: shortcut buttons on their own line so they never get clipped
+        dr2 = tk.Frame(sec, bg=BG2)
+        dr2.pack(fill="x", pady=(2, 0))
+        tk.Button(dr2, text="Today", font=FONT_DESC, bg=BG3, fg=GREEN,
                   relief="flat", bd=0, cursor="hand2", highlightthickness=0,
                   activebackground=BORDER, activeforeground=GREEN,
                   command=lambda: self.v["date_to"].set(date.today().strftime("%d-%m-%Y"))
-                  ).pack(side="left", padx=(6, 0), ipady=4, ipadx=5)
-        tk.Button(dr1, text="Clear all", font=FONT_DESC, bg=BG3, fg=MUTED,
+                  ).pack(side="left", ipady=4, ipadx=5)
+        tk.Button(dr2, text="Clear all", font=FONT_DESC, bg=BG3, fg=MUTED,
                   relief="flat", bd=0, cursor="hand2", highlightthickness=0,
                   activebackground=BORDER, activeforeground=MUTED,
                   command=lambda: [self.v["date_from"].set(""), self.v["date_to"].set(""),
@@ -3808,28 +3899,24 @@ class App(tk.Tk):
         self._demo_tree.bind("<Leave>",  lambda e: _tree_tip_hide())
 
         # Per-row toggle buttons row
-        pick_btns = tk.Frame(sec, bg=BG2)
+        pick_btns = WrapRow(sec, bg=BG2)
         pick_btns.pack(fill="x", pady=(4, 0))
-        tk.Button(pick_btns, text="✓ Check all", font=FONT_DESC, bg=BG3, fg=GREEN,
+        pick_btns.add(tk.Button(pick_btns, text="✓ Check all", font=FONT_DESC, bg=BG3, fg=GREEN,
                   relief="flat", bd=0, cursor="hand2", highlightthickness=0,
                   activeforeground=GREEN, activebackground=BG3,
-                  command=lambda: self._demo_picker_set_all(True)
-                  ).pack(side="left", padx=(0, 6))
-        tk.Button(pick_btns, text="✕ Uncheck all", font=FONT_DESC, bg=BG3, fg=RED,
+                  command=lambda: self._demo_picker_set_all(True)))
+        pick_btns.add(tk.Button(pick_btns, text="✕ Uncheck all", font=FONT_DESC, bg=BG3, fg=RED,
                   relief="flat", bd=0, cursor="hand2", highlightthickness=0,
                   activeforeground=RED, activebackground=BG3,
-                  command=lambda: self._demo_picker_set_all(False)
-                  ).pack(side="left")
-        tk.Button(pick_btns, text="✓ Check selected", font=FONT_DESC, bg=BG3, fg=GREEN,
+                  command=lambda: self._demo_picker_set_all(False)))
+        pick_btns.add(tk.Button(pick_btns, text="✓ Check selected", font=FONT_DESC, bg=BG3, fg=GREEN,
                   relief="flat", bd=0, cursor="hand2", highlightthickness=0,
                   activeforeground=GREEN, activebackground=BG3,
-                  command=lambda: self._demo_picker_set_selected(True)
-                  ).pack(side="left", padx=(6, 0))
-        tk.Button(pick_btns, text="✕ Uncheck selected", font=FONT_DESC, bg=BG3, fg=RED,
+                  command=lambda: self._demo_picker_set_selected(True)))
+        pick_btns.add(tk.Button(pick_btns, text="✕ Uncheck selected", font=FONT_DESC, bg=BG3, fg=RED,
                   relief="flat", bd=0, cursor="hand2", highlightthickness=0,
                   activeforeground=RED, activebackground=BG3,
-                  command=lambda: self._demo_picker_set_selected(False)
-                  ).pack(side="left", padx=(4, 0))
+                  command=lambda: self._demo_picker_set_selected(False)))
 
         # Compatibility legend
         compat_row = tk.Frame(sec, bg=BG2)
@@ -3870,9 +3957,9 @@ class App(tk.Tk):
         sec = Sec(p, "CAPTURE & TIMING")
         sec.pack(fill="x")
 
-        ev_row = tk.Frame(sec, bg=BG2)
+        ev_row = WrapRow(sec, bg=BG2)
         ev_row.pack(fill="x")
-        mlabel(ev_row, "Capture:").pack(side="left")
+        ev_row.add(mlabel(ev_row, "Capture:"))
 
         def _make_event_toggle(parent, label, var, tip):
             """Styled toggle button for event types."""
@@ -3893,19 +3980,19 @@ class App(tk.Tk):
             add_tip(btn, tip)
             return btn
 
-        _make_event_toggle(ev_row, "KILLS",
+        ev_row.add(_make_event_toggle(ev_row, "KILLS",
                            self.sel_events["Kills"],
-                           "Capture kills made by the player.").pack(side="left", padx=(10, 0))
-        _make_event_toggle(ev_row, "DEATHS BY",
+                           "Capture kills made by the player."))
+        ev_row.add(_make_event_toggle(ev_row, "DEATHS BY",
                            self.sel_events["Deaths"],
                            "Capture deaths of the selected player(s).\n"
                            "Uses the same active weapon / kill-filter / situation-filter logic as KILLS;\n"
-                           "the difference is that matching events are those where the selected player dies.").pack(side="left", padx=(4, 0))
-        _make_event_toggle(ev_row, "ROUNDS",
+                           "the difference is that matching events are those where the selected player dies."))
+        ev_row.add(_make_event_toggle(ev_row, "ROUNDS",
                            self.sel_events["Rounds"],
                            "One clip per round the player participated in, starting at round start tick.\n"
                            "Clips every round regardless of kills — useful for full-round montages.\n"
-                           "Requires a 'rounds' table in the CSDM database.").pack(side="left", padx=(4, 0))
+                           "Requires a 'rounds' table in the CSDM database."))
 
 
         # ── PERSPECTIVE ───────────────────────────────────────────────────────
@@ -3990,46 +4077,63 @@ class App(tk.Tk):
         _sa = self._slider(tg, "Seconds AFTER", self.v["after"],  1, 15, 0, 1)
         add_tip(_sa, "Seconds of footage recorded after the event tick.")
 
-        rg = tk.Frame(sec, bg=BG2)
+        rg = WrapRow(sec, bg=BG2, gap_x=16, gap_y=4)
         rg.pack(fill="x", pady=(6, 0))
-        _ret_lbl = mlabel(rg, "Retries:")
+
+        _g = tk.Frame(rg, bg=BG2)
+        _ret_lbl = mlabel(_g, "Retries:")
         _ret_lbl.pack(side="left")
         add_tip(_ret_lbl, "Number of times to retry a demo if CSDM reports 'Game error'\n"
                           "or a crash. Each retry re-launches CS2 from scratch.\n"
                           "Recommended: 2.")
-        sentry(rg, self.v["retry_count"], width=3).pack(side="left", padx=(4, 0), ipady=4)
-        _del_lbl = mlabel(rg, "  Delay (s):")
-        _del_lbl.pack(side="left", padx=(8, 0))
+        sentry(_g, self.v["retry_count"], width=3).pack(side="left", padx=(4, 0), ipady=4)
+        rg.add(_g)
+
+        _g = tk.Frame(rg, bg=BG2)
+        _del_lbl = mlabel(_g, "Delay (s):")
+        _del_lbl.pack(side="left")
         add_tip(_del_lbl, "Seconds to wait between retries.\n"
                           "Give CS2 time to fully close before re-launching.\n"
                           "Recommended: 15.")
-        sentry(rg, self.v["retry_delay"], width=3).pack(side="left", padx=(4, 0), ipady=4)
-        _pause_lbl = mlabel(rg, "  Demo pause (s):")
-        _pause_lbl.pack(side="left", padx=(8, 0))
+        sentry(_g, self.v["retry_delay"], width=3).pack(side="left", padx=(4, 0), ipady=4)
+        rg.add(_g)
+
+        _g = tk.Frame(rg, bg=BG2)
+        _pause_lbl = mlabel(_g, "Demo pause (s):")
+        _pause_lbl.pack(side="left")
         add_tip(_pause_lbl, "Seconds to wait between demos (successful or failed).\n"
                             "Helps CS2 fully release resources before the next launch.\n"
                             "Recommended: 3–5.")
-        sentry(rg, self.v["delay_between_demos"], width=3).pack(side="left", padx=(4, 0), ipady=4)
-        _to_lbl = mlabel(rg, "  Timeout (min):")
-        _to_lbl.pack(side="left", padx=(8, 0))
+        sentry(_g, self.v["delay_between_demos"], width=3).pack(side="left", padx=(4, 0), ipady=4)
+        rg.add(_g)
+
+        _g = tk.Frame(rg, bg=BG2)
+        _to_lbl = mlabel(_g, "Timeout (min):")
+        _to_lbl.pack(side="left")
         add_tip(_to_lbl, "Kill CS2 and retry if a demo recording takes longer than this many minutes.\n"
                          "0 = disabled. A good value is 15–30 min depending on clip count per demo.")
-        sentry(rg, self.v["recording_timeout"], width=4).pack(side="left", padx=(4, 0), ipady=4)
-        _ord_lbl = mlabel(rg, "  Order:")
-        _ord_lbl.pack(side="left", padx=(16, 0))
+        sentry(_g, self.v["recording_timeout"], width=4).pack(side="left", padx=(4, 0), ipady=4)
+        rg.add(_g)
+
+        _g = tk.Frame(rg, bg=BG2)
+        _ord_lbl = mlabel(_g, "Order:")
+        _ord_lbl.pack(side="left")
         add_tip(_ord_lbl, "Chronological: demos processed oldest-to-newest.\n"
                           "Random: demos shuffled before the batch starts.")
         for lbl, val in [("Chrono","chrono"),("Random 🎲","random")]:
-            hradio(rg, lbl, self.v["clip_order"], val).pack(side="left", padx=(4, 0))
+            hradio(_g, lbl, self.v["clip_order"], val).pack(side="left", padx=(4, 0))
+        rg.add(_g)
 
         # ══════════════════════════════════════════════════════════════════════
         sec = Sec(p, "KILL FILTERS")
         sec.pack(fill="x")
 
         # ── SUICIDES / TK / HS ───────────────────────────────────────────────
-        tk_row = tk.Frame(sec, bg=BG2)
+        tk_row = WrapRow(sec, bg=BG2, gap_x=16, gap_y=4)
         tk_row.pack(fill="x")
-        _sui_lbl = mlabel(tk_row, "Suicides:")
+
+        _g = tk.Frame(tk_row, bg=BG2)
+        _sui_lbl = mlabel(_g, "Suicides:")
         _sui_lbl.pack(side="left")
         add_tip(_sui_lbl, "Include / Exclude / Only for world / fall / suicide deaths.")
         for _lbl, _val, _tip in [
@@ -4037,23 +4141,28 @@ class App(tk.Tk):
             ("Exclude", "exclude", "Remove all suicide deaths from clips."),
             ("Only",    "only",    "Keep only suicide deaths (world / fall / etc)."),
         ]:
-            _rb = hradio(tk_row, _lbl, self.v["suicides_mode"], _val)
+            _rb = hradio(_g, _lbl, self.v["suicides_mode"], _val)
             _rb.pack(side="left", padx=(4, 0))
             add_tip(_rb, _tip)
-        mlabel(tk_row, "   TK:").pack(side="left", padx=(8, 0))
+        tk_row.add(_g)
+
+        _g = tk.Frame(tk_row, bg=BG2)
+        mlabel(_g, "TK:").pack(side="left")
         for lbl, val, tip in [
             ("Include", "include", "All kills, including teamkills"),
             ("Exclude", "exclude", "Exclude teamkill frags"),
             ("Only",    "only",    "Only kills on teammates"),
         ]:
-            _rb = hradio(tk_row, lbl, self.v["teamkills_mode"], val)
+            _rb = hradio(_g, lbl, self.v["teamkills_mode"], val)
             _rb.pack(side="left", padx=(4, 0))
             add_tip(_rb, tip)
+        tk_row.add(_g)
 
         # HS filter — its own row, independent of the Mods ANY/ALL logic
-        hs_row = tk.Frame(sec, bg=BG2)
+        hs_row = WrapRow(sec, bg=BG2, gap_x=4, gap_y=4)
         hs_row.pack(fill="x", pady=(4, 0))
-        _hs_lbl = flabel(hs_row, "🎯 Headshots:")
+        _g = tk.Frame(hs_row, bg=BG2)
+        _hs_lbl = flabel(_g, "🎯 Headshots:")
         _hs_lbl.pack(side="left")
         add_tip(_hs_lbl,
                 "All = include all kills regardless of headshot status.\n"
@@ -4061,8 +4170,9 @@ class App(tk.Tk):
                 "Exclude = keep non-headshot kills only.\n"
                 "⚠ HS is auto-forced only when active filter logic guarantees HS-only output.")
         for lbl, val in [("All", "all"), ("Only", "only"), ("Exclude", "exclude")]:
-            _rb = hradio(hs_row, lbl, self.v["headshots_mode"], val)
+            _rb = hradio(_g, lbl, self.v["headshots_mode"], val)
             _rb.pack(side="left", padx=(8 if val == "all" else 4, 0))
+        hs_row.add(_g)
         # Store the radio buttons container so ONE TAP / TROIS TAP can disable it
         self._hs_row = hs_row
 
@@ -4684,9 +4794,11 @@ class App(tk.Tk):
 
         # ── Window mode ──────────────────────────────────────────────────────
         _sep(sec)
-        win_row = tk.Frame(sec, bg=BG2)
+        win_row = WrapRow(sec, bg=BG2, gap_x=16, gap_y=4)
         win_row.pack(fill="x", pady=(4, 0))
-        _wm_lbl = mlabel(win_row, "Window mode:")
+
+        _g = tk.Frame(win_row, bg=BG2)
+        _wm_lbl = mlabel(_g, "Window mode:")
         _wm_lbl.pack(side="left")
         add_tip(_wm_lbl,
                 "Launch flags: -fullscreen / -windowed / -noborder.\n"
@@ -4694,14 +4806,16 @@ class App(tk.Tk):
                 "In CS mode, CSDM JSON has no launch-args field (warning shown in log).")
         for lbl, val in [("None", "none"), ("Fullscreen", "fullscreen"),
                          ("Windowed", "windowed"), ("Borderless", "noborder")]:
-            hradio(win_row, lbl, self.v["cs2_window_mode"], val).pack(side="left", padx=(4, 0))
+            hradio(_g, lbl, self.v["cs2_window_mode"], val).pack(side="left", padx=(4, 0))
+        win_row.add(_g)
+
         _stb_cb = hchk(win_row, "Send to back on launch", self.v["cs2_send_to_back"])
-        _stb_cb.pack(side="left", padx=(16, 0))
         add_tip(_stb_cb,
                 "When CS2 appears, sends it behind all other windows without minimizing.\n"
                 "The game keeps running normally — it is simply placed at the bottom of\n"
                 "the Z-order so your desktop stays on top.\n"
                 "Requires pywin32 (pip install pywin32). Silently ignored otherwise.")
+        win_row.add(_stb_cb)
 
         sec = Sec(p, "ENCODING")
         sec.pack(fill="x")
@@ -5006,7 +5120,9 @@ class App(tk.Tk):
             split = 60
         w = max(1000, min(3840, w))
         h = max(600, min(2160, h))
-        split = max(30, min(85, split))
+        # 38 % lower bound matches left_frame minsize=380 px at 1000 px window.
+        # 80 % upper bound matches right_frame minsize=200 px at 1000 px window.
+        split = max(38, min(80, split))
         return w, h, split
 
     def _apply_layout_vars(self):
@@ -5048,11 +5164,14 @@ class App(tk.Tk):
             return
         try:
             total = max(1, self.winfo_width())
-            split = int(round(self._outer_paned.sashpos(0) * 100 / total))
+            # Clamp in pixels first so neither panel can be squeezed below its
+            # minimum, then store as a percentage for layout restore on startup.
+            sash = self._outer_paned.sashpos(0)
+            sash = max(UI_PANE_LEFT_MIN, min(total - UI_PANE_RIGHT_MIN, sash))
+            self._outer_paned.sashpos(0, sash)
+            split = int(round(sash * 100 / total))
             split = self._clamp_layout_values(1600, 900, split)[2]
             self.v["ui_split_pct"].set(split)
-            # Snap the sash to the clamped position after the drag ends.
-            self._outer_paned.sashpos(0, int(total * (split / 100.0)))
         except Exception:
             pass
 
@@ -6730,35 +6849,35 @@ class App(tk.Tk):
         self._plage_lbl = tk.Label(plage_result, text="", font=FONT_SM, fg=MUTED, bg=BG2, anchor="w")
         self._plage_lbl.pack(fill="x")
 
-        plage_actions = tk.Frame(sec_plage, bg=BG2)
+        plage_actions = WrapRow(sec_plage, bg=BG2)
         plage_actions.pack(fill="x", pady=(4, 0))
 
         self._plage_btn_start = tk.Button(plage_actions, text="→ Apply start",
                   font=FONT_DESC, bg=BG3, fg=TEXT, relief="flat", bd=0,
                   cursor="hand2", activebackground=BORDER, activeforeground=ORANGE,
                   state="disabled", command=self._tag_apply_range_start)
-        self._plage_btn_start.pack(side="left", ipady=3, ipadx=6)
+        plage_actions.add(self._plage_btn_start)
         add_tip(self._plage_btn_start, "Sets date_from to the date of the first tagged demo.")
 
         self._plage_btn_end = tk.Button(plage_actions, text="→ Apply end",
                   font=FONT_DESC, bg=BG3, fg=TEXT, relief="flat", bd=0,
                   cursor="hand2", activebackground=BORDER, activeforeground=ORANGE,
                   state="disabled", command=self._tag_apply_range_end)
-        self._plage_btn_end.pack(side="left", padx=(6, 0), ipady=3, ipadx=6)
+        plage_actions.add(self._plage_btn_end)
         add_tip(self._plage_btn_end, "Sets date_to to the date of the last tagged demo.")
 
         self._plage_btn_full = tk.Button(plage_actions, text="→ Apply full range",
                   font=FONT_DESC, bg=BG3, fg=GREEN, relief="flat", bd=0,
                   cursor="hand2", activebackground=BORDER, activeforeground=GREEN,
                   state="disabled", command=self._tag_apply_range_full)
-        self._plage_btn_full.pack(side="left", padx=(6, 0), ipady=3, ipadx=6)
+        plage_actions.add(self._plage_btn_full)
         add_tip(self._plage_btn_full, "Sets date_from and date_to to cover exactly the range of tagged demos.")
 
         self._plage_btn_after = tk.Button(plage_actions, text="→ After range",
                   font=FONT_DESC, bg=BG3, fg=BLUE, relief="flat", bd=0,
                   cursor="hand2", activebackground=BORDER, activeforeground=BLUE,
                   state="disabled", command=self._tag_apply_range_after)
-        self._plage_btn_after.pack(side="left", padx=(6, 0), ipady=3, ipadx=6)
+        plage_actions.add(self._plage_btn_after)
         add_tip(self._plage_btn_after,
                 "Sets date_from to the day after the last tagged demo and clears date_to.\n"
                 "Use: run preview after to see remaining demos to tag.")

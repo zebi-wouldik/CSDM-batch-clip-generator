@@ -9,6 +9,31 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v195]
+
+### Fixed: buttons no longer get hidden when resizing the window or the log console
+
+Resize the window or drag the sash between the categories panel and the log — every row of buttons now reorganizes itself into multiple rows instead of getting clipped off-screen.
+
+**Technical details — `WrapRow` and targeted row conversions:**
+
+New `WrapRow` class (`tk.Frame` subclass): positions children via `place()` in a wrapping layout. Measures available width on every `<Configure>` event (16 ms debounce), wraps items to a new row when they no longer fit, and adjusts its own height automatically. Registered in `_WRAP_ROWS` so a global `<ButtonRelease-1>` handler can flush an immediate relayout after any sash drag (50 ms delay to let PanedWindow finish propagating geometry first). OS window-border resize falls back to a 400 ms debounce on `_on_canvas_configure`.
+
+Rows converted to `WrapRow` — related label+control pairs are grouped into sub-frames so a label and its input always wrap together as a unit:
+- **Demo picker** (`pick_btns`): Check all / Uncheck all / Check selected / Uncheck selected
+- **Capture events** (`ev_row`): Capture label + KILLS / DEATHS BY / ROUNDS toggles
+- **Tag range actions** (`plage_actions`): Apply start / Apply end / Apply full range / After range
+- **Retries / Delays / Order** (`rg`): five sub-frame groups — Retries, Delay, Demo pause, Timeout, Order (Chrono / Random) — each stays together when wrapping
+- **Suicides / TK** (`tk_row`): two sub-frame groups, each with its three radio buttons
+- **Headshots** (`hs_row`): label + All / Only / Exclude radios
+- **Window mode** (`win_row`): mode radios group + "Send to back on launch" checkbox
+
+Date range split into two fixed rows (`dr1` / `dr2`): From/To entries on row 1, Today/Clear shortcuts on row 2 — shortcuts no longer compete with the date fields for horizontal space.
+
+Pane minimum sizes: `UI_PANE_LEFT_MIN = 380 px`, `UI_PANE_RIGHT_MIN = 200 px`. Enforced in Python via pixel clamping in `_on_splitter_release` (clamps before saving as %) and `_set_sash` (clamps on startup restore). `_clamp_layout_values` percentage bounds updated to `(38, 80)` to match (38 % ≈ 380 px at the 1000 px minimum window width).
+
+---
+
 ## [v194]
 
 ### Fixed: POV killer selects wrong/random player
