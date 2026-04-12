@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v195"
+APP_VERSION = "v196"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -692,7 +692,7 @@ DEFAULT_CONFIG = {
     "ui_remember_layout": True,
     "theme_bg": "dark",      # background preset: dark | amoled | deepblue | white
     "theme_accent": "green", # accent preset or custom hex: green | blue | orange | purple | red | cyan | pink | yellow | #rrggbb
-    "steam_id": "", "player_name": "",
+    "steam_id": "", "player_name": "", "player_name_override": "",
     "events": ["Kills"], "weapons": [],
     "date_from": "", "date_to": "",
     "before": 3, "after": 5,
@@ -782,7 +782,7 @@ PRESET_CATEGORIES = {
 PRESET_KEYS = {
     "full":        None,
     # ── Capture group ──────────────────────────────────────────────────────────
-    "players":     ["steam_id", "player_name"],
+    "players":     ["steam_id", "player_name", "player_name_override"],
     "date":        ["date_from", "date_to"],
     "filters":     ["events", "weapons", "perspective", "victim_pre_s",
                     "headshots_mode", "suicides_mode", "teamkills_mode",
@@ -2265,7 +2265,8 @@ class App(tk.Tk):
                      "kill_mod_logic_mods", "kill_mod_logic_dp2", "kill_mod_logic_db",
                      "headshots_mode",
                      "theme_bg", "theme_accent",
-                     "clutch_mode"]
+                     "clutch_mode",
+                     "player_name_override"]
         int_keys = ["before", "after", "tickrate", "width", "height", "framerate", "crf", "audio_bitrate",
                      "death_notices_duration", "retry_count", "retry_delay", "delay_between_demos", "recording_timeout",
                      "hlae_fov", "hlae_slow_motion",
@@ -4060,6 +4061,17 @@ class App(tk.Tk):
                 "Without Must: fall back to normal victim camera when no mate qualifies.")
         self._wire_enable_must(self.v["kill_mod_mate_pov"],
                                self.v["kill_mod_mate_pov_req"])
+
+        # ── Active player name override ───────────────────────────────────────
+        _pno_row = tk.Frame(sec, bg=BG2)
+        _pno_row.pack(fill="x", pady=(6, 0))
+        _pno_lbl = mlabel(_pno_row, "Name override:")
+        _pno_lbl.pack(side="left")
+        add_tip(_pno_lbl,
+                "Optional: force a specific name for the active player in deathnotices.\n"
+                "Leave empty to use the name stored in the demo file.")
+        sentry(_pno_row, self.v["player_name_override"], width=22).pack(
+            side="left", padx=(6, 0), ipady=4)
 
         self.after(50, self._on_perspective_change)
 
@@ -7102,13 +7114,11 @@ class App(tk.Tk):
                 self.v["tag_on_export"].set("")
 
     def _tag_search_demos(self):
-        """Find demos matching config (player+events+weapons+dates)
-        that already have the selected tags in the DB."""
-        active_ids = list(self._tags_active)
+        """Find demos matching config (player+events+weapons+dates).
+        If tags are selected, intersects with already-tagged demos.
+        Uses the last preview cache to avoid re-querying when available."""
+        active_ids   = list(self._tags_active)
         active_names = self._get_active_tag_names()
-        if not active_ids:
-            self._async_log("[TAGS/config] Select at least one tag.", "err")
-            return
         if not self.player_search.get_steam_ids():
             self._async_log("[TAGS/config] Select at least one player account in Capture.", "err")
             return
@@ -7116,75 +7126,84 @@ class App(tk.Tk):
             self._async_log("[TAGS/config] Select at least one event.", "err")
             return
 
-        ts = self._tags_schema
-        jt       = ts.get("junction_table")
-        jt_tag   = ts.get("jt_tag_col")
+        ts      = self._tags_schema
+        jt      = ts.get("junction_table")
+        jt_tag  = ts.get("jt_tag_col")
         jt_match = ts.get("jt_match_col")
-        mkm_col  = self._find_col("matches", ["checksum", "id", "match_id"])
-        if not jt or not jt_tag or not jt_match or not mkm_col:
-            self._async_log("[TAGS/config] Insufficient DB schema.", "err")
+        if active_ids and (not jt or not jt_tag or not jt_match):
+            self._async_log("[TAGS/config] Insufficient DB schema for tag filter.", "err")
             return
 
         self._tag_demo_lb.delete(0, "end")
         self._tag_found_demos = []
-        self._demo_checksums = {}
+        self._demo_checksums  = {}
         cfg = self._build_run_cfg()
 
+        # Reuse last preview cache if available — avoids a redundant re-query
+        cached_evts = (self._last_preview_data or {}).get("evts")
+
         def task():
-            # 1. Fetch checksums already tagged with the selected tags
-            try:
-                conn = self._pg_fresh()
-                with conn.cursor() as cur:
-                    ph = ",".join(["%s"] * len(active_ids))
-                    cur.execute(
-                        f'SELECT DISTINCT "{jt_match}" FROM "{jt}" WHERE "{jt_tag}" IN ({ph})',
-                        active_ids)
-                    tagged_checksums = {r[0] for r in cur.fetchall()}
-                conn.close()
-            except Exception as e:
-                self.after(0, lambda err=e: (
-                    self._async_log(f"[TAGS/config] DB error: {err}", "err"),
-                    self._tag_search_status.config(text="Error", fg=RED)))
-                return
+            # 1. Fetch tagged checksums (only when a tag filter is active)
+            tagged_checksums = None
+            if active_ids:
+                try:
+                    conn = self._pg_fresh()
+                    with conn.cursor() as cur:
+                        ph = ",".join(["%s"] * len(active_ids))
+                        cur.execute(
+                            f'SELECT DISTINCT "{jt_match}" FROM "{jt}"'
+                            f' WHERE "{jt_tag}" IN ({ph})',
+                            active_ids)
+                        tagged_checksums = {r[0] for r in cur.fetchall()}
+                    conn.close()
+                except Exception as e:
+                    self.after(0, lambda err=e: (
+                        self._async_log(f"[TAGS/config] DB error: {err}", "err"),
+                        self._tag_search_status.config(text="Error", fg=RED)))
+                    return
 
-            # 2. Config query (player+events+weapons+dates)
-            try:
-                evts = self._query_events(cfg)
-            except Exception as e:
-                self.after(0, lambda err=e: (
-                    self._async_log(f"[TAGS/config] Config error: {err}", "err"),
-                    self._tag_search_status.config(text="Error", fg=RED)))
-                return
+            # 2. Config query — use preview cache when available
+            evts = cached_evts
+            if evts is None:
+                try:
+                    evts = self._query_events(cfg)
+                except Exception as e:
+                    self.after(0, lambda err=e: (
+                        self._async_log(f"[TAGS/config] Config error: {err}", "err"),
+                        self._tag_search_status.config(text="Error", fg=RED)))
+                    return
 
-            # 3. Intersection: keep only already-tagged demos
+            # 3. Build result — optionally filtered by tagged checksums
             found = []
             for dp in sorted(evts.keys(), key=self._demo_sort_key):
-                chk = self._demo_checksums.get(dp) or self._get_demo_checksum(dp)
-                if chk and chk in tagged_checksums:
-                    ne = len(evts[dp])
-                    seqs = self._build_sequences(evts[dp], cfg["tickrate"],
-                                                 cfg["before"], cfg["after"])
-                    found.append((dp, ne, len(seqs)))
+                if tagged_checksums is not None:
+                    chk = self._demo_checksums.get(dp) or self._get_demo_checksum(dp)
+                    if not chk or chk not in tagged_checksums:
+                        continue
+                ne   = len(evts[dp])
+                seqs = self._build_sequences(evts[dp], cfg["tickrate"],
+                                             cfg["before"], cfg["after"])
+                found.append((dp, ne, len(seqs)))
 
             def show():
                 self._tag_found_demos = found
                 self._tag_demo_lb.delete(0, "end")
-                _tag_names_str = ', '.join(active_names)
-                _date_str = f"{cfg.get('date_from','∞')} → {cfg.get('date_to','∞')}"
+                _tag_str   = f" — tags: {', '.join(active_names)}" if active_names else ""
+                _date_str  = f"{cfg.get('date_from','∞')} → {cfg.get('date_to','∞')}"
+                _cache_str = " (cached)" if cached_evts is not None else ""
                 if not found:
                     self._async_log(
-                        f"[TAGS/config] No demo — tags: {_tag_names_str} — {_date_str}",
-                        "warn")
+                        f"[TAGS/config] No demo{_tag_str} — {_date_str}", "warn")
                     self._tag_search_status.config(text="No demos.", fg=YELLOW)
                     return
                 total_evt = sum(ne for _, ne, _ in found)
                 total_seq = sum(ns for _, _, ns in found)
                 for dp, ne, ns in found:
-                    self._tag_demo_lb.insert("end", f"{Path(dp).name}  ({ne} events → {ns} seq)")
+                    self._tag_demo_lb.insert("end",
+                        f"{Path(dp).name}  ({ne} events → {ns} seq)")
                 self._async_log(
-                    f"[TAGS/config] {len(found)} demo(s) already tagged, {total_evt} events"
-                    f" — tags: {_tag_names_str} — {_date_str}",
-                    "ok")
+                    f"[TAGS/config] {len(found)} demo(s){_tag_str},"
+                    f" {total_evt} events{_cache_str} — {_date_str}", "ok")
                 self._tag_search_status.config(text=f"✓ {len(found)} demo(s)", fg=GREEN)
             self.after(0, show)
 
@@ -10282,6 +10301,8 @@ class App(tk.Tk):
         with self._dp2_cache_lock:
             _demo_names = dict(self._dp2_cache.get(demo_path, {}).get("demo_names") or {})
 
+        _name_override = (cfg.get("player_name_override") or "").strip()
+
         def _name(psid):
             psid = str(psid or "")
             return _demo_names.get(psid) or self._player_names.get(psid, "")
@@ -10467,8 +10488,8 @@ class App(tk.Tk):
                 if not psid or psid in seen_opts:
                     continue
                 seen_opts.add(psid)
-                pname = _name(psid)
                 is_our    = psid in sids_active
+                pname = (_name_override if is_our and _name_override else _name(psid))
                 is_killer = psid in seq_killer_sids
                 is_cam_target = psid in cam_target_sids
 
@@ -10482,7 +10503,7 @@ class App(tk.Tk):
                     show = True
                     hi   = is_cam_target or is_our
 
-                players_opts.append({"steamId": psid, "playerName": "",
+                players_opts.append({"steamId": psid, "playerName": pname,
                                      "showKill": show, "highlightKill": hi,
                                      "isVoiceEnabled": True})
 

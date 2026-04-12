@@ -9,6 +9,25 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v196]
+
+### Fixed: player names back in deathnotices, "By config" no longer needs a tag pre-selected, new name override field
+
+**Player names in deathnotices** were always blank — CSDM was receiving `playerName: ""` for every player. Names from the demo file (recorded username) are now used, with a fallback to the database player table. Nothing is forced or overwritten by the script: if the demo has the name, that's what shows. If not, it's empty, same as before but now intentionally.
+
+**"By config" in Tags** no longer requires a tag to be selected first. It now works the same way as the preview: finds all demos matching the current config (player + events + weapons + dates). If a tag *is* selected, the results are additionally filtered to only already-tagged demos — same behaviour as before but no longer mandatory. Also uses the last preview cache when available, so if you already ran a preview you get the result instantly.
+
+**Active player name override** — new "Name override" field in Capture, just below Mate POV. Leave it empty (default) to use whatever name the demo file has. Type a name to force it for the active player in deathnotices only — useful if the recorded username is wrong or you want a cleaner display name.
+
+**Headshot feedback:** no cvar exists in CS2 for this — the dink sound is hardcoded and silent in demo playback. Not implemented.
+
+**Technical details:**
+- `_build_json`: `players_opts[].playerName` now uses `_name(psid)` (was always `""`). `_name()` pulls from `_dp2_cache[demo_path]["demo_names"]` first, then `self._player_names` (DB). New `_name_override` variable (from `cfg["player_name_override"]`) replaces `_name(psid)` for active-player entries when set.
+- `_tag_search_demos`: removed the `if not active_ids: return` guard. Tag query is now conditional on `active_ids` being non-empty. Config events query re-uses `self._last_preview_data["evts"]` when the cache is populated. Log line includes `(cached)` when the cache is used.
+- New config key `player_name_override` (default `""`), added to the `players` preset group. UI: `sentry` entry in Capture section after the Mate POV row.
+
+---
+
 ## [v195]
 
 ### Fixed: buttons no longer get hidden when resizing the window or the log console
