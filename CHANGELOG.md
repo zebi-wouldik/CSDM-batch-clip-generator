@@ -9,6 +9,31 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v198]
+
+### Bump
+
+No new features. Version increment to mark a clean checkpoint after v195–v197 fixes.
+
+---
+
+## [v197]
+
+### Fixed: recording timeout now actually fires and adapts to demo complexity
+
+The watchdog that is supposed to kill a stuck recording and retry was effectively broken in two ways:
+
+1. **CS2 kept stdout open after CSDM was killed.** CSDM inherits the stdout pipe and passes it to CS2. Killing CSDM left CS2 alive with the pipe still open, so `readline()` blocked forever — the timeout appeared to do nothing. Fixed by using a synchronous `subprocess.run` for `taskkill /F /IM cs2.exe` so the pipe is guaranteed closed before the watchdog returns.
+
+2. **The timeout was a fixed value, not adapted to the demo.** Setting "15 minutes" works for a short demo but incorrectly kills a demo with 40 clutch sequences. The `recording_timeout` field (minutes) is now a **minimum floor**, not the sole value. The actual per-demo timeout is calculated automatically from sequence data: `(total clip game-time / timescale) × 3  +  10s per sequence  +  3 min flat`. The computed value is logged so you can see what was used. Setting the field to 0 uses the auto value alone; setting it to a number forces at least that many minutes.
+
+**Technical details:**
+- `_exec` watchdog: `subprocess.Popen(["taskkill"...])` → `subprocess.run(["taskkill"...], timeout=15)` — synchronous kill guarantees the pipe closes.
+- Per-demo timeout replaces the old single `_rec_timeout_s = user_minutes × 60`. Formula: `(_sum_clip_s / _timescale) * 3 + len(seqs) * 10 + 180`. Accounts for slow-motion factor (`hlae_slow_motion`), sequence count, and clutch full-window sequences (which have baked-in tick ranges that can span entire rounds). `_user_timeout_s` from config is applied as `max(user, auto)` when non-zero.
+- Timeout field tooltip updated: 0 = auto-calculated, non-zero = minimum floor.
+
+---
+
 ## [v196]
 
 ### Fixed: player names back in deathnotices, "By config" no longer needs a tag pre-selected, new name override field

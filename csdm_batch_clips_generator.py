@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v196"
+APP_VERSION = "v198"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -4123,7 +4123,8 @@ class App(tk.Tk):
         _to_lbl = mlabel(_g, "Timeout (min):")
         _to_lbl.pack(side="left")
         add_tip(_to_lbl, "Kill CS2 and retry if a demo recording takes longer than this many minutes.\n"
-                         "0 = disabled. A good value is 15–30 min depending on clip count per demo.")
+                         "0 = auto: timeout is calculated per demo from clip count and duration\n"
+                         "    (content × 3 + 10s/seq + 3 min flat). Set a value to enforce a minimum.")
         sentry(_g, self.v["recording_timeout"], width=4).pack(side="left", padx=(4, 0), ipady=4)
         rg.add(_g)
 
@@ -10715,25 +10716,28 @@ class App(tk.Tk):
             if getattr(self, "v", {}) and self.v.get("cs2_send_to_back") and self.v["cs2_send_to_back"].get():
                 self._start_cs2_send_to_back_watcher()
 
-            # Timeout watchdog — kills CS2 + CSDM if recording takes too long
+            # Timeout watchdog — kills CS2 + CSDM if recording takes too long.
+            # taskkill uses subprocess.run (blocking) so we wait until cs2.exe is
+            # actually dead before returning — otherwise cs2 keeps its inherited
+            # handle on the stdout pipe open and readline() never unblocks.
             if timeout_s > 0:
                 def _watchdog():
                     if _done_event.wait(timeout=timeout_s):
                         return  # finished normally
                     _timed_out[0] = True
                     self._async_log(
-                        f"  ⏱ Recording timeout ({int(timeout_s // 60)}m) — killing CS2 and retrying…",
-                        "warn")
+                        f"  ⏱ Recording timeout ({int(timeout_s // 60)}m{int(timeout_s % 60):02d}s)"
+                        " — killing CS2 and retrying…", "warn")
                     try:
                         if self._proc and self._proc.poll() is None:
                             self._proc.kill()
                     except Exception:
                         pass
                     try:
-                        subprocess.Popen(
+                        subprocess.run(
                             ["taskkill", "/F", "/IM", "cs2.exe"],
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                            creationflags=0x08000000)
+                            timeout=15, creationflags=0x08000000)
                     except Exception:
                         pass
                 threading.Thread(target=_watchdog, daemon=True).start()
@@ -12255,7 +12259,34 @@ class App(tk.Tk):
             self._async_log(f"  CMD: {' '.join(cmd)}", "dim")
 
             mx = 1 + cfg.get("retry_count", 2)
-            _rec_timeout_s = max(0, int(cfg.get("recording_timeout", 0))) * 60
+
+            # ── Per-demo smart timeout ─────────────────────────────────────────
+            # Auto-calculate from actual sequence data so clutch-heavy or many-
+            # sequence demos don't hit a wall that's too tight.
+            # Formula: (clip game-time / timescale) × 3  +  10s/seq  +  180s flat
+            #   • ×3 safety on content   (rendering overhead, demo-seek time, etc.)
+            #   • 10s per sequence       (CSDM seek + record setup inside demo)
+            #   • 180s flat              (CS2 launch + CSDM init)
+            _user_timeout_s = max(0, int(cfg.get("recording_timeout", 0))) * 60
+            _tr = cfg.get("tickrate", 64) or 64
+            _timescale = max(0.05,
+                             (cfg.get("hlae_slow_motion", 100) or 100) / 100.0)
+            _sum_clip_s = sum(
+                (s["end_tick"] - s["start_tick"]) / _tr for s in seqs)
+            _auto_timeout_s = int(
+                (_sum_clip_s / _timescale) * 3
+                + len(seqs) * 10
+                + 180)
+            if _user_timeout_s > 0:
+                _rec_timeout_s = max(_user_timeout_s, _auto_timeout_s)
+            else:
+                _rec_timeout_s = _auto_timeout_s
+            self._async_log(
+                f"  ⏱ Timeout: {_rec_timeout_s // 60}m{_rec_timeout_s % 60:02d}s"
+                f" (content {_sum_clip_s:.0f}s, {len(seqs)} seq"
+                + (f", slow {int(_timescale*100)}%" if _timescale < 0.99 else "")
+                + ")", "dim")
+
             att = 0
             d_ok = False
             d_err = ""
