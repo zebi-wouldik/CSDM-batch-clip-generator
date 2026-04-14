@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v200"
+APP_VERSION = "v202"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -746,6 +746,8 @@ DEFAULT_CONFIG = {
     **{cfg_k: False for _, cfg_k, _ in MATCH_TYPE_DEFS},
     # When True, *only* checked types pass; when False, all types pass (no filter).
     "match_type_filter_enabled": False,
+    "map_filter_enabled": False,
+    "map_filter": [],          # list of display-key strings (stripped prefix, lowercased)
     # Sequence options
     "show_xray": True,
     # Encoding preset (libx264/libx265/libsvtav1 only — no effect on GPU)
@@ -790,7 +792,8 @@ PRESET_KEYS = {
                     *_FILTER_PRESET_PLAYER_KEYS,
                     "clip_order", "show_xray",
                     "clutch_enabled", "clutch_wins_only", "clutch_mode",
-                    "clutch_1v1", "clutch_1v2", "clutch_1v3", "clutch_1v4", "clutch_1v5"],
+                    "clutch_1v1", "clutch_1v2", "clutch_1v3", "clutch_1v4", "clutch_1v5",
+                    "map_filter_enabled", "map_filter"],
     # ── Video group ────────────────────────────────────────────────────────────
     "mode":        ["recsys", "encoder"],
     "output_name": ["assemble_output", "output_dir_clips", "output_dir_concat",
@@ -2247,6 +2250,10 @@ class App(tk.Tk):
         self._col_cache      = {}  # {(table, tuple(candidates)): col} — cached _find_col results
         self._db_conn        = None  # persistent psycopg2 connection — reused across calls
         self._db_match_types: list = []   # distinct game_mode_str values found in DB
+        self._db_maps:        list = []   # [(display_key, [raw_vals])] from DB map col
+        self._map_alias:      str  = "m"  # SQL alias for the table holding the map col
+        self._map_join:       str  = ""   # extra JOIN clause when map col is in demos
+        self._map_filter_vars: dict = {}  # {display_key: BooleanVar} — rebuilt by _refresh_map_filter_ui
         self._dp2_verbose    = False  # per-kill dp2 filter logging (debug only — expensive)
         self._tag_search_results = {}
         self._warned_missing_mods: set = set()  # suppress repeat warnings for same absent cols
@@ -2282,6 +2289,7 @@ class App(tk.Tk):
                       "concatenate_sequences", "subfolder_per_demo", "true_view", "tag_enabled",
                       "hlae_afx_stream", "hlae_no_spectator_ui",
                       "hlae_fix_scope_fov",
+                      "map_filter_enabled",
                       "show_xray",
                       # Filter bool keys auto-derived from KILL_FILTER_REGISTRY
                       *_FILTER_BOOL_KEYS,
@@ -2439,7 +2447,8 @@ class App(tk.Tk):
         if cfg.get("encoder") not in ENCODER_OPTIONS:
             cfg["encoder"] = "FFmpeg"
         cfg["events"] = [e for e, v in self.sel_events.items() if v.get()]
-        cfg["weapons"] = [w for w, v in self.sel_weapons.items() if v.get()]
+        cfg["weapons"]     = [w for w, v in self.sel_weapons.items() if v.get()]
+        cfg["map_filter"]  = [dk for dk, v in self._map_filter_vars.items() if v.get()]
         # Compat: output_dir mirrors output_dir_clips
         if cfg.get("output_dir_clips"):
             cfg["output_dir"] = cfg["output_dir_clips"]
@@ -2490,6 +2499,10 @@ class App(tk.Tk):
             elif k == "weapons":
                 for w, v in self.sel_weapons.items():
                     v.set(w in val)
+            elif k == "map_filter" and isinstance(val, list):
+                sel = set(val)
+                for dk, v in self._map_filter_vars.items():
+                    v.set(dk in sel)
             elif k == "steam_ids" and isinstance(val, list):
                 self.player_search._active_sids.clear()
                 for sid in val:
@@ -2556,6 +2569,44 @@ class App(tk.Tk):
             user=self.v["pg_user"].get(), password=self.v["pg_pass"].get(),
             dbname=self.v["pg_db"].get(), connect_timeout=5)
 
+    # ── Map-column detection ────────────────────────────────────────────────────
+    # CSDM stores map_name in the `demos` table (not `matches`).
+    # If a future version moves it back to `matches`, the candidates list handles it.
+    # Returns (col, alias, join_sql) where:
+    #   col      — column name,  e.g. "map_name"
+    #   alias    — SQL table alias to prefix the column ("m" for matches, "d" for demos)
+    #   join_sql — extra JOIN clause to append to FROM, or "" if the col is in matches
+    _MAP_COL_CANDIDATES = ("map_name", "game_map", "map", "level_name", "server_map")
+
+    @staticmethod
+    def _detect_map_col(schema):
+        """Return (col, alias, join_sql) for the map-name column, or (None, "m", "")."""
+        matches_cols = schema.get("matches", [])
+        demos_cols   = schema.get("demos",   [])
+
+        # 1. Try matches directly (col present in matches table)
+        for c in App._MAP_COL_CANDIDATES:
+            if c in matches_cols:
+                return c, "m", ""
+        fallback_m = next((c for c in matches_cols if "map" in c.lower()), None)
+        if fallback_m:
+            return fallback_m, "m", ""
+
+        # 2. Try demos table joined on checksum
+        if demos_cols:
+            demos_ck   = next((c for c in demos_cols   if c.lower() == "checksum"), None)
+            matches_ck = next((c for c in matches_cols if c.lower() == "checksum"), None)
+            if demos_ck and matches_ck:
+                join_sql = f'LEFT JOIN demos d ON d."{demos_ck}" = m."{matches_ck}"'
+                for c in App._MAP_COL_CANDIDATES:
+                    if c in demos_cols:
+                        return c, "d", join_sql
+                fallback_d = next((c for c in demos_cols if "map" in c.lower()), None)
+                if fallback_d:
+                    return fallback_d, "d", join_sql
+
+        return None, "m", ""
+
     def _connect_and_load(self):
         self.db_status.set("Connecting...")
         self.db_status_lbl.config(fg=YELLOW)
@@ -2567,7 +2618,7 @@ class App(tk.Tk):
                     with conn.cursor() as cur:
                         schema = {}
                         col_types = {}
-                        for t in ["kills", "matches", "rounds", "players", "tags",
+                        for t in ["kills", "matches", "demos", "rounds", "players", "tags",
                                   "checksum_tags", "match_tags"]:
                             cur.execute(
                                 "SELECT column_name, data_type FROM information_schema.columns "
@@ -2694,6 +2745,31 @@ class App(tk.Tk):
                             except Exception:
                                 match_types_found = []
 
+                        # Detect map column (may be in matches or demos) and fetch distinct values.
+                        _MAP_PREFIXES = ("de_", "cs_", "ar_", "gg_", "dz_", "tr_")
+                        maps_found: list = []
+                        _mc, _ma, _mj = App._detect_map_col(schema)
+                        if _mc:
+                            # Fetch from the owning table directly (no join needed for DISTINCT)
+                            _map_src_table = "demos" if _ma == "d" else "matches"
+                            try:
+                                cur.execute(
+                                    f'SELECT DISTINCT "{_mc}" FROM {_map_src_table} '
+                                    f'WHERE "{_mc}" IS NOT NULL ORDER BY "{_mc}"')
+                                _raw_maps = [str(r[0]).strip() for r in cur.fetchall() if r[0]]
+                                # Deduplicate by display key (stripped prefix, lowercase)
+                                _disp: dict = {}
+                                for _rv in _raw_maps:
+                                    _dk = _rv.lower()
+                                    for _pfx in _MAP_PREFIXES:
+                                        if _dk.startswith(_pfx):
+                                            _dk = _dk[len(_pfx):]
+                                            break
+                                    _disp.setdefault(_dk, []).append(_rv)
+                                maps_found = sorted(_disp.items())   # [(display_key, [raw_vals])]
+                            except Exception:
+                                maps_found = []
+
                         tags_data = []
                         tags_schema_info = {}
                         if "tags" in schema:
@@ -2766,14 +2842,15 @@ class App(tk.Tk):
                 names = {s: n for n, s, *_ in rows}
                 self.after(0, lambda: self._on_load_ok(players, dc, dc_type, weapons, schema,
                                                         col_types, names, tags_data, tags_schema_info,
-                                                        match_types_found))
+                                                        match_types_found, maps_found, _mc, _ma, _mj))
             except Exception as e:
                 self.after(0, lambda err=e: self._on_load_fail(err))
 
         threading.Thread(target=task, daemon=True).start()
 
     def _on_load_ok(self, players, dc, dc_type, weapons, schema, col_types, names,
-                    tags_data, tags_schema, match_types_found=None):
+                    tags_data, tags_schema, match_types_found=None,
+                    maps_found=None, map_col=None, map_alias="m", map_join=""):
         self._date_col      = dc
         self._date_col_type = dc_type   # actual SQL type: bigint, timestamp, date, text…
         self._db_schema     = schema
@@ -2786,10 +2863,13 @@ class App(tk.Tk):
         self._demo_map_cache = {}
         self._ts_cache       = {}
         self._col_cache      = {}
-        self._map_col        = None   # re-detect on next query (new DB may differ)
         self._warned_missing_mods = set()  # reset so re-connect re-checks column presence
         self._warned_require_win_no_data = False
         self._db_match_types = match_types_found or []
+        self._db_maps        = maps_found or []   # [(display_key, [raw_vals])] or []
+        self._map_col        = map_col    # column name, e.g. "map_name"; None = unavailable
+        self._map_alias      = map_alias  # SQL alias: "m" (matches) or "d" (demos)
+        self._map_join       = map_join   # extra JOIN clause, e.g. "LEFT JOIN demos d ON ..."
 
         # Warn (log only) if the date column was not detected
         if not dc:
@@ -2807,6 +2887,7 @@ class App(tk.Tk):
 
         self._build_weapons(weapons)
         self._refresh_match_type_ui()
+        self._refresh_map_filter_ui()
 
         self._refresh_tags_list_display()
 
@@ -2981,6 +3062,68 @@ class App(tk.Tk):
                 cb.config(state=("normal" if (enabled and in_db) else "disabled"))
         except AttributeError:
             pass  # checkboxes not built yet
+
+    def _refresh_map_filter_ui(self):
+        """Rebuild map filter checkboxes from self._db_maps.
+
+        Called from _on_load_ok (after DB connect) and at UI build time.
+        If no map column found, shows a note and disables the filter.
+        """
+        try:
+            frame = self._map_filter_frame
+        except AttributeError:
+            return  # UI not built yet
+
+        for w in frame.winfo_children():
+            w.destroy()
+
+        # Enable toggle row
+        toggle_row = tk.Frame(frame, bg=BG2)
+        toggle_row.pack(fill="x")
+        has_maps = bool(self._db_maps)
+        _en_cb = hchk(toggle_row, "Filter by map", self.v["map_filter_enabled"],
+                      command=self._on_map_filter_toggle)
+        _en_cb.pack(side="left")
+        _en_cb.config(state="normal" if has_maps else "disabled")
+        add_tip(_en_cb,
+                "When checked: only demos on the selected maps are included.\n"
+                "When unchecked: all maps pass (no SQL overhead).\n"
+                "Maps are loaded from your database on connect.")
+
+        if not has_maps:
+            tk.Label(toggle_row, text="  No map column found in DB",
+                     font=FONT_DESC, fg=MUTED, bg=BG2).pack(side="left", padx=(8, 0))
+            return
+
+        # Checkbox grid — wrap every 4
+        cb_frame = tk.Frame(frame, bg=BG2)
+        cb_frame.pack(fill="x", pady=(4, 0))
+        self._map_filter_vars = {}
+        for col_idx, (dk, _raw_vals) in enumerate(self._db_maps):
+            var = tk.BooleanVar(value=False)
+            self._map_filter_vars[dk] = var
+            lbl = dk.capitalize()
+            _cb = hchk(cb_frame, lbl, var)
+            _cb.grid(row=col_idx // 4, column=col_idx % 4, sticky="w", padx=(0, 12), pady=1)
+            add_tip(_cb, f"DB value(s): {', '.join(_raw_vals)}")
+
+        self._on_map_filter_toggle()
+
+    def _on_map_filter_toggle(self, *_):
+        """Enable/disable map checkboxes based on master toggle."""
+        try:
+            enabled = self.v["map_filter_enabled"].get()
+            for cb in self._map_filter_frame.winfo_children():
+                # Skip the toggle row itself; target only the cb_frame children
+                pass
+            # Walk all checkboxes inside the cb_frame (second child of frame)
+            children = self._map_filter_frame.winfo_children()
+            if len(children) >= 2:
+                cb_frame = children[1]
+                for w in cb_frame.winfo_children():
+                    w.config(state="normal" if enabled else "disabled")
+        except (AttributeError, tk.TclError):
+            pass
 
 
     def _create_new_tag_dialog(self, from_combo=True):
@@ -4393,6 +4536,18 @@ class App(tk.Tk):
         # Populated immediately below with all known types (greyed until DB connects)
         self._refresh_match_type_ui()
 
+        # ── Map filter ────────────────────────────────────────────────────────
+        self._map_filter_sec = Sec(p, "MAP FILTER")
+        self._map_filter_sec.pack(fill="x")
+        desc_label(self._map_filter_sec,
+            "Filter demos to specific maps.\n"
+            "Populated from your database on connect.\n"
+            "When the filter toggle is off, all maps pass (no SQL overhead)."
+        ).pack(anchor="w", pady=(0, 4))
+        self._map_filter_frame = tk.Frame(self._map_filter_sec, bg=BG2)
+        self._map_filter_frame.pack(fill="x")
+        self._refresh_map_filter_ui()
+
         # Auto-tag managed from the Tags tab (active selection)
 
     def _open_cal(self, var, anchor=None):
@@ -4579,14 +4734,6 @@ class App(tk.Tk):
         self._demo_tree.tag_configure("warn_compat",  foreground=YELLOW)
         self._demo_tree.tag_configure("warn_missing", foreground=MUTED)
 
-        # Show/hide the Map column depending on whether _map_col was detected
-        if self._map_col:
-            self._demo_tree.column("map", width=80, minwidth=60, stretch=False)
-            self._demo_tree.heading("map", text="Map")
-        else:
-            self._demo_tree.column("map", width=0, minwidth=0, stretch=False)
-            self._demo_tree.heading("map", text="")
-
         n_on  = sum(1 for v in self._demo_picker_state.values() if v)
         n_tot = len(self._demo_picker_state)
         try:
@@ -4650,25 +4797,22 @@ class App(tk.Tk):
         def _bg():
             try:
                 conn = self._pg_fresh()
-                dc   = self._find_col("matches", ["demo_path", "demo_file_path",
-                                                    "demo_filepath", "share_code"])
-                mkm  = self._find_col("matches", ["checksum", "id", "match_id"])
+                dc       = self._find_col("matches", ["demo_path", "demo_file_path",
+                                                       "demo_filepath", "share_code"])
+                mkm      = self._find_col("matches", ["checksum", "id", "match_id"])
                 date_col = self._date_col
+                map_col  = self._map_col
+                map_join = self._map_join
+                map_alias = self._map_alias
                 if not dc:
                     return
                 with conn.cursor() as cur:
-                    map_col = self._map_col or self._find_col("matches", [
-                        "map_name", "game_map", "map", "level_name", "server_map"])
-                    if not map_col:
-                        map_col = next(
-                            (c for c in self._db_schema.get("matches", []) if "map" in c.lower()),
-                            None)
-                    map_sel_m = f',"{map_col}"' if map_col else ""
-                    if date_col:
-                        cur.execute(f'SELECT "{dc}","{mkm}","{date_col}"{map_sel_m} FROM matches '
-                                    f'ORDER BY "{date_col}" DESC')
-                    else:
-                        cur.execute(f'SELECT "{dc}","{mkm}"{map_sel_m} FROM matches')
+                    map_sel_m = f',{map_alias}."{map_col}"' if map_col else ""
+                    date_sel_m = f',m."{date_col}"' if date_col else ""
+                    cur.execute(
+                        f'SELECT m."{dc}",m."{mkm}"{date_sel_m}{map_sel_m} '
+                        f'FROM matches m {map_join} '
+                        + (f'ORDER BY m."{date_col}" DESC' if date_col else ''))
                     rows = cur.fetchall()
                 conn.close()
                 all_paths = []
@@ -9074,25 +9218,17 @@ class App(tk.Tk):
                         self._date_col      = date_col
                         self._date_col_type = _m_types.get(date_col, "").lower()
 
-                # Detect map column (optional — used by demo picker display)
-                # Must be resolved BEFORE the SELECT is built so map_sel is non-empty.
-                if self._map_col is None and self._db_schema.get("matches"):
-                    self._map_col = self._find_col("matches", [
-                        "map_name", "game_map", "map", "level_name", "server_map"])
-                    # Broader fallback: any column whose name contains "map"
-                    if self._map_col is None:
-                        self._map_col = next(
-                            (c for c in self._db_schema["matches"] if "map" in c.lower()),
-                            None)
-                    if self._map_col:
-                        self._async_log(f"  ℹ Map column detected: {self._map_col}", "dim")
-                    else:
-                        self._async_log(
-                            f"  ⚠ Map column not found in matches "
-                            f"({', '.join(self._db_schema['matches'][:8])}…) — map column hidden",
-                            "warn")
-
-                # ── Build SELECT (map_sel now uses the resolved _map_col) ──────
+                # ── Build SELECT (map_sel uses _map_col detected at connect time) ──────
+                # Map filter WHERE clause (empty when filter disabled or no map col)
+                _mf_sql  = ""
+                _mf_raw: list = []
+                if cfg.get("map_filter_enabled") and self._map_col:
+                    _mf_sel = set(cfg.get("map_filter", []))
+                    if _mf_sel:
+                        _mf_raw = [rv for dk, rvs in self._db_maps for rv in rvs if dk in _mf_sel]
+                        if _mf_raw:
+                            _mf_sql = (f' AND {self._map_alias}."{self._map_col}" IN '
+                                       f'({",".join(["%s"]*len(_mf_raw))})')
 
                 # Empty _build_dsql: date filter applied in Python post-query
                 def _build_dsql(base_params):
@@ -9163,12 +9299,14 @@ class App(tk.Tk):
                         enames.append("_hs")
 
                     date_sel = f',m."{date_col}"' if date_col else ""
-                    map_sel  = f',m."{self._map_col}"' if self._map_col else ""
+                    map_sel  = f',{self._map_alias}."{self._map_col}"' if self._map_col else ""
                     sql = (f'SELECT m."{dc}",k."{tc}",m."{mkm}"{date_sel}{map_sel}{extra} FROM kills k '
-                           f'JOIN matches m ON m."{mkm}"=k."{mkk}" '
-                           f'WHERE {psql}{wsql}{hsql}{tksql}{suicidesql}{modsql}{_mt_clause}{dsql} ORDER BY m."{dc}",k."{tc}"')
+                           f'JOIN matches m ON m."{mkm}"=k."{mkk}" {self._map_join} '
+                           f'WHERE {psql}{wsql}{hsql}{tksql}{suicidesql}{modsql}{_mt_clause}{_mf_sql}{dsql} ORDER BY m."{dc}",k."{tc}"')
                     if suicidesql:
                         params = params + list(SUICIDE_WEAPONS)
+                    if _mf_raw:
+                        params = params + _mf_raw
                     cur.execute(sql, params)
                     sids_set = set(sids)
                     _map_offset = (1 if date_col else 0)   # extra columns before `extra`
@@ -9242,12 +9380,14 @@ class App(tk.Tk):
                             params.extend(_mt_vals_r)
                         dsql = _build_dsql(params)
                         date_sel2 = f',m."{date_col}"' if date_col else ""
-                        map_sel2  = f',m."{self._map_col}"' if self._map_col else ""
+                        map_sel2  = f',{self._map_alias}."{self._map_col}"' if self._map_col else ""
+                        if _mf_raw:
+                            params.extend(_mf_raw)
                         sql = (f'SELECT m."{dc}",r."{rtc}",m."{mkm}"{date_sel2}{map_sel2} FROM rounds r '
-                               f'JOIN matches m ON m."{mkm}"=r."{rmk}" '
+                               f'JOIN matches m ON m."{mkm}"=r."{rmk}" {self._map_join} '
                                f'WHERE r."{rmk}" IN '
                                f'(SELECT p."{pmk}" FROM players p WHERE p.steam_id IN ({sid_ph}))'
-                               f'{_mt_clause_r}{dsql} ORDER BY m."{dc}",r."{rtc}"')
+                               f'{_mt_clause_r}{_mf_sql}{dsql} ORDER BY m."{dc}",r."{rtc}"')
                         try:
                             cur.execute(sql, params)
                             for row in cur.fetchall():
@@ -12265,20 +12405,16 @@ class App(tk.Tk):
             mx = 1 + cfg.get("retry_count", 2)
 
             # ── Per-demo smart timeout ─────────────────────────────────────────
-            # Formula: (clip game-time / timescale) × 2.5  +  10s/seq  +  60s flat
-            #   • ×2.5 safety on content  (seek + render overhead)
-            #   • 10s per sequence        (CSDM seek + record setup inside demo)
-            #   • 60s flat                (CS2 + CSDM init)
+            # Formula: max(content × 3, 60s minimum)
+            #   • ×3 safety on content  (seek + render overhead per demo)
+            #   • 60s minimum           (floor for very short content)
             _user_timeout_s = max(0, int(cfg.get("recording_timeout", 0))) * 60
             _tr = cfg.get("tickrate", 64) or 64
             _timescale = max(0.05,
                              (cfg.get("hlae_slow_motion", 100) or 100) / 100.0)
             _sum_clip_s = sum(
                 (s["end_tick"] - s["start_tick"]) / _tr for s in seqs)
-            _auto_timeout_s = int(
-                (_sum_clip_s / _timescale) * 2.5
-                + len(seqs) * 10
-                + 60)
+            _auto_timeout_s = max(int((_sum_clip_s / _timescale) * 3), 60)
             if _user_timeout_s > 0:
                 _rec_timeout_s = max(_user_timeout_s, _auto_timeout_s)
             else:

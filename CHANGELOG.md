@@ -9,6 +9,33 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v202]
+
+### Fixed: map column detection — `map_name` lives in `demos` table, not `matches`
+
+CSDM stores `map_name` in the `demos` table (a sibling table to `matches`, sharing the same `checksum` PK). Previous code only searched `matches`, so map data was never found.
+
+**Revamp:**
+- New static `_detect_map_col(schema)` — single source of truth for detection. Checks `matches` first (backward compat), then falls back to `demos` via `LEFT JOIN demos d ON d.checksum = m.checksum`. Candidates list (`_MAP_COL_CANDIDATES`) is a class-level constant.
+- `demos` table now included in the schema fetch at connect time.
+- `_map_alias` ("m" or "d") and `_map_join` (JOIN clause or "") stored on the instance alongside `_map_col`. All SQL that references the map column uses these — kills query, rounds query, manual mode query.
+- Distinct map fetch reads from the owning table directly (`demos` or `matches`), no join needed for `SELECT DISTINCT`.
+- Manual mode query rebuilt using `map_alias` and `map_join` — no more `_find_col` fallback, no dead code.
+
+---
+
+## [v201]
+
+### Fixed: timeout formula; Added: MAP FILTER section; Fixed: map column always visible
+
+**Timeout**: Formula simplified to `max(content × 3, 60s)`. No per-seq or flat overhead. For a 24s demo: 72s = 1m12s. For very short content: 60s floor. User-configured minimum still acts as a floor via `max(user, auto)`.
+
+**Map filter**: New "MAP FILTER" section in Capture tab, after Match Types. Populated dynamically from DB on connect — no hardcoded maps. Map col and distinct values detected at connect time (not lazily in `_query_events`). Deduplication: maps grouped by display key (stripped prefix + lowercase), so "de_dust2" and "DE_dust2" merge to one checkbox. Selecting a map filters the kills + rounds SQL query (`AND m."map_col" IN (...)`). Section shows "No map column found in DB" and disables the toggle when DB has no map column.
+
+**Map column in treeview**: Reverted the v200 hide-when-absent logic — column stays visible at all times (just empty when no DB data).
+
+---
+
 ## [v200]
 
 ### Fixed: demo picker map column hidden when DB has no map column; removed Workshop DL option; timeout formula tightened
