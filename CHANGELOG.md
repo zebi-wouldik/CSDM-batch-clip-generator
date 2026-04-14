@@ -32,31 +32,15 @@ CSDM stores `map_name` in the `demos` table (a sibling table to `matches`, shari
 
 **Map filter**: New "MAP FILTER" section in Capture tab, after Match Types. Populated dynamically from DB on connect — no hardcoded maps. Map col and distinct values detected at connect time (not lazily in `_query_events`). Deduplication: maps grouped by display key (stripped prefix + lowercase), so "de_dust2" and "DE_dust2" merge to one checkbox. Selecting a map filters the kills + rounds SQL query (`AND m."map_col" IN (...)`). Section shows "No map column found in DB" and disables the toggle when DB has no map column.
 
-**Map column in treeview**: Reverted the v200 hide-when-absent logic — column stays visible at all times (just empty when no DB data).
-
 ---
 
 ## [v200]
 
-### Fixed: demo picker map column hidden when DB has no map column; removed Workshop DL option; timeout formula tightened
-
-**Map column**: `_map_col` now hides the Map treeview column (width=0) when no map column is found in the DB, instead of showing an empty column. The "broader fallback" detection (any col containing "map") was added in v199 — if it still finds nothing, the column is cleanly suppressed.
+### Removed: Workshop DL option; timeout formula tightened
 
 **Workshop DL removed**: `hlae_workshop_download` option removed entirely. `downloadWorkshopMap` was a CSDM config key with no reliable CS2-side auto-download behaviour. The injected `sv_pure 0 + sv_lan 1` blocked Steam Workshop validation (causing potential map loading failures). Removed from DEFAULT_CONFIG, PRESET_KEYS, bool_keys, UI, `_inject_cs_runtime_cfg`, `_build_hlae_launch_tokens`, and `_build_json`.
 
 **Timeout formula**: Changed from `×3 + 10s/seq + 180s` to `×2.5 + 10s/seq + 60s`. For a 24s/1-seq demo: was 4m22s → now 2m10s. Timeout log line now colored: duration in orange, content in green, seq count in blue.
-
----
-
-## [v199]
-
-### Fixed: map column not showing in demo picker
-
-`_find_col` was only checking exact candidates (`map_name`, `game_map`, `map`, `level_name`, `server_map`). If the CSDM DB uses a different column name, detection silently returned `None` and no map data was ever fetched — the Map column in the picker was always blank.
-
-Added a broader fallback: if no exact candidate matches, any column in `matches` whose name contains `"map"` is used. Applied to both the Preview query path and the Manual mode path.
-
-Added a diagnostic log on first detection: shows which column was found, or warns with the first 8 columns from `matches` if nothing matched.
 
 ---
 
