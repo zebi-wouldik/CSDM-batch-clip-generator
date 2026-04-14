@@ -9,6 +9,30 @@ Format inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ---
 
+## [v200]
+
+### Fixed: demo picker map column hidden when DB has no map column; removed Workshop DL option; timeout formula tightened
+
+**Map column**: `_map_col` now hides the Map treeview column (width=0) when no map column is found in the DB, instead of showing an empty column. The "broader fallback" detection (any col containing "map") was added in v199 — if it still finds nothing, the column is cleanly suppressed.
+
+**Workshop DL removed**: `hlae_workshop_download` option removed entirely. `downloadWorkshopMap` was a CSDM config key with no reliable CS2-side auto-download behaviour. The injected `sv_pure 0 + sv_lan 1` blocked Steam Workshop validation (causing potential map loading failures). Removed from DEFAULT_CONFIG, PRESET_KEYS, bool_keys, UI, `_inject_cs_runtime_cfg`, `_build_hlae_launch_tokens`, and `_build_json`.
+
+**Timeout formula**: Changed from `×3 + 10s/seq + 180s` to `×2.5 + 10s/seq + 60s`. For a 24s/1-seq demo: was 4m22s → now 2m10s. Timeout log line now colored: duration in orange, content in green, seq count in blue.
+
+---
+
+## [v199]
+
+### Fixed: map column not showing in demo picker
+
+`_find_col` was only checking exact candidates (`map_name`, `game_map`, `map`, `level_name`, `server_map`). If the CSDM DB uses a different column name, detection silently returned `None` and no map data was ever fetched — the Map column in the picker was always blank.
+
+Added a broader fallback: if no exact candidate matches, any column in `matches` whose name contains `"map"` is used. Applied to both the Preview query path and the Manual mode path.
+
+Added a diagnostic log on first detection: shows which column was found, or warns with the first 8 columns from `matches` if nothing matched.
+
+---
+
 ## [v198]
 
 ### Bump

@@ -29,7 +29,7 @@ except ImportError:
 # ═══════════════════════════════════════════════════════
 #  Version
 # ═══════════════════════════════════════════════════════
-APP_VERSION = "v198"
+APP_VERSION = "v200"
 
 # ═══════════════════════════════════════════════════════
 #  Theme
@@ -757,7 +757,7 @@ DEFAULT_CONFIG = {
     "hlae_no_spectator_ui": True,
     "hlae_fix_scope_fov": True,   # mirv_fov handleZoom enabled 1 — fixes scope FOV zoom override
     "hlae_extra_args": "",
-    "hlae_workshop_download": False,
+
     # CS2 physics (injected as console commands via extraArgs)
     "phys_ragdoll_gravity": 600,       # cl_ragdoll_gravity (default 600, negative = float)
     "phys_ragdoll_scale": 1.0,         # ragdoll_gravity_scale (default 1.0)
@@ -801,7 +801,7 @@ PRESET_KEYS = {
                     "death_notices_duration", "show_only_death_notices",
                     "concatenate_sequences", "subfolder_per_demo", "true_view"],
     "hlae_opts":   ["hlae_fov", "hlae_slow_motion", "hlae_afx_stream",
-                    "hlae_no_spectator_ui", "hlae_fix_scope_fov", "hlae_workshop_download",
+                    "hlae_no_spectator_ui", "hlae_fix_scope_fov",
                     "hlae_extra_args"],
     "physics":     ["phys_ragdoll_gravity", "phys_ragdoll_scale", "phys_ragdoll_enable",
                     "phys_sv_gravity", "phys_blood", "phys_dynamic_lighting"],
@@ -821,7 +821,7 @@ PRESET_KEYS = {
                     "death_notices_duration", "show_only_death_notices",
                     "concatenate_sequences", "subfolder_per_demo", "true_view",
                     "hlae_fov", "hlae_slow_motion", "hlae_afx_stream",
-                    "hlae_no_spectator_ui", "hlae_fix_scope_fov", "hlae_workshop_download",
+                    "hlae_no_spectator_ui", "hlae_fix_scope_fov",
                     "hlae_extra_args",
                     "phys_ragdoll_gravity", "phys_ragdoll_scale", "phys_ragdoll_enable",
                     "phys_sv_gravity", "phys_blood", "phys_dynamic_lighting"],
@@ -2281,7 +2281,7 @@ class App(tk.Tk):
         bool_keys = ["use_config_file_mode", "close_game_after", "show_only_death_notices",
                       "concatenate_sequences", "subfolder_per_demo", "true_view", "tag_enabled",
                       "hlae_afx_stream", "hlae_no_spectator_ui",
-                      "hlae_fix_scope_fov", "hlae_workshop_download",
+                      "hlae_fix_scope_fov",
                       "show_xray",
                       # Filter bool keys auto-derived from KILL_FILTER_REGISTRY
                       *_FILTER_BOOL_KEYS,
@@ -4579,6 +4579,14 @@ class App(tk.Tk):
         self._demo_tree.tag_configure("warn_compat",  foreground=YELLOW)
         self._demo_tree.tag_configure("warn_missing", foreground=MUTED)
 
+        # Show/hide the Map column depending on whether _map_col was detected
+        if self._map_col:
+            self._demo_tree.column("map", width=80, minwidth=60, stretch=False)
+            self._demo_tree.heading("map", text="Map")
+        else:
+            self._demo_tree.column("map", width=0, minwidth=0, stretch=False)
+            self._demo_tree.heading("map", text="")
+
         n_on  = sum(1 for v in self._demo_picker_state.values() if v)
         n_tot = len(self._demo_picker_state)
         try:
@@ -4651,6 +4659,10 @@ class App(tk.Tk):
                 with conn.cursor() as cur:
                     map_col = self._map_col or self._find_col("matches", [
                         "map_name", "game_map", "map", "level_name", "server_map"])
+                    if not map_col:
+                        map_col = next(
+                            (c for c in self._db_schema.get("matches", []) if "map" in c.lower()),
+                            None)
                     map_sel_m = f',"{map_col}"' if map_col else ""
                     if date_col:
                         cur.execute(f'SELECT "{dc}","{mkm}","{date_col}"{map_sel_m} FROM matches '
@@ -4970,11 +4982,6 @@ class App(tk.Tk):
              "Injects: mirv_fov handleZoom enabled 1\n"
              "Prevents mirv_fov from overriding the zoomed FOV on scoped weapons.\n"
              "Recommended: ON."),
-            ("Auto Workshop DL", "hlae_workshop_download",
-             "Auto-confirms the CSDM Workshop download dialog (downloadWorkshopMap: true).\n"
-             "Also injects +sv_pure 0 +sv_lan 1 so CS2 loads the locally installed map version\n"
-             "without re-downloading or validating against the Workshop CDN.\n"
-             "⚠ The old map version must already be installed/cached on your machine."),
         ]:
             _cb = hchk(bool_opts, txt, self.v[key])
             _cb.pack(side="left", padx=(0, 6))
@@ -4985,9 +4992,7 @@ class App(tk.Tk):
                  font=FONT_SM, fg=MUTED, bg=BG2)
         _ea_lbl.pack(anchor="w", pady=(8, 0))
         add_tip(_ea_lbl,
-                "Arguments passed directly to the HLAE session.\n"
-                "⚠ For old Workshop maps: enable 'Auto Workshop DL' above (injects sv_pure 0 + sv_lan 1)\n"
-                "and ensure the old map version is already installed/cached locally.")
+                "Arguments passed directly to the HLAE session.")
         sentry(self._hlae_sec, self.v["hlae_extra_args"]).pack(fill="x", ipady=4, pady=(2, 0))
 
         # ── CS2 EFFECTS (available in both modes) ────────────────────────────
@@ -9074,6 +9079,18 @@ class App(tk.Tk):
                 if self._map_col is None and self._db_schema.get("matches"):
                     self._map_col = self._find_col("matches", [
                         "map_name", "game_map", "map", "level_name", "server_map"])
+                    # Broader fallback: any column whose name contains "map"
+                    if self._map_col is None:
+                        self._map_col = next(
+                            (c for c in self._db_schema["matches"] if "map" in c.lower()),
+                            None)
+                    if self._map_col:
+                        self._async_log(f"  ℹ Map column detected: {self._map_col}", "dim")
+                    else:
+                        self._async_log(
+                            f"  ⚠ Map column not found in matches "
+                            f"({', '.join(self._db_schema['matches'][:8])}…) — map column hidden",
+                            "warn")
 
                 # ── Build SELECT (map_sel now uses the resolved _map_col) ──────
 
@@ -10208,9 +10225,6 @@ class App(tk.Tk):
         sm = self._cfg_int(cfg, "hlae_slow_motion", 100, 1, 1000)
         if sm != 100:
             runtime_cmds.append(f"host_timescale {round(sm / 100.0, 4)}")
-        if self._cfg_bool(cfg, "hlae_workshop_download", False):
-            runtime_cmds.append("sv_pure 0")
-            runtime_cmds.append("sv_lan 1")
         if self._cfg_bool(cfg, "hlae_no_spectator_ui", True):
             runtime_cmds.append("cl_draw_only_deathnotices 1")
 
@@ -10273,15 +10287,6 @@ class App(tk.Tk):
             tokens.append("+cl_draw_only_deathnotices 1")
         if self._cfg_bool(cfg, "hlae_fix_scope_fov", True):
             tokens.append("+mirv_fov handleZoom enabled 1")
-        if self._cfg_bool(cfg, "hlae_workshop_download", False):
-            # sv_pure 0 + sv_lan 1 allow CS2 to load locally installed Workshop map versions
-            # without trying to re-download or validate them against the Workshop CDN,
-            # which would pull the current (wrong) version instead of the old cached one.
-            tokens.append("+sv_pure")
-            tokens.append("0")
-            tokens.append("+sv_lan")
-            tokens.append("1")
-
         extra_raw = cfg.get("hlae_extra_args", "").strip()
         if extra_raw:
             try:
@@ -10561,7 +10566,6 @@ class App(tk.Tk):
             "showOnlyDeathNotices": cfg.get("show_only_death_notices", True),
             "deathNoticesDuration": cfg.get("death_notices_duration", 5),
             "trueView": cfg.get("true_view", True),
-            "downloadWorkshopMap": self._cfg_bool(cfg, "hlae_workshop_download", False),
             "ffmpegSettings": {
                 "audioBitrate": cfg.get("audio_bitrate", 256),
                 "constantRateFactor": cfg.get("crf", 18),
@@ -12261,12 +12265,10 @@ class App(tk.Tk):
             mx = 1 + cfg.get("retry_count", 2)
 
             # ── Per-demo smart timeout ─────────────────────────────────────────
-            # Auto-calculate from actual sequence data so clutch-heavy or many-
-            # sequence demos don't hit a wall that's too tight.
-            # Formula: (clip game-time / timescale) × 3  +  10s/seq  +  180s flat
-            #   • ×3 safety on content   (rendering overhead, demo-seek time, etc.)
-            #   • 10s per sequence       (CSDM seek + record setup inside demo)
-            #   • 180s flat              (CS2 launch + CSDM init)
+            # Formula: (clip game-time / timescale) × 2.5  +  10s/seq  +  60s flat
+            #   • ×2.5 safety on content  (seek + render overhead)
+            #   • 10s per sequence        (CSDM seek + record setup inside demo)
+            #   • 60s flat                (CS2 + CSDM init)
             _user_timeout_s = max(0, int(cfg.get("recording_timeout", 0))) * 60
             _tr = cfg.get("tickrate", 64) or 64
             _timescale = max(0.05,
@@ -12274,18 +12276,25 @@ class App(tk.Tk):
             _sum_clip_s = sum(
                 (s["end_tick"] - s["start_tick"]) / _tr for s in seqs)
             _auto_timeout_s = int(
-                (_sum_clip_s / _timescale) * 3
+                (_sum_clip_s / _timescale) * 2.5
                 + len(seqs) * 10
-                + 180)
+                + 60)
             if _user_timeout_s > 0:
                 _rec_timeout_s = max(_user_timeout_s, _auto_timeout_s)
             else:
                 _rec_timeout_s = _auto_timeout_s
-            self._async_log(
-                f"  ⏱ Timeout: {_rec_timeout_s // 60}m{_rec_timeout_s % 60:02d}s"
-                f" (content {_sum_clip_s:.0f}s, {len(seqs)} seq"
-                + (f", slow {int(_timescale*100)}%" if _timescale < 0.99 else "")
-                + ")", "dim")
+            _to_min = _rec_timeout_s // 60
+            _to_sec = _rec_timeout_s % 60
+            _slow_part = f", slow {int(_timescale*100)}%" if _timescale < 0.99 else ""
+            self._async_log_parts([
+                ("  ⏱ Timeout: ", "dim"),
+                (f"{_to_min}m{_to_sec:02d}s", "info"),
+                ("  (content ", "dim"),
+                (f"{_sum_clip_s:.0f}s", "ok"),
+                (", ", "dim"),
+                (f"{len(seqs)} seq", "blue"),
+                (f"{_slow_part})", "dim"),
+            ])
 
             att = 0
             d_ok = False
